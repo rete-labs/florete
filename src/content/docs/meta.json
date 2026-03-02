@@ -1,0 +1,10 @@
+{
+    "title": "Florete Documentation",
+    "pages": [
+        "index",
+        "overview",
+        "contributing",
+        "...legal"
+    ],
+    "defaultOpen": true
+}
