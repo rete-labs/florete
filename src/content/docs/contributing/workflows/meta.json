@@ -1,0 +1,10 @@
+{
+    "pages": [
+        "issue-tracking",
+        "commit-messages",
+        "git-workflow",
+        "code-review",
+        "ai-usage"
+    ],
+    "defaultOpen": true
+}

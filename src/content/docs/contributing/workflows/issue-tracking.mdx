@@ -1,0 +1,72 @@
+---
+title: Issue Tracking
+description: How we track and manage work
+---
+
+Each contribution that is merged to integration branches should be associated with particular Github issue.
+
+We strive for one to one mapping: 1 PR - 1 issue, but sometimes 1 PR may close multiple issues, and 1 issue may require more than one PR to be merged.
+
+As an exception, hotfixes may be merged without PRs (by repo owners).
+
+## Projects
+
+We use multiple repositories for a project, and [Github Projects](https://github.com/orgs/rete-labs/projects/2) to track them together.
+
+Issue should be created in a repository that requires most of the changes. If changes are required in other repository as well, a separate linked issue should be created there if these changes are meaningful themselves (e.g., form a feature or a bugfix for that particular repository). If such changes are more of a chore-like, then single original issue may be used to track them.
+
+## Issue References
+
+Github uses [this convention](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword) for issue references `<issue-ref>`:
+
+| Linked issue                    | Syntax                              | Example                  |
+| ------------------------------- | ----------------------------------- | ------------------------ |
+| Issue in the same repository    | `#<issue-number>`                   | `#10`                    |
+| Issue in a different repository | `<owner>/<reponame>#<issue-number>` | `rete-labs/florete#100`  |
+
+We call them short and long forms, respectively.
+
+## TODO
+
+### Source Files
+
+In source code, references to issues should be formatted in following `TODO` notation:
+```rust
+// TODO(<issue-ref>): <short-description>
+// [Long-description.]
+```
+
+For example:
+```rust
+// TODO(#123): implement proper buffering
+// Long description of buffering, and what needs
+// to be done here. Multiline, if needed.
+```
+
+Issue reference and short description (without dot at the end) are mandatory. Long description is optional.
+
+For issues in current repository, short form of the reference should be used. For others - long form.
+
+Reasons behind this formatting:
+- avoid TODOs without issues, that most probably will never be implemented
+- `grep -IR TODO .` will show all TODOs in current repository with issue references and meaningful short descriptions
+
+### Markdown Files
+
+In Markdown files, including `README.md`, long form must always be used, as only it is auto-converted to a link when rendered at Github (short form isn't).
+
+```md
+TODO(rete-labs/florete#33): implement new feature
+```
+
+### MDX Files
+
+In MDX files hyperlink form must be used as they're rendered at separate website:
+
+```mdx
+TODO([#12](https://github.com/rete-labs/florete/issues/12)): write Florete Concepts document
+```
+
+## FIXME
+
+`FIXME` marker should be used only in source code that is work in progress. All such markers must be removed before merging to an integration branch.

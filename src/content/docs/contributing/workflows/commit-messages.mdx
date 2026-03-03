@@ -1,0 +1,86 @@
+---
+title: Commit Messages
+description: Our commit message formatting rules
+---
+
+Our commit message formatting rules are based on [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) and are intended to work well with [Semantic Versioning](https://semver.org/) and [Github issues and pull requests](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue).
+
+Commit messages for integration branches (e.g. `main`) must be formatted as follows:
+```
+<header>
+                   # blank line
+[optional body]
+                   # blank line
+[optional footer]
+```
+
+## Header
+
+The header is mandatory and must have this formatting:
+```
+<type>[!][(<scope>)]: <summary> (<issue-ref>)
+```
+
+The length of the header must not exceed 100 characters.
+
+The `<type>` field is mandatory, it must be in lower case. List of core commit types that affect versioning:
+- `fix`: the commit is a bugfix, causes increment of the PATCH version
+- `feat`: the commit is a new feature, causes increment of the MINOR version
+- `<type>!`: exclamation mark after any type (including custom) means the commit is a `BREAKING CHANGE`, causes increment of the MAJOR version
+
+List of custom commit types that do not implicitly affect versioning:
+- `build`: changes in build configuration
+- `ci`: changes in CI scripts and configs
+- `docs`: changes in docs
+- `refactor`: refactoring without changes in behavior
+- `revert`: revert of a previous commit
+- `style`: code styling and formatting
+- `tests`: changes in tests
+- `chore`: changes from routine work that do not fall under other types. For example, version bump.
+
+The `(<scope>)` field is optional and designates commit context defined in a particular repository. Must be lowercase. For example, `(node)` and `(proxy)` if the repository has two respective components.
+
+The `<summary>` field is mandatory and must be formatted as:
+```
+<verb> <text>
+```
+The `<verb>` must be in the lower case and imperative form, `<text>` can be arbitrary description without trailing dot. For example, `add new fancy feature`.
+
+The `(<issue-ref>)` field is mandatory, it is used to link the commit to an issue in a tracker. [Github linked issue format](../issue-tracking/#issue-references) must be used. If the commit links to several issues at once, they can be provided as a comma-separated list, e.g. `(#10, rete-labs/florete#20)`. Keep this list short though, preferrably specify only the most important issue. For additional references use the commit's body, see below.
+
+## Body
+
+The body is optional. If present, it must be separated from the header by a newline. Each sentence of the body must start with capital letter.
+
+Normally commit closes one or more issues upon merging. To trigger auto-close feature of Github, they should be listed in the body with closing keyword (Github requires [full syntax for each closed issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword)):
+
+```
+Closes #10, closes rete-labs/florete#13
+```
+The form `Closes` is recommended, but other supported keywords are allowed as well.
+
+If commit relates to one or more issues not closing them, they should be mentioned anywhere in the body (or the header) to trigger auto-referencing at Github. For example:
+```
+Closes #11, provides APIs to be used in #12
+```
+
+## Footer
+
+The footer is optional. If present, it must be separated from other text by a newline. Formatting must follow [Git trailers](https://git-scm.com/docs/git-interpret-trailers), i.e. one or more entries in a `key: value` form.
+
+Footer may contain special `BREAKING-CHANGE: <description>` trailer. In this case the header must contain exclamation mark as well.
+
+Other trailers, like `Committed-by`, `Signed-off-by` and so on, are tool-specific and usually not entered manually.
+
+## Example
+
+```log
+feat(proxy): add UDP protocol support (#13)
+
+Introduces UDP protocol support for proxy interface,
+adds global CLI option `--udp` and other related flags.
+
+Closes #13, provides ground to start #14.
+
+Committed-by: Alice <alice@example.com>
+```
