@@ -1,0 +1,42 @@
+---
+title: Getting Started
+description: How to become a contributor
+---
+
+Welcome! This page walks you through what you need to know and do before making your first contribution.
+
+## Legal
+
+Before contributing, please sign our [Contributor License Agreement](/docs/legal/cla).
+
+<Callout title="Open Core Model">
+Florete follows an open core model with two promises:
+- the core will always be open (Apache 2.0 or MIT)
+- personal use cases will never be commercialized
+
+The CLA helps the project's business steward, [ReteLabs LLC](https://rete-labs.com), sustainably support the open source work.<br/>
+Learn more in the [Project Charter](/docs/overview/governance/project-charter).
+</Callout>
+
+## Prerequisites
+
+Florete is written in Rust and heavily uses asynchronous programming. To contribute effectively, you should be comfortable with:
+- **Rust** – if you're new, start with the [Rust Book](https://doc.rust-lang.org/book/).
+- **Tokio** – our async runtime. Work through the [Tokio Tutorial](https://tokio.rs/tokio/tutorial).
+
+## Onboarding Tasks
+
+These small exercises will familiarise you with async Rust and Tokio patterns used throughout Florete. Feel free to ask the [Core Team](/docs/overview/governance/core-team) for feedback.
+
+#### Task 1: async-echo
+
+Implement echo client-server over TCP using Tokio:
+- **v1**: Simple client and server with async client handler
+- **v2**: Bound number of accepted clients in the server
+- **v3**: Use async Stream API to generate messages in the client
+
+TODO([#22](https://github.com/rete-labs/florete/issues/22)): define more onboarding tasks
+
+## Development Environment
+
+TODO([#21](https://github.com/rete-labs/florete/issues/21)): describe development environment

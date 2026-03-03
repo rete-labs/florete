@@ -1,0 +1,44 @@
+---
+title: Git Workflow
+description: Our branching and merging strategy
+---
+
+Our Git workflow is following the spirit of [man gitworkflows](https://git-scm.com/docs/gitworkflows). Main rules from there are:
+- **Graduation**: use integration branches of different maturity
+- **Merging upwards**: always commit your fixes to the oldest supported branch that requires them. Then (periodically) merge the integration branches upwards into each other
+- **Topic branches**: make a side branch for every topic (feature, bugfix, etc​). Fork it off at the oldest integration branch that you will eventually want to merge it into
+
+Note that this is essentially different from poupular [Git Flow](https://nvie.com/posts/a-successful-git-branching-model/). We do not use practices from it.
+
+## Integration Branches
+
+Currently all our repositories have only one official integration branch called `main`. That is because we're in an the early development stage and do not have any releases to maintain. This will change as the project matures.
+
+## Topic Branches
+
+Each feature, bugfix or other piece of contribution should be introduced in a topic branch. Naming convention for such branches is following:
+```
+<type>/<issue-number>/<short-description>
+```
+
+For code changes type is usually `feat` or `fix`, but other work may have different types, e.g. `docs`, `chore`. Full list of supported types is specified in our [Commit Messages](../commit-messages).
+
+Examples of branch names:
+```
+fix/123/crash-on-exit
+feat/31337/discover
+docs/42/tunnel-hld
+```
+
+For issues in other repositories, issue number must include a prefix `<repo-name>-<issue-number>`:
+```
+docs/florete-64/update-api-descriptions
+```
+
+All branch names must be in lowercase.
+
+## Merge Strategy
+
+As currently we have only single integration branch, `main`, we use **Rebase** strategy, i.e. all changes introduced in a topic branch are rebased on top of the `main` branch.
+
+Normally these changes should be in a single commit, i.e. a branch with multiple commits should be squashed to one commit before final rebase.

@@ -1,0 +1,8 @@
+{
+    "pages": [
+        "getting-started",
+        "../legal/cla",
+        "workflows",
+        "development"
+    ]
+}
