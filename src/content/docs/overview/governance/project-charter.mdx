@@ -3,4 +3,55 @@ title: Project Charter
 description: Our goals, principles, and leadership model
 ---
 
-TODO([#8](https://github.com/rete-labs/florete/issues/8)): write Florete Project Charter document
+The Florete project is governed by its leader and founder [Fyodor 'Wire Snark' Lyakhov](https://github.com/wsnark) with the technical advice of the [Core Team](core-team.md) and [stewardship by ReteLabs](#retelabs-stewardship).
+
+It is the most appropriate model for the beginning of the project. Later on, when it matures, the model will be changed to some form of a Steering Council. Next governance review: not later that January 2028.
+
+## Project Goals
+
+The project's goal is to implement [Florete Technology](/docs/overview/vision), make it useful for people and ubiquotous, and thriving. This implementation must be bound by our [open source principles](#open-source-principles) and [friendly professional community](../community-interaction).
+
+## Open Source Principles
+
+We are business-friendly, but **people-first**:
+- Enthusiasts, hackers, and independent contributors are our "first-class citizens." Their rights to **freely run, study, share, modify and reuse** the core technology and its components are inalienable
+- We **do not allow** business models based on **anti-features** that would otherwise be removed by the community (e.g. ads, tracking, paywalls)
+
+## Decision Making
+
+- High-level design and specifications: all changes go through RFC process<br/>
+  TODO([#26](https://github.com/rete-labs/florete/issues/26)): define RFC process for HLD and spec changes
+- Implementation: all major architectural decisions go through ADR process<br/>
+  TODO([#24](https://github.com/rete-labs/florete/issues/24)): define ADR process
+
+Final authority belongs to the leader after discussion and advisory from the [Core Team](../core-team).
+
+## Leader Duties
+
+The leader is responsible for achieving [the project goals](#project-goals). For this, he is providing clear project vision and direction, and speedy decision process. Other important duties include arranging resources and balancing interests.
+
+### Arranging Resources
+
+Florete Technology is very ambitious and complicated matter. To implement it, a team of skilled and dedicated software engineers is needed. That's why [ReteLabs LLC](https://rete-labs.com) has been founded as a commercial startup. It is responsible for business use cases of the technology and funding of the project.
+
+### Balancing Interests
+
+The leader is responsible for balancing interests of ReteLabs, its corporate partners and contributors, and the community of enthusiasts and hackers.
+
+The current strategy is to separate business and community: monetization strategies are limited to B2B sector, and use cases for enthusiasts are not commercialized.
+
+Here lies a limiting mechanism to leader's powers: anybody can fork the project if they feel their needs are not satisfied properly.
+
+## ReteLabs Stewardship
+
+[ReteLabs LLC](https://rete-labs.com) is the steward of the Florete project and is committed to this open source charter. It provides all the resources needed to run the project and funds our Core Team (to the extent possible).
+
+<Callout>
+At the moment, ReteLabs is under control of the Florete leader, but it may change later as the startup grows. If ReteLabs violates the spirit of this charter, its stewarding role will be transferred to another organization.
+</Callout>
+
+## Licensing
+
+The code of the Florete project is available under dual [Apache 2.0 or MIT License](/docs/legal/license) (if not stated otherwise in a particular repository; always check `LICENSE` files).
+
+This is a deliberate choice to increase technology adoption and to grant broader rights to contributors. This combination of licenses allows using Florete code in major open-source (GPLv2, GPLv3, permissive) and proprietary contexts.
