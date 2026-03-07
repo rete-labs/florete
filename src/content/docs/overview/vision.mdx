@@ -3,4 +3,200 @@ title: Vision
 description: What we build in the Florete project
 ---
 
-TODO([#10](https://github.com/rete-labs/florete/issues/10)): write Florete Vision document
+Florete is an open-source technology that unites your personal devices — laptop, phone, car, smart home gadgets, and cloud VMs — into a single distributed cluster. We call this cluster Florenetes. It’s like having your own private cloud that spans across all your computing resources, giving you the power and flexibility of cloud computing without relying on third‑party application services.
+
+This is a world where you are no longer a passive consumer of apps hosted by big corporations. Instead, you become the operator of your own infrastructure — simple, reliable, and under your control. Whether you're a [hacker](https://en.wikipedia.org/wiki/Hacker_culture), computer enthusiast, or just someone tired of vendor lock‑in, Florete is for you.
+
+Florete also fuels coordination of intelligent mobile nodes like robots and drones, [see below](#beyond-personal-truly-autonomous-systems).
+
+## A Day in Life with Florete
+
+#### Wake up, Neo
+
+_You were at a party yesterday. Got home with your phone discharged and fell asleep. Imagine waking up._
+
+You open the lid of your laptop and a private message from your friend is delivered. It is from yesterday. But there is...<br/>
+No central server like in Telegram.<br/>
+No someone's server like in Matrix[^matrix].<br/>
+No public blockchain nor DHT.<br/>
+No p2p storage involved (your friend hasn't woken up yet and isn't online)[^p2p].
+
+You start replying on your laptop; the conversation flows seamlessly to your phone when you turn it on. Just like in Telegram. But without vendor's cloud server in the middle. No "service unavailable" even if AWS is down today.
+
+How does it work?
+
+You installed the messenger from the Florete App Repository (we’re working on a cooler name) into your personal cluster. The cluster OS, Florenetes, automatically deployed instances of the app across your computing nodes — your laptop, your phone, and a couple of cheap VMs you rented. When a message arrives for you while your phone and laptop are offline, the messenger _workload_ at VM receives it and saves into the cluster’s distributed storage. That storage is replicated across your nodes. The moment your laptop reconnects, everything syncs up.
+
+And it’s not just messaging. Your smart home hub, your personal website, your team collaboration tools — all can run inside your Florenetes cluster. No more worrying about a cloud provider going down or an app vendor shutting off service. You decide how much redundancy you want, which cloud providers you trust (if any), and where your data lives.
+
+[^matrix]: [Matrix](https://matrix.org/), a prominent messaging platform with self-hosted servers.
+[^p2p]: For example, [BitMessage](https://en.wikipedia.org/wiki/Bitmessage) stores transit messages in a network of peers, uses Bitcoin gossip protocol for propagation. [Berty](https://berty.tech/messenger) stores messages in IPFS where peers become nodes.
+
+#### Adaptive Connections
+
+_Your friend wakes up and makes a videocall to you. During conversation an emergency outage happens at your ISP._
+
+Wired Internet access is disrupted, but you continue communicating with your friend using the laptop. Your videocall isn't affected at all, no connection breaks.
+
+How does it work?
+
+Florete adaptively manages your network topology and routing. Your phone has active Wifi and LTE links. Once your router loses link with Internet, Florete detects the failure and triggers fast reroute scenario: videocall is handed over to the phone's LTE link seamlessly. This is true multihoming feature that requires zero configuration.
+
+Link aggregation is also available: not only you get instant failover, you can use combined bandwidth of your Internet links for higher connection speeds with automatic load balancing! This is possible because Florete is built with post-IP Recursive InterNetwork Architecture (RINA)[^rina].
+
+[^rina]: [RINA](https://en.wikipedia.org/wiki/Recursive_Internetwork_Architecture), the only post-IP architecture that is active, but so far academic-only.
+
+#### Service Mesh
+
+_Your friend invited you to a lunch. Now you met at a cafe._
+
+You recall that you forgot to start your robotic vacuum cleaner. You run an app at your phone and start it. Just like Xiaomi app. But without vendor's cloud. And without exposing your vacuum cleaner service to the Internet.
+
+How does it work?
+
+Florete maintains private Service Mesh between nodes in the cluster. Like Istio[^smesh] in a Kubernetes cluster. A node can join this service mesh using any medium — be it local Wifi or Internet link. In the latter case it looks like zero-config VPN. It isn't an extra service though — it is built-in core feature of Florete network. Once node is connected, all the cloud services become available, the distributed smart home app just works — it doesn't even know whether you're at home or outdoors.
+
+[^smesh]: [Istio](https://istio.io/) is a prominent service mesh implementation for Kubernetes.
+
+#### IP Exits and Entries
+
+_During lunch you want to check the docs of your favorite framework. Due to some issue at your mobile ISP the website is unreachable._
+
+You open website with the docs. It loads just fine.
+
+How does it work?
+
+There is a service in your cluster called IP Exit. It is distributed upon nodes with Internet connectivity, and Florete can automatically route your traffic through one of the exits, depending on reachability, load-balancing and other policies (e.g. you can select the one to use manually if you want). Think of Tor Exit nodes[^tor], but without anonymity goals. Florete even supports live migration of connections between exits for protocols with such capability, e.g. QUIC[^quic].
+
+Also when you host a public Internet service in your cluster, e.g. website or email server, external connectivity is provided via IP Entry service, distributed as well.
+
+[^tor]: [Tor](https://torproject.org), an overlay network focusing on anonymity.
+[^quic]: [QUIC](https://en.wikipedia.org/wiki/QUIC), a modern transport protocol that works over UDP and unifies stream and datagram APIs.
+
+#### Multi-Cluster
+
+_After the lunch you went to your friend's home._
+
+At friend's house you're able to control local smart home devices and your vacuum robot as well.
+
+How does it work?
+
+Your phone joins your friend's Florenetes cluster first, given the permission by the owner. And then, as your friend authorizes it with external connectivity, your phone joins to your cluster. This scenario shows us another important feature: a node can participate in multiple Florenetes instances simultaneously, with different roles and access levels. E.g. home cluster: full computing node, friend's cluster: network access only.
+
+BTW, once your phone joins Florenetes cluster of your friend, it doesn't need Internet connection to join your home cluster — this can be done using the Florete inter-cluster network — we call it Interrete. And Internet connectivity can be provided via distributed IP Exits of both of them.
+
+Another example of multi-cluster use case: project / corporate environment. A team can have they own Florenetes cluster defined. Members can join it — similar to VPN, but actually much more, because they get full cloud-like experience. A lot of team productivity tools can run in this cluster without the need to manage own servers nor rely on vendor-locked cloud apps.
+
+## Beyond Personal: Truly Autonomous Systems
+
+Florete isn't just for your laptop and phone. It's designed for the extreme edge: robots, drones, vehicles, and other intelligent mobile agents that can't rely on stable cloud connectivity. If Florenetes can coordinate your personal devices, imagine what it enables when the "devices" are autonomous machines working together in the wild.
+
+### The Swarm's Nervous System
+
+Imagine a group of robots deployed to a remote location — a construction site, a farm, a warehouse. They need to coordinate:
+- Who goes where?
+- How do they share sensor data?
+- What happens when the satellite or 5G link drops?
+
+Today, their intelligence is often crippled by a dependency on a distant, fragile cloud. Lose the connection, and the swarm becomes a collection of stranded automatons.
+
+Florete transforms this. It gives the swarm its own decentralized nervous system. The coordination logic — the brain — no longer lives in a remote data center. It lives within the swarm itself, distributed across every robot, drone, and vehicle. The cloud becomes an optional, powerful co-processor, not the master.
+
+Visit ReteLabs website for detailed [industrial use cases](https://rete-labs.com/use-cases/industrial).
+
+#### Data Plane
+
+First of all, no telecom infrastructure is required. Robots form a Florete Service Mesh over radio links, e.g. long-range WiFi 802.11be with directed antennas. No cellular towers, no access points — just peer-to-peer links.
+
+The mesh isn't limited to the radio links. If one robot has a satellite or 5G link, the whole group can use it — automatically, with load balancing and QoS. If that link fails, connections migrate to another node in sub-second time. No disconnects.
+
+#### Control Plane
+
+Data Plane is operated by distributed Control Plane. Key components there are Coordinator (the Florenetes itself) and Network Computation Service (NCS). Think of SDN Controller[^sdn] and Path Computation Element (PCE)[^pce], but extended with topology computation tasks, and distributed across the nodes.
+
+Florenetes runs the NCS. And NCS maintains optimal network conditions for the orchestrator to run.
+
+When cloud VMs are available, heavy computation happens there. When the group of nodes goes offline, the NCE continues running locally, distributed across the robots themselves. It may produce less optimal routing, but still functional. This isn't a fallback mode — it's the same system, adapting to available resources.
+
+One important difference between Florete and traditional SDNs lies in the kind of relationships between the control plane and nodes. In SDNs it is strict Controller — Puppet. In Florete it is Coordinator — Agents, i.e. actors with a few degrees of freedom. It is very important: to be agile, to achieve sub-second reaction times, the agents must be able to make decisions themselves, locally. The role of Coordinator is to provide them with the space for these decisions.
+
+Level of freedom may vary from 0% to 100% — this is fully decentralized case with independent agents. Florete adjusts the level of freedom based on conditions: in a very stable data-center it is good to have fully centralized control[^centr]. In a very unstable conditions, when characteristic time to elect a leader is less than its average connected lifetime, such process doesn't make sense. In this case Florete switches into fully decentralized mode, gracefully degrading to limited capabilities.
+
+[^sdn]: [SDN, Software-defined networking](https://en.wikipedia.org/wiki/Software-defined_networking).
+[^pce]: [PCE](https://en.wikipedia.org/wiki/Path_computation_element), a central element of modern [Traffic Engineering](https://datatracker.ietf.org/doc/rfc9522/).
+[^centr]: Acutally even in centralized networks there is a degree of freedom for nodes - [Fast Reroute](https://en.wikipedia.org/wiki/Fast_Reroute) is designed this way, and we are reusing this technology in Florete.
+
+#### Robot Coordination
+
+Coordination logic becomes an application run by Florenetes, just like NCS and other services. If the cloud link dies, the robots don't even notice. They continue to coordinate locally. The cloud, when it returns, simply re-syncs with the living system. This isn't just "failover", it's **innate resilience**.
+
+### When Swarms Meet
+
+What happens when two independent robot groups, maybe operated by different teams, come into range?
+
+They discover each other and establish inter-cluster network, the interrete. A group with Internet access can provide it to a group without it. The interrete works in highly mobile environment, where nodes serving as connection points between the groups move and change fast. But connections are maintained without interruptions due to adaptive nature of the Florete network.
+
+This is the kind of adaptive, infrastructure-less networking that could redefine how autonomous systems collaborate — and it's built on the same primitives you use for your personal cluster.
+
+## Key Capabilities of Florete
+
+The tables below serve as high-level requirements for the Florete project.
+
+### Florenetes Core: Orchestration & Lifecycle
+
+_Automate placement, scaling, load-balancing of distributed apps._
+
+| Feature | Summary |
+|---------|---------|
+| Orchestration | Florenetes deploys and manages app instances across nodes based on resource availability, policies, and constraints |
+| Heterogeneous Nodes | Nodes can have different roles in the cluster, from computation to mere network access, depending on authorization and node capabilities |
+| Container-Like Runtime | Apps run in containers where available (cloud VMs), or via lightweight CRI-like interface at constrained devices |
+| Graceful Degradation | Florenetes adapts to available resources: when cloud is unreachable, control plane continues locally with reduced optimality |
+| Resilience by Design | Add nodes from any cloud or location; you control redundancy levels, not app vendors |
+| SuperNodes | Treat a cluster of nodes (e.g. a few computing units at a large vehicle) as a single logical unit; enables hierarchical scaling  |
+| Self-Hosting Control Plane | Florenetes itself runs as a distributed app using cluster services — no external bootstrap required |
+
+### Florete Network: Adaptive & Resilient
+
+_Delegate network complexity, enjoy maximum connectivity._
+
+| Feature | Summary |
+|---------|---------|
+| Service Mesh | Private, zero-trust, encrypted service-to-service communication across all cluster nodes. Abstracts services from network via proxies. Works over any transport, zero-config VPN-like access. This is the building block of the RINA approach |
+| Mobility, Multihoming and Interface Aggregation | Move node around network without disrupting connections. Combine bandwidth of multiple network interfaces on a single node for higher throughput and resilience. Automatic failover and load balancing — your cluster stays online even if one ISP fails |
+| Adaptive IP Exit/Entry Routing | Dynamically route ingress and egress IP traffic through optimal nodes. Supports load balancing and live migration for QUIC connections |
+| Distributed Network Control Plane | Self-managing topology and routing computation that runs across your nodes as distributed Florenetes service (app). Adapts centralization level based on network stability — from fully centralized in stable clouds to fully decentralized in chaotic environments |
+| Interrete (Inter-Cluster Networking) | Adaptive, mobility-tolerant networking between independent Florenetes clusters; connections survive rapid topology changes |
+
+### Cluster Services: the Essentials
+
+_Manage distributed app state without sync headaches._
+
+| Feature | Summary |
+|---------|---------|
+| Distributed Cluster Storage | Replicated, eventually-consistent storage across all cluster nodes; apps sync state automatically without central servers |
+| Pub/Sub & Event Service | Messaging queue and event bus service for real-time distributed apps; run MQTT, Zenoh[^zenoh], or custom protocols on top |
+
+[^zenoh]: [Zenoh](https://zenoh.io), a distributed service with pubsub interface for key-value pairs.
+
+### Developer Experience: Build How You Want
+
+_Write code in your language, use familiar APIs._
+
+| Feature | Summary |
+|---------|---------|
+| Multi-Language SDK | Develop app logic in Rust, Go, Python, JS/TS; UI can be web-based or native |
+| K8s-Inspired APIs | Cluster management APIs resemble Kubernetes for easier adoption by cloud-native developers |
+
+### Operations: Easy, Secure, Under Control
+
+_Minimize maintenance burden while staying secure and in control._
+
+| Feature | Summary |
+|---------|---------|
+| Zero-Trust | Authentication and end-to-end encryption with SPIFFE-like[^spiffe] automatic key management, but in a distributed manner |
+| Multi-Cluster Participation | A single node can join multiple Florenetes clusters with different roles and permissions; enables secure collaboration and connectivity sharing |
+| Zero-Maintenance Nodes | Fire-and-forget VMs; let a provider manage them, or run your own  |
+| Policy-Defined Access Control | Fine-grained permissions for nodes, apps, and users; enforce least-privilege access across your entire infrastructure |
+
+[^spiffe]: [SPIFFE](https://spiffe.io/), identity control plane for distributed systems.
