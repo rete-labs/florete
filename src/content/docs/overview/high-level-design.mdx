@@ -3,4 +3,292 @@ title: High-Level Design
 description: How the Florete vision is achieved
 ---
 
-TODO([#11](https://github.com/rete-labs/florete/issues/11)): create High-Level Design document
+Florete technology is built of two intertwinted parts: the Florenetes orchestrator and the Florete network. The orchestrator runs over the Florete network, which provides a service mesh abstraction. The network's control plane is itself a distributed app managed by the orchestrator. Inter-cluster networking is implemented by Florete network as well, extended beyond in-cluster service mesh.
+
+## Florete Network Design
+
+In this section we explore core concepts of the Florete network focusing mainly on its data plane. Control plane is covered in a [separate section](#network-control-plane).
+
+### Recursive Architecture
+
+Florete network is inspired by Recursive InterNetwork Architecture (RINA)[^rina]. The key concept of RINA says "networking is communication", or more concrete: "networking is inter-process communication". And what is modern inter-process communication? Service mesh![^smesh]
+
+Turns out, service mesh is essentially the basic primitive of recursive networks, if think in production software terms instead of academic parlance of the RINA theory.
+
+<Callout title="Choice of terminology">
+As we are building a working technology, not a theory, we'd rather follow common IT terms when applicable. At the same time we avoid direct over-extending of well-known concepts beyond their scope as well as jargonisms of particular implementations.
+</Callout>
+
+
+[^rina]: [RINA](https://en.wikipedia.org/wiki/Recursive_Internetwork_Architecture), the only post-IP architecture that is active, but so far academic-only.
+[^smesh]: [Service mesh](https://en.wikipedia.org/wiki/Service_mesh), a service-to-service connection fabric used in modern clusters.
+
+#### Layer
+
+Florete network is built of recursive layers. A **layer** is an abstraction of a service mesh. A service mesh is a service-to-service communication fabric. By the way, why is it called a mesh? Because each service can connect to any other one — hence it is fully connected mesh.
+
+Florete layer is a communication mesh for its users. We explicitly avoid term "services" because it is too vague and may be misleading. The users of a layer can be any communicating entities running on the computing nodes, that may or may not be implemented as actual services.
+
+So, a user of the layer APIs can connect to any other user of that layer. Note that it doesn't mean all the connections actually exist. Nor that the topology of the layer itself is a mesh.
+
+#### Vertex
+
+A layer is comprised of **vertices**. This is an abstraction of proxy components from service mesh implementations, like Istio[^istio]. A vertex runs on a node and plays two roles. First, it provides API for its users on the same node, we call it **Portal** API.  It contains three main methods:
+- Publish: publish an entity in a layer
+- Connect: connect to an entity in a layer
+- Discover: find entities in a layer
+
+As a result, users of Portal API can establish **connections** between each other, and communicate.
+
+<ImageBox
+    src="/images/docs/overview/high-level-design/layer.svg"
+    alt="Layer Diagram"
+    caption={<>Alice and Bob establish connection using Violet layer via Portal APIs provided by vertices V<sub>a</sub> and V<sub>b</sub></>}
+/>
+
+Second, a vertex actually implements this API, being a participant of a layer. Naturally, it is done by connecting to some other vertices within the layer. Here the recursive nature of the architecture shows itself: to connect, the vertex uses Portal::Connect of a vertex from some other layer!
+
+Internally vertex consists of
+- transport endpoint to establish connections on behalf of the Portal API users
+- connection manager for in-layer connections with other vertices
+- forwarding engine to process packets: with local origin or destination, and transit
+
+TODO(#XXX): Create detailed design of a recursive vertex
+
+This is how a layer can be implemented upon Portal APIs provided by a few other layers.
+
+<ImageBox
+    src="/images/docs/overview/high-level-design/recursive-layers.svg"
+    alt="Recursive Layers Diagram"
+    caption={<>Alice and Bob establish connection using Violet layer that uses Green and Cyan layers itself</>}
+/>
+
+Importantly, this isn't even a stack: in complicated cases vertices on a node can from directed graph with cycles.
+
+TODO(#XXX): Explore practical non-stack configurations of Florete layers
+
+[^istio]: [Istio](https://istio.io/) is a prominent service mesh implementation for Kubernetes.
+
+#### Link
+
+At the end of recursion there are primitive layers that are implemented upon something that's not a layer, some "physics", or external communication means / media.
+
+The most primitive layer is formed by two communicating entities in a peer-to-peer fashion. We call it a **link**.
+
+<Callout title="Link as basic layer">
+It is important to use link primitive with only 2 communicating vertices instead of multi-vertex one like a bus: **"Buses ruined everything"**[^avery]. Bus is a form of network that is not primitive, it is a "physical mesh". It can be built using two kinds[^kind] of layers: primitive links between pairs of nodes and a layer (think "service mesh") on top.
+</Callout>
+
+Technically link vertex is a degenerate case of a recursive vertex: it sill has full-featured transport endpoint, but connection manager may be absent (if underlying medium is connectionless, e.g. UDP or some form of radio), and forwarding engine is trivial (because there is only one another vertex in the layer, there are no transit packets; hence, the forwarder is a mere datagram socket in this case).
+
+This fact enables optimization: a signle link vertex can handle multiple links by maintaining a strict 1-1 mapping of Portal API users to other link vertices. When a user calls Portal::Connect to some target user, link vertex must know exactly at which link this target is published. This can be implemetned via maintaining star-like topology of links.
+
+TODO(#XXX): Create detailed design of a link vertex
+
+[^avery]: Avery Pennarun, [The world in which IPv6 was a good design](https://apenwarr.ca/log/20170810), 2017
+[^kind]: We explicitly avoid term "level" as it implies stack-like construct; layers are not necessarily form stacks! Also note how we distinguish layers: each link is a layer itself; there is no "common link layer" like in Internet model.
+
+### Consequences
+
+What gives this simple construct of recursive service meshes? First of all, no network details are leaked through the APIs. Most importantly, there are no addresses, ports, and other kinds of implementation details.
+
+This mere fact decouples connections from network topology and routing. This means exceptional freedoms: route aggregation (multi-route delivery; interface/link aggregation is a special case of it), multihoming, all mobility scenarios can be supported out of the box.
+
+TODO(#XXX): Explore key Florete network features of route aggregation, multihoming, and mobility
+
+### Implementation Strategy
+
+#### Integration with IP
+
+How to bridge existing IP-based applications with Florete network? The answer is well-known: use per-node proxies. That's what Istio's Ambient Mesh[^ambient] is doing in Kubernetes (and other similar technologies). There may be even per-workload proxies (sidecar proxies) — but it is a rudiment of ad hoc design for the Kubernetes.
+
+[^ambient]: [Isio's Ambient Mesh](https://istio.io/latest/blog/2022/introducing-ambient-mesh/)
+
+So, app developers can just use IP-based protocols, and at the proxy boundary they are translated into Florete connections.
+
+#### Identities
+
+The only thing that's used in layer's Portal API are identities.
+
+<Callout title="Identity">
+Identity is a name and a cryptographic evidence that the name is owned by the entity.
+</Callout>
+
+This sentence formulates general framework for identitites, exceptionally simple yet powerful. There is a well-established concept of SPIFFE SVIDs[^spiffe] for clusters. There are X.509 certificates (PKI-based) and DNS in public Internet. And there are self-authenticating names (e.g. .onion, .i2p)[^zooko]. We're uniting of all of these schemes in our Identity API. Actual implementation should begin with DNS names for simplicity and integration with existing desktop tools.
+
+TODO(#XXX): Define Florete Identity API
+
+[^spiffe]: [SPIFFE](https://spiffe.io/), identity control plane for distributed systems.
+[^zooko]: See [Zooko's Triangle](https://en.wikipedia.org/wiki/Zooko%27s_triangle) on the matter of names.
+
+#### Addressing & Routing
+
+What about addresses? That concept becomes private implementation detail of a particular layer. Actually, for small networks there is no need for addresses at all: names are enough, and routing can be done by other methods. The most well-known alternative to IP routing is MPLS[^mpls]. It enables Traffic Engineering[^te] — the thing we need too. MPLS uses labels instead of addresses for forwarding packets.
+
+[^mpls]: [MPLS](https://en.wikipedia.org/wiki/Multiprotocol_Label_Switching), and [Segment Routing](https://en.wikipedia.org/wiki/Segment_routing) as an evolution.
+
+[^te]: [Traffic Engineering for Internet](https://datatracker.ietf.org/doc/rfc9522/).
+
+TODO(#XXX): Define MPLS-based routing for small-scale Florete networks
+
+#### Connections
+
+The core requirement of Zero-Trust leads to connection-oriented design of the layer. This doesn't mean connections are limited to TCP-like stream service though — it is perfectly fine to have datagram service in the connection. Sending unsolicited datagrams is not possible by design though — and that is really good.
+
+What kind of network services the connection between users of Portal API provides?
+
+Basic "unicast" data transfer services include:
+- authentication, confidentiality, integrity (mTLS)
+- stream mode (single-stream — TCP-like; multi-stream — QUIC-like)
+- datagram mode (UDP-like, QUIC-like)
+- convergent mode (both stream and datagram — QUIC-like)
+- QoS, resource reservation
+- congestion control
+
+Regarding congestion control and concurrency for bandwidth between connections, currently we go this route:
+- use datagram modes with little to no congestion control in "lower" layers
+- use a protocol with congestion control at the workload-facing layers — e.g. QUIC
+
+Later on we'd need means to control bandwidth of connections — that can be done at the proxy level (shaping of any data transfer protocol). The need for better protocols in this regard is unclear — maybe shaping will be sufficient.
+
+As a separate note: as we're going to use QUIC or other similar protocol with adaptive bandwidth, we're relying on the architecture where links provide delivery guarantees. Because QUIC treats packet loss as an indicator of congestion, and cannot distinguish it from loss in a link. So, link layer services over unreliable media (like radio channels) cannot be simple datagrams — they must implement an ARQ of some kind. That concern doesn't apply to links over UDP/IP though — we expect that IP networks already work over reliable links. For example, WiFi links implement that.
+
+### Future Work
+
+This section covers topics that are not in the near scope of development, but very important in a mid- and long-term.
+
+#### Discovery
+
+The Discover method in the Portal API allows users to find entities that have been published in the layer. This is the Florete abstraction for service discovery[^disc], it applies to any kind of entity — workloads, system components, vertices from other layers, and distributed services. This mechanism is naturally related to new vertices joining a layer as they're users in some other layers.
+
+TODO(#XXX): Design Discover method of Portal API
+
+[^disc]: [Service discovery](https://en.wikipedia.org/wiki/Service_discovery), a well-known networking concept.
+
+##### Multicast & Pub/Sub
+
+We'd like to have "multicast" data transfer probably, but now leave this for later research. Also we'd like to have Pub/Sub service — but that's probably should be done on top of the primitive data transfer. Maybe even as a Distributed Service / app managed by the orchestrator. Also integration with existing protocols (MQTT, Zenoh[^zenoh] etc) should be taken in account. All this may be related to multicast.
+
+TODO(#XXX): Research on multicast and pub/sub features in Florete network
+
+[^zenoh]: [Zenoh](https://zenoh.io), a distributed service with pubsub interface for key-value pairs.
+
+#### Recursion Limits
+
+There is a practical problem of the architecture: recursion ad infinitum is impossible. And actually it eats bandwidth very fast, especially if using protocols that are not designed for it, e.g. QUIC over QUIC. Our experiments have shown 3 layers of QUIC eat headers so much that 1280 minimum IP packet size for IPv6 cannot be met on 1500 MTU of Ethernet.
+
+Need to invent a way to "flatten the recursion": in this case, we need virtual layers without actual encapsulation. And that's seem totally possible for in-cluster service mesh. Key design goal: keep the layer isolation. There is a known possibility for extremely lightweight layers — tunnels via MPLS label stacks. But they completely lack security.
+
+TODO(#XXX): Invent virtual layers design for in-cluster network.
+
+#### Native Apps
+
+Native Florete network apps are possible, but that requires more design efforts. Proxy design seems to be good — and followed by other overlay networks like Tor and I<sup>2</sup>P as well. Native support would also work over some IPC probably, because having a Florete stack in an app seems impractical. Just like with IP — the IP stack is provided by the kernel, not in-app. So probably we can think of making Florete part of the OS kernel, then the "proxy" would move there, and that's it.
+
+TODO(#XXX): Consider design of native Florete network applications
+
+## Florenetes Design
+
+Florenetes is a distributed operating system for clusters of heterogeneous nodes, built on a three-layer architecture.
+
+<ImageBox
+    src="/images/docs/overview/high-level-design/florenetes-arch.svg"
+    alt="Florenetes Architecture"
+    caption={<>Three-layer architecture of the Florenetes cluster</>}
+/>
+
+### Execution Plane (Green)
+
+This is the layer where distributed applications run — both system and user ones. It includes:
+- Node: Physical device like laptop, phone, and robot, as well as virtual machine in the cloud
+- Workload: The smallest deployable unit of application on a node
+- Agent: A Florenetes agent running at each node, managing workloads on it
+- Service: A workload that is published and can be connected to in the cluster's network
+- WRI (Workload Runtime Interface): A standard way to launch workloads on nodes
+- Distributed Application: A group of workloads that is managed by the orchestrator as a single entity
+- Distributed Service: a distributed application that is published and can be connected to in the cluster's network (and load-balanced)
+
+This architecture resembles Kubernetes, but abstracts away its containerization specifics. We shouldn't require actual container runtimes from the nodes. This is especially true for smartphones — running containerized apps there seems infeasible, at least until their underlying OSes start supporting it. But this shouldn't limit our ability to join mobile phones as nodes into the cluster.
+
+Running containers on some embedded systems may be infeasible too (though we're not targeting anything smaller than devices with ARMv7 general-purpose CPUs running Linux — i.e. controller-only devices are not considered to be cluster nodes).
+
+Another example when containers cannot be used directly — a supernode that consists of multiple computers (e.g. a few distinct computers on board of a large vehicle).
+
+So we need some abstraction that can be implemented for phones, embedded systems and supernodes. We call it Workload Runtime Interface.
+
+Open question: should the agent run as a workload? Certainly, it has a system role of running other workloads — so this role cannot be a workload itself. But maybe we should split it in two: this low-level runner and higher-level agent that controls all the other aspects of the node. The latter can be run as a workload.
+
+TODO(#XXX): investigate whether Florenetes agent can be run as a workload
+
+### Data Plane (Purple)
+
+This is the layer of Florete network data plane. It includes:
+- Proxy: A Florete network proxy running at each node and providing network connectivity to workloads
+- Cluster's network (service mesh): A layer of Florete network that is exposed by the proxy and used by workloads in the cluster
+
+Open question: should the proxy run as a workload? It is essential service which provides connectivity to all other workloads, so even if it is a workload, it is certainly special one.
+
+TODO(#XXX): investigate whether Florete proxy should be run as a workload
+
+### Control Plane (Pink)
+
+This is the brain of the system, coordinating the work of all other components. The main difference from Kubernetes: all control plane components are **distributed** across all cluster nodes, running as workloads within the system itself. There are no dedicated master nodes — the system continues to function even when any group of nodes is disconnected.
+
+It consists of two parts: control plane of the orchestrator and control plane of the network.
+
+#### Orchestrator Control Plane
+
+Here we follow Kubernetes design for now (would need to re-visit once we're close to implementing).
+
+Core distributed services:
+- Scheduler Service: Decides where to run applications
+- API Service: Provides external and internal cluster APIs
+- Controller Manager Service: Ensures desired state of the cluster (via a few specialized controllers)
+- Storage Service: Stores state of the apps, including the core components
+
+#### Network Control Plane
+
+Florete network's control plane is built with SDN[^sdn] and TE[^te] principles evolved for agile environment of the heterogeneous cluster with mobile nodes. SDN defines fully centralized architecture of "smart" Controller and "stupid" devices under control. At the other end of the specter is fully decentralized architecture of independent nodes who optimize for themselves (having only local view of the network).
+
+We generalize this in such a way that both centralized and decentralized cases are degenerate in our architecture. The middle case is following: agents at the nodes are not fully independent nor controlled — they have a degree of freedom. They coordinate instead of being controlled, acting within the decision space that they create together, by an entity called Coordinator.
+
+Core distributed services:
+- Coordinator Service: A generalization of SDN Controller; administers the network, producing the decision space for the agents
+- Network Computation Service (NCS): Calculates netowk topology and routes. Extends ideas of traditional Path Computation Element (PCE)[^pce] with topology tasks
+- Identity Service: Manages identity and authentication for all entities. Extends ideas of traditional SPIFFE Server[^spiffe]
+
+TODO(#XXX): consider renaming Network Computation Service (NCS) to Topology & Routing Service (TRS)
+
+[^sdn]: [SDN, Software-defined networking](https://en.wikipedia.org/wiki/Software-defined_networking).
+[^pce]: [PCE](https://en.wikipedia.org/wiki/Path_computation_element), a central element of modern TE systems.
+[^spiffe]: [SPIFFE](https://spiffe.io/), identity control plane for distributed systems.
+
+Coordinator requires some form of consensus, probably with leader election. Certainly this will work only in somewhat stable conditions. When network churn rate is higher than characteristic time of reaching the consensus, it becomes infeasible. This is when the control plane should fall back to fully decentralized mode (using gossip protocols probably). But that isn't our main operating mode for sure: we expect that majority of use cases are within network conditions stable enough to maintain the Coordinator.
+
+##### IP Network Services
+
+There are special network services for apps running in the cluster:
+- IP Exit service: Provides outgoing Internet connections
+- IP Entry service: Provides incoming Internet connections
+
+Exit service may be used by e.g. a web browser to connect to sites using the best available exit route.
+Entry service may be used by e.g. a web server to serve external clients from the Internet.
+
+Both services use load-balancing feature of the cluster. They are analogous to Ingress and Egress Gateways of Kubernetes. But they're essentially distributed.
+
+## Interrete
+
+Interrete is inter-cluster networking. It is built using the same recursive layering principle as the Florete network of the cluster.
+
+It looks similar to IP network services, just for native Florete network. Probably there will be native Florete Ingress and Egress Gateways — distributed services that implement Interrete connectivity. Note: this may be an important RINA aspect not fully grasped by current Florete design: a distributed vertex. It is unclear what it actually is. Is it a layer itself, or something different? At the moment we limit ourselves to distributed services that are actually run in the cluster as workloads. And these gateway services seem to be this distributed vertex.
+
+Interrete is a layer of Florete network that isn't centrally managed. There are a few interconnected clusters that manage their own segments of the layer. And there are borders where they're actually connected.
+
+Design of the Interrete isn't well-thought yet, but it will probably resemble Autonomous Systems of the Internet with important differences:
+- There will be much more user clusters than ASes now, as that's not prerogative of ISPs and large corporations
+- Operating a cluster connected to Interrete should be fully automated and not require technical skills of the owner
+- Dynamic routing between clusters must support high mobility of nodes — it would be normal for connection points to change
+
+Interrete layer will require robust route aggregation method to scale to Internet-level. That's where addressing may be needed (either some new one, John Day suggested some "topological" addressing; or it will be IP-like).
+
+We probably would need to design low-scale Interrete for a few small clusters — and then scale it up.

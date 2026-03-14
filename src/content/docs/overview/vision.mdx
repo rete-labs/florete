@@ -54,7 +54,7 @@ You recall that you forgot to start your robotic vacuum cleaner. You run an app 
 
 How does it work?
 
-Florete maintains private Service Mesh between nodes in the cluster. Like Istio[^smesh] in a Kubernetes cluster. A node can join this service mesh using any medium — be it local Wifi or Internet link. In the latter case it looks like zero-config VPN. It isn't an extra service though — it is built-in core feature of Florete network. Once node is connected, all the cloud services become available, the distributed smart home app just works — it doesn't even know whether you're at home or outdoors.
+Florete maintains private service mesh between nodes in the cluster. Like Istio[^smesh] in a Kubernetes cluster. A node can join this service mesh using any medium — be it local Wifi or Internet link. In the latter case it looks like zero-config VPN. It isn't an extra service though — it is built-in core feature of Florete network. Once node is connected, all the cloud services become available, the distributed smart home app just works — it doesn't even know whether you're at home or outdoors.
 
 [^smesh]: [Istio](https://istio.io/) is a prominent service mesh implementation for Kubernetes.
 
@@ -106,9 +106,9 @@ Visit ReteLabs website for detailed [industrial use cases](https://rete-labs.com
 
 #### Data Plane
 
-First of all, no telecom infrastructure is required. Robots form a Florete Service Mesh over radio links, e.g. long-range WiFi 802.11be with directed antennas. No cellular towers, no access points — just peer-to-peer links.
+First of all, no telecom infrastructure is required. Robots form a Florete network over radio links, e.g. long-range WiFi 802.11be with directed antennas. No cellular towers, no access points — just peer-to-peer links.
 
-The mesh isn't limited to the radio links. If one robot has a satellite or 5G link, the whole group can use it — automatically, with load balancing and QoS. If that link fails, connections migrate to another node in sub-second time. No disconnects.
+The network isn't limited to the radio links. If one robot has a satellite or 5G link, the whole group can use it — automatically, with load balancing and QoS. If that link fails, connections migrate to another node in sub-second time. No disconnects.
 
 #### Control Plane
 
