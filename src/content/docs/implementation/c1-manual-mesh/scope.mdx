@@ -1,0 +1,138 @@
+---
+title: Scope
+description: Scope of the C1 milestone "Manual Mesh"
+---
+
+## Goals
+
+### Use Case
+
+The resulting Florete system must support following use case:
+- Establish Florete network between nodes at home network (behind NAT) and public Internet
+- Publish HTTP and SSH servers (over TCP) from a node as Florete services
+- Publish HTTP and SSH servers from hosts in IP LAN as Florete services
+- Connect to published services by clients from any nodes in the network
+
+Publishing is split into two parts: local per-node proxy and a gateway in IP LAN. The latter may be an optional goal, but enables useful scenarios (smart home devices).
+
+**Success criteria**: the use case works stable for daily use (3-5 nodes in a network, 1-2 published services always online).
+
+### Service Mesh
+
+In order to create a service mesh, we need per-node proxies. This is common service mesh design pattern we should follow.
+
+Per Florete design, this mesh is layered, and cluster layer must be using basic layers, i.e. links, to operate. So the proxy must include 2 kinds of vertices:
+- cluster vertex: provides Portal APIs for user workloads (like HTTP and SSH clients and servers), i.e. form the service mesh in traditional meaning
+- link vertex: provides Portal APIs for cluster vertex to form peer-to-peer links between nodes
+
+How they should be implemented - within one workload or as separate workloads - is a design decision to be made. The Portal API may be in-process or IPC of some form - TBD.
+
+#### Cluster Vertex
+
+Let's look into core services of this vertex.
+
+**Transport service** originates and terminates traffic for local clients. Mandatory features:
+- stream (TCP-like)
+- mutual authentication, confidentiality & integrity (mTLS-like): required for Zero Trust architecture
+
+Optional:
+- dgram (UDP-like): needed for recursiveness and other apps that are not in scope of C1
+- multi-stream (QUIC-like): can be useful for some apps, but not in C1
+- convergent (streams + dgram, QUIC-like): same
+
+**Connection service** uses link vertex-provided Portal API to establish connections (links). Mandatory features:
+- Originate or accept connections
+- Manual role configuration (originator/acceptor)
+
+Optional, out of scope for C1:
+- Automatic role selection and connection deduplication
+- Disconnect detection
+- Reconnect functionality
+
+**Forwarding service** handles packets: locally originated or destined, and transit packets. Mandatory features:
+- addressless, label-based forwarding engine (transport's ConnectionId + Forward and Backward labels)
+
+#### Link Vertex
+
+Let's look into core services of this vertex.
+
+**Transport service** has mandatory features:
+- dgram (UDP-like)
+- mutual authentication, confidentiality & integrity (mTLS-like)
+
+Requiring dgram service is already a design decision, but rather obvious one: stream over stream usually works bad, so we aim for sound combination at the beginning. The transport of link vertex itself may be stream-based though and provide dgram service on top - not optimal, but possible.
+
+**Forwarding service** is degenerate: no special routing info is needed, packets are just sent to / read from underlying medium of the link. Target medium for C1: UDP/IP.
+
+Design hint: single link vertex can support multiple links in a star-like topology. Importantly, there is no routing between the links - it is a task of cluster vertex. So, links in a such mutli-link link vertex are independent. Then 1-1 mapping of published services to link peers must be maintained (just like with multiple single-link link vertex instances).
+
+Actual published services in links will be cluster vertices, usually one per each link end. This may be taken in account and optimized for (i.e. no need for multi-service links really - they are not useful in practice).
+
+#### Local Proxy Interface
+
+We need local proxy interface into cluster layer for user workloads running at the node. The scope limitation of C1: user workloads use TCP/IP. Later on we may want to add support for UDP, local sockets, shared memory and whatever other means (e.g. MASQUE).
+
+We need the ability to map workload, its identity, and the destination identity for outgoing connections.
+
+#### Gateway Interface
+
+We need an ability to support clients and servers from IP LAN - like smart home devices that cannot be nodes for some reason. Later on we'd develop a Distributed IP Gateway Service, but for the beginning we may just expose our local proxy to the LAN.
+
+### Configuration
+
+We need config files for manual configuration. And, optionally, CLI. What must be configurable:
+- identities of everything (cluster vertices and workloads that use them)
+- UDP links of link vertices (IP and ports)
+- location of cluster vertices at link vertices
+- location of services at cluster vertices (no service discovery, so this config should be duplicated among all nodes)
+
+Optional: automated config deploy. It would be nice to have - but may be too costly to implement in C1.
+
+### Dev Env
+
+We need a local dev environment for the system. Minimally we can have it emulated as multiple processes at the same PC. Optionally, we may implement container-based testbed (container nodes). This testbed will be mandatory later, but for initial development of C1 may be omitted - until we start testing disconnects/reconnects, packet loss and so on.
+
+### Test Env
+
+We need a "production" environment that is not limited to a single PC nor local containers/VMs. Minimally we require cloud VM allowing Florete connections from dev machines. Optimally we'd need multiple such VMs interconnected by Florete and a CI/CD process to deploy to them.
+
+## Development Constraints
+
+Implementation must be done mainly in Rust language, in an async fashion using Tokio runtime.
+
+## Evolution Constraints
+
+We must design the C1 version in a way to be extensible for future work, but without over-engineering.
+
+### Security
+
+We could have saved on security features to speed up C1 release. And also for business demo of robots there is no need for security really (but in production it will be required, obviously).
+
+But there are following concerns:
+- not doing Zero Trust from ground up can result in architectural oversights and non-upgradable solutions (e.g. we could have used insecure MPLS, but it isn't clear how to secure it properly later)
+- we're going to dogfood the release, using it in public Internet; security becomes important
+
+So we must produce a design and implementation that is secure from day one.
+
+### Link
+
+For future evolution there is a requirement to support various link protocols:
+- VPN tunnels (WireGuard, OpenVPN, VLESS + Reality, Hysteria, TUIC and others)
+- QUIC connections
+- Custom protocols (e.g. for raw radio links we cannot use QUIC, need special ARQ-based protocol)
+
+So we need a design where we'd be able to integrate different link protocols easily. But for C1 we need only single link protocol (which one - to be determined during design phase).
+
+### Android & iOS nodes
+
+We would like to add support for smartphones. This isn't in scope for C1, but still a rather near-term goal to make Florete useful for dogfooding as early as possible. So we need to design our implementation an a way that is portable to mobile OSes without much effort.
+
+## No-Goals
+
+We don't want to check "recursive hypothesis": it was successfully checked in previous prototype, the approach is working and with known limitations.
+
+We don't want to build abstract Portal APIs in Rust. That was checked and it works, but is very clunky. It seems Rust isn't designed for such trait-based APIs. It works best with typed, struct-based APIs.
+
+We don't want to make an execution environment for workloads and dynamic components etc. This task is out of scope for C1.
+
+We are not doing control plane features, service discovery and various adaptive mechanics in C1 (like disconnect detections and so on).
