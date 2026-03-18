@@ -3,6 +3,7 @@
     "pages": [
         "index",
         "overview",
+        "implementation",
         "contributing",
         "legal/license"
     ],
