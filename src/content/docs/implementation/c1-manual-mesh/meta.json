@@ -1,6 +1,7 @@
 {
     "pages": [
-        "scope"
+        "scope",
+        "design"
     ],
     "defaultOpen": true
 }

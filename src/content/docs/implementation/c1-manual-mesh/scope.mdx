@@ -123,9 +123,11 @@ For future evolution there is a requirement to support various link protocols:
 
 So we need a design where we'd be able to integrate different link protocols easily. But for C1 we need only single link protocol (which one - to be determined during design phase).
 
-### Android & iOS nodes
+### Cross-platform
 
-We would like to add support for smartphones. This isn't in scope for C1, but still a rather near-term goal to make Florete useful for dogfooding as early as possible. So we need to design our implementation an a way that is portable to mobile OSes without much effort.
+For C1, our target OSes are Linux and MacOS. But later on we'd like to support Windows and mobile OSes (Andoid, iOS, even HarmonyOS).
+
+Especially Android support is a rather near-term goal to make Florete useful for dogfooding as early as possible. So we need to design our implementation an a way that is portable to different OSes without much effort.
 
 ## No-Goals
 
