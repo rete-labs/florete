@@ -1,0 +1,74 @@
+---
+title: New GitHub Repo
+description: How to create new project repositories on GitHub
+---
+
+This document describes the process for creating a new repository on GitHub. The instructions are organized by project type and can be extended for other languages and frameworks in the future.
+
+## Rust Projects
+
+### Environment Setup
+
+Before creating a new Rust repository, ensure your environment is ready.
+
+1. Install [cargo-generate](https://crates.io/crates/cargo-generate):
+
+	```sh
+	cargo install cargo-generate
+	```
+
+2. Install [GitHub CLI](https://cli.github.com/):
+
+	- **macOS:**
+
+	  ```sh
+	  brew install gh
+	  ```
+
+	- **Linux:**
+
+	  Install from your distribution's repository or follow the [official instructions](https://cli.github.com/).
+
+3. Set up authentication in GitHub CLI:
+
+	```sh
+	gh auth login
+	```
+
+	and follow the instructions provided by the command.
+
+### Repository Creation
+
+<Callout title="WARNING" type="warn">
+  For now only pure bin or lib projects are supported.
+  If you need to create a project with workspace or both bin+lib configuration, please create it manually.
+</Callout>
+
+1. Generate a new repository from the template:
+
+	```sh
+	cargo generate gh:rete-labs/rust-template
+	```
+
+	The command will prompt for `Project Name` and `Project Description`. These values will be used to fill placeholders in the template.
+
+	A new repository will be created in a subdirectory with the provided `Project Name`.
+	`Project Name` must follow kebab-case naming conventions (e.g., `my-cool-project`).
+
+	By default, a binary project is created. To create a library project, add `--lib`:
+
+	```sh
+	cargo generate gh:rete-labs/rust-template --lib
+	```
+
+	For more details, see the [cargo-generate documentation](https://cargo-generate.github.io/cargo-generate/index.html).
+
+2. Change into the created repository directory. You will find all files needed for the initial commit. Commit them.
+
+3. Create the repository on GitHub and push the code:
+
+	```sh
+	gh repo create rete-labs/<my-cool-project> --source=. --push
+	```
+
+Fill in `<my-cool-project>` with the desired repository name.
