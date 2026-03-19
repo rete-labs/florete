@@ -4,7 +4,8 @@
         "commit-messages",
         "git-workflow",
         "code-review",
-        "ai-usage"
+        "ai-usage",
+        "create-github-repo"
     ],
     "defaultOpen": true
 }
