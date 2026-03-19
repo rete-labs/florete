@@ -1,0 +1,41 @@
+---
+title: Design
+description: Design of the C1 milestone "Manual Mesh"
+---
+
+## Key Challenge
+
+Key challenge of the foundational work lies in how to represent vertices and Portal APIs between them, and how to satisfy requirement to support different link protocols easily. In our previous attempt we implemented vertices as async actors within Tokio runtime, and Portal API was actor API, channel-based, with data path (connection) implemented as a trait object. This has following drawbacks:
+- Cluster vertex, with QUIC endpoint for transport service, needs UDP socket to work on: that's natural for any implementation because QUIC runs over UDP sockets. Moreover, almost any transport endpoint will require some sort of a datagram socket - e.g. TCP over IP, or DTLS over UDP, or WireGuard over UDP.
+- Implementing a socket-like structure in a userspace properly is hard: in terms of async Rust, you need a waker to notify when sending or receiving is ready. And, as we're using quinn-rs connections with dgram service for links, we ended up with `AsyncUdpSocket` over `send_datagram`/`receive_datagram` methods of a link vertex's QUIC endpoint. The QUIC API lacks the needed waker, implementation works, but busy-waiting (`poll_send` is always ready). And fixing this probably requires rewriting/extending top-level QUIC APIs of quinn exactly for this niche use case - a task not feasible for the time being.
+- What is even more important, this design of vertices as in-process actors isn't extendable really with other link protocols: it requires re-implementing them in async Rust! A task that isn't feasible either.
+
+## New Solution
+
+Instead of trying to implement the socket-like structure in the userspace, we can use actual kernel-provided socket! This brilliantly solves both problems:
+- we get real socket structure for the cluster vertex to use
+- we can separate link implementations to external processes, enabling modular desing and support for virtually any link protocol
+
+The main drawback of this new approach is performance: copying of the packet to and from userspace multiple times, context switches, calls into IP stack. Theoretically it can be solved using zero-copy buffers (AF_XDP?) and eBPF, but requires deep dive into these technologies. Hopefully, we can leave this for later, performance isn't a goal for our C1 milestone.
+
+## Design Sketch
+
+...
+
+{
+/*
+List of known proxy technologies:
+- HTTP and HTTPS proxies (they differ actually)
+- SOCKS proxy
+- transparent TCP proxy (manually configured per connection)
+- TUN-based IP interface
+- traffic interception using network namespaces, eBPF and other means
+
+
+Options are:
+- HTTP and HTTPS proxies,
+- SOCKS proxy,
+- transparent TCP proxy.
+
+The gateway can be a separate workload and use local proxy interface, or it can be integrated into the proxy, or even be the only interface of the proxy - this a design decision to be made. */
+}
