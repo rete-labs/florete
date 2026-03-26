@@ -1,0 +1,139 @@
+---
+title: Writing Docs
+description: How to maintain docs at florete.tech
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+All documentation of the Florete project is located at [https://florete.tech](/) website. This is a [Fumadocs](https://fumadocs.dev) Web application compiled statically and served by Github Pages.
+
+## Setup Environment
+
+Make sure you have a working Node.js environment, install it via your package manager or [manually](https://nodejs.org/en/download). Then follow these steps:
+
+<Steps>
+<Step>
+Clone the docs repository:
+```bash
+git clone git@github.com:rete-labs/florete.git
+```
+</Step>
+<Step>
+Get into the source directory:
+```bash
+cd florete/src
+```
+</Step>
+<Step>
+Install dependencies:
+```bash
+npm install --loglevel info
+```
+</Step>
+<Step>
+Run development version of the site locally:
+```bash
+npm run dev
+```
+</Step>
+</Steps>
+
+Now you should be able to access the local copy of website at https://localhost:3000.
+
+<Callout title="Local build">
+In order to produce a build similar to what is served by Github Pages, use:
+```bash
+npm run build
+npm run start # to serve the local build
+```
+This may be needed for debugging. Also see `.github/deploy.yaml` for exact CI setup.
+</Callout>
+
+## Write Docs
+
+Docs should be written in MDX format (a superset of Markdown that allows custom tags) and placed within `src/content/docs` hierarchy. Learn Fumadocs basics:
+- [Creating Pages](https://www.fumadocs.dev/docs/page-conventions)
+- [Writing MDX](https://www.fumadocs.dev/docs/markdown)
+- [Built-in UI components](https://www.fumadocs.dev/docs/ui/components)
+
+At the moment we also enabled [Mermaid](https://www.fumadocs.dev/docs/markdown/mermaid) for diagrams, and created custom `<SiblingCards>` and `<ImageBox>` components. See `src/mdx-components.tsx` file for the full list.
+
+<Callout title="Use topic branch">
+Make sure to create a [topic branch](../git-workflow/#topic-branches) for your changes!
+</Callout>
+
+### Creating Single Doc
+
+<Steps>
+<Step>
+Determine where to put the new doc within `src/content/docs` hierarchy, the docs `<group>` directory.
+</Step>
+<Step>
+Create `<group>/my-new-doc.mdx` file. Make sure to use short `kebab-case` filename, as it is used as a slug in the URL.
+</Step>
+<Step>
+Add the reference to the doc filename (without extension!) to `<group>/meta.json` in `pages` key:
+```js
+{
+    "pages": [
+        "other-doc",
+        "my-new-doc" // [!code ++]
+    ]
+}
+```
+</Step>
+<Step>
+Write frontmatter of the doc: title and description. They should be reasonably concise, check that the title is rendered nicely in the sidebar, and both are rendered nicely in the card list of the group (`localhost:3000/.../<group>`). It is recommended that each of them fit in a signle line of the card, for example see [Overview group](/docs/overview).
+</Step>
+</Steps>
+
+### Creating Group of Docs
+
+<Steps>
+<Step>
+Determine where to put the new doc group within `src/content/docs` hierarchy, the `<supergroup>` directory.
+</Step>
+<Step>
+Create `<supergroup>/my-new-group` directory and `<supergroup>/my-new-group/index.mdx` file. Make sure to use short `kebab-case` dirname, as it is used as a slug in the URL.
+</Step>
+<Step>
+Add the reference to the group directory to `<supergroup>/meta.json` in `pages` key:
+```js
+{
+    "pages": [
+        "other-doc",
+        "my-new-group" // [!code ++]
+    ]
+}
+```
+</Step>
+<Step>
+Write frontmatter of the group's `index.mdx`: title and description. They should be reasonably concise, check that the title is rendered nicely in the sidebar, and both are rendered nicely in the card list of the supergroup (`localhost:3000/.../<supergroup>`). It is recommended that each of them fit in a signle line of the card, for example see [Overview group](/docs/overview).
+</Step>
+<Step>
+Create `my-new-group/meta.json` file, use it to reference doc filenames of the group in `pages` key. Also decide whether the group should be shown as open or collapsed in the sidebar at first page load:
+```js
+{
+    "pages": [
+        "first-new-doc",
+        "second-new-doc",
+    ],
+    "defaultOpen": true
+}
+```
+</Step>
+<Step>
+Add `<SiblingCards>` component to the group's `index.mdx` page so that all subdocuments are nicely referenced from it as cards:
+```mdx
+<SiblingCards path="/docs/<...>/my-new-group" />
+```
+</Step>
+</Steps>
+
+## Deploy Docs
+
+After making sure that your changes are working fine in your local environment, create Pull Request and prepare it for merging (rebase on top of the `main` branch).
+
+Once review is passed, the maintainer has to:
+- manually deploy the website from the topic branch, check that it works fine (if not - restore it by deploying from `main` branch)
+- rebase and merge to `main` branch (will trigger auto-deploy, check that it succeeded, and website works fine)
