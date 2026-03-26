@@ -1,0 +1,67 @@
+---
+title: "0001: Record ADRs"
+---
+
+## Status
+
+Accepted
+
+## Context
+
+Architectural decisions in fast-moving projects are often made implicitly, discussed in chats or PRs, and forgotten. This creates friction for new contributors, inconsistent implementation across modules, and loss of institutional knowledge when team members change.
+
+We need a lightweight, searchable, and versioned way to capture *why* key architectural choices were made — not just *what* was built.
+
+## Decision
+
+All significant architectural decisions in the Florete project will be documented as Architecture Decision Records (ADRs) using the [project template](template.mdx).
+
+The document title should begin with a verb in the infinitive form: it should answer the question "what to do?", i.e., what decision was made. To reference Architecture decisions, use the form `ADR-XXXX: Title` with a link if necessary. For example:
+```md
+[ADR-0001: Record ADRs](https://florete.tech/docs/contributing/adr/0001-record-adrs/)
+```
+
+### ADR Statuses
+
+- **Proposed** - Under discussion
+- **Accepted** - Decision made and implemented
+- **Rejected** - Decision was considered and rejected (next paragraph in this ADR must refer to the reason for rejection)
+- **Obsoleted by `[ADR-XXXX: Title](link)`** - Updated or replaced by newer ADR
+
+### How Statuses Are Assigned
+
+For straightforward decisions with clear consensus, ADRs may be submitted directly with **Accepted** status. If a decision requires extended community discussion or experimentation, start with **Proposed** and update to **Accepted** once resolved. When a newer ADR supersedes an existing one, update the older record's status to **Obsoleted by `[ADR-XXXX: Title](link)`** to maintain a clear decision lineage.
+
+## Rationale
+
+**Why ADRs?** The ADR practice, introduced by Michael Nygard[^nygard], provides a minimal, git-friendly format for documenting architectural rationale. It balances rigor with maintainability — critical for open-source projects where context must travel with code.
+
+**Why this template?** We started with Nygard's original template[^templ] but found that real-world use cases required two additions:
+- An explicit Rationale section to compare alternatives
+- An explictit section for external references: we add it via Markdown footnotes[^mf], which auto-generate a clean "Footnotes" section on render
+
+We evaluated other templates[^clear][^milad], but most were either too verbose or lacked fields we needed. This custom template reflects our team's experience and can evolve via future ADRs if requirements change.
+
+[^nygard]: Michael Nygard (November 2011). ["Documenting Architecture Decisions"](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions)
+
+[^templ]: [Decision record template by Michael Nygard](https://github.com/joelparkerhenderson/architecture-decision-record/blob/main/locales/en/templates/decision-record-template-by-michael-nygard/index.md)
+
+[^clear]: [Decision record template by ClearCove Software](https://clearcove.ca/2017/12/architecture-decision-records)
+
+[^milad]: Milad Afkhami (July 2023). ["What Is an ADR (Architecture Decision Record) Document?"](https://milad-afkhami.com/blog/adr)
+
+[^mf]: [Markdown footnotes](https://blog.markdowntools.com/posts/footnotes-in-markdown)
+
+## Consequences
+
+**Benefits**:
+- Reduces ambiguity and rework by making decision rationale explicit
+- Helps contributors understand why the system is structured in a certain way
+- Creates a reusable knowledge base for future architectural discussions
+- Enables consistent style across independently owned components
+
+**Trade-offs**:
+- Slightly higher overhead to propose changes (requires documentation + review)
+- Requires discipline to keep ADRs updated as the system evolves
+
+We believe the long-term maintainability and onboarding benefits significantly outweigh the initial friction.

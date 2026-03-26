@@ -1,0 +1,57 @@
+---
+title: ADRs
+description: Architecture Decision Records
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+This section stores Architecture Decision Records (ADRs) made at the Florete project.
+
+## What Is an ADR?
+
+An ADR represents a significant architectural decision, its context, rationale and consequences. Think of it as a "decision log" for why our systems are built in a certain way.
+
+## Current ADRs
+
+| Number | Title | Status | Date |
+|--------|-------|--------|------|
+|  0001  | [Record ADRs](0001-record-adrs/) | Accepted | 2026-03-26 |
+
+## Proposing a New ADR
+
+<Steps>
+<Step>
+Copy `template.mdx` to `XXXX-short-title.mdx` (next sequential number)
+</Step>
+<Step>
+Fill in the template
+</Step>
+<Step>
+Update the table of ADRs above and in `meta.json`
+</Step>
+<Step>
+Submit a PR for review
+</Step>
+</Steps>
+
+The document title should begin with a verb in the infinitive form: it should answer the question "what to do?", i.e., what decision was made. To reference architectural decisions, use the form `ADR-XXXX: Title` with a link if necessary. For example:
+```md
+[ADR-0001: Record ADRs](https://florete.tech/docs/contributing/adr/0001-record-adrs/)
+```
+
+## ADR Statuses
+
+- **Proposed** —  Under discussion
+- **Accepted** —  Decision made and implemented
+- **Rejected** —  Decision considered and rejected (such ADR must refer to the reason for rejection)
+- **Obsoleted by `[ADR-XXXX: Title](link)`** — Updated or replaced by newer ADR
+
+### How Statuses Are Assigned
+
+For straightforward decisions with clear consensus, ADRs may be submitted directly with **Accepted** status. If a decision requires extended community discussion or experimentation, start with **Proposed** and update to **Accepted** or **Rejected** once resolved. When a newer ADR supersedes an existing one, update the older record's status to **Obsoleted by `[ADR-XXXX: Title](link)`** to maintain a clear decision lineage.
+
+<Callout title="Status workflow">
+Simple decisions — start as **Accepted**.<br/>
+Controversial or exploratory ones — start as **Proposed**.<br/>
+When superseding — mark previous ADR as **Obsoleted by `[ADR-XXXX: Title](link)`**.
+</Callout>
