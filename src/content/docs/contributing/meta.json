@@ -3,6 +3,7 @@
         "getting-started",
         "../legal/cla",
         "workflows",
-        "development"
+        "development",
+        "adr"
     ]
 }
