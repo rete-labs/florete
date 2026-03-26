@@ -5,7 +5,8 @@
         "git-workflow",
         "code-review",
         "ai-usage",
-        "create-github-repo"
+        "create-github-repo",
+        "writing-docs"
     ],
     "defaultOpen": true
 }
