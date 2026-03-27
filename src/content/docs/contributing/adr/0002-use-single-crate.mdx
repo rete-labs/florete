@@ -1,0 +1,52 @@
+---
+title: "0002: Use Single-Crate Project"
+---
+
+## Status
+
+Accepted
+
+## Context
+
+We need to define structure of `flor` — the implementation of the Florete `C1. Manual Mesh` milestone. We want to maintain code quality, enable potential future use of the core logic in other binaries, but we do not want to expose an SDK at this stage. We also want to avoid the complexity of managing multiple crates with separate versions in a single repository. And we want to publish the project to crates.io.
+
+## Decision
+
+We will structure the project as a **single Cargo crate `flor`** containing both a library and one or more binaries.
+
+We will **publish this crate to crates.io**, explicitly marking the library as internal for `flor` developers, not a public SDK for third-party applications.
+
+## Rationale
+
+We considered four alternatives:
+
+1. **Single binary crate** — everything in `src/main.rs` with internal modules.<br/>
+   *Discarded* because it is impossible to reuse modules in another repository.
+
+2. **Workspace with separate `flor` and `flor-core` crates** — multiple crates.<br/>
+   *Discarded* because it introduces unnecessary complexity for a small codebase. Also encourages adding more crates in a monorepo, which complicates tracking changes and versioning later. We prefer multi-repo approach in this case.
+
+3. **Two separate repositories `flor` and `flor-core`** — multi-repo.<br/>
+   *Discarded* because it introduces unnecessary complexity for a small codebase. Also we want to postpone decision of what binaries except `flor` will we provide (and will they need separate repositories) to the moment when we have a working prototype.
+
+3. **Single crate with library and binaries** — as chosen.<br/>
+   *Accepted* because it gives a clear separation of concerns, keeps versioning simple, and still allows adding multiple binaries later without refactoring. It also allows our other repositories to depend on the library if needed in the future.
+
+Regarding crates.io publishing: while `flor` is not a developer tool (it’s a network service mesh for end users), and delivering it via crates.io is not a primary distribution channel, at early stages it is nice to have. Having the library published is also convenient: this shows API at docs.rs, and ability to depend on it without git or local path. Most importantly, this follows open-source practice and adds public credibility, which is also important for community building.
+
+## Consequences
+
+**Benefits**:
+- Development, testing and versioning are simple because all code is in one crate.
+- Creating library of reusable components encourages better design for them (dependency inversion).
+- Other Florete repositories can depend on the crate. This encourages multi-repo evolution instead of monorepo, which we find more appealing.
+- It is possible to depend on `flor` library directly, without git or path dependencies.
+- Users can install the binary via `cargo install flor`.
+- Publication at crates.io increases trust by the community.
+
+**Trade-offs**:
+- More efforts are needed to make components reusable and independent.
+- External users may confuse the library with SDK for making applications with Florete networking.
+- The library is exposed publicly, and external users may depend on it despite warnings. We must be vigilant about rejecting such uses.
+
+We accept this extra library effort for better code quality. Concerns about misuse are addressed by explicitly specifying what this library is and isn't (not an SDK), and for whom it is intended (developers of the Florete project itself, not network users).
