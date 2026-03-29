@@ -3,6 +3,8 @@ title: New GitHub Repo
 description: How to create new project repositories on GitHub
 ---
 
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
 This document describes the process for creating a new repository on GitHub. The instructions are organized by project type and can be extended for other languages and frameworks in the future.
 
 ## Rust Projects
@@ -11,31 +13,30 @@ This document describes the process for creating a new repository on GitHub. The
 
 Before creating a new Rust repository, ensure your environment is ready.
 
-1. Install [cargo-generate](https://crates.io/crates/cargo-generate):
-
+<Steps>
+<Step>
+Install [cargo-generate](https://crates.io/crates/cargo-generate):
+```sh
+cargo install cargo-generate
+```
+</Step>
+<Step>
+Install [GitHub CLI](https://cli.github.com/):
+- **macOS:**
 	```sh
-	cargo install cargo-generate
+	brew install gh
 	```
-
-2. Install [GitHub CLI](https://cli.github.com/):
-
-	- **macOS:**
-
-	  ```sh
-	  brew install gh
-	  ```
-
-	- **Linux:**
-
-	  Install from your distribution's repository or follow the [official instructions](https://cli.github.com/).
-
-3. Set up authentication in GitHub CLI:
-
-	```sh
-	gh auth login
-	```
-
-	and follow the instructions provided by the command.
+- **Linux:**<br/>
+	Install from your distribution's repository or follow the [official instructions](https://cli.github.com/).
+</Step>
+<Step>
+Set up authentication in GitHub CLI:
+```sh
+gh auth login
+```
+and follow the instructions provided by the command.
+</Step>
+</Steps>
 
 ### Repository Creation
 
@@ -44,31 +45,34 @@ Before creating a new Rust repository, ensure your environment is ready.
   If you need to create a project with workspace or both bin+lib configuration, please create it manually.
 </Callout>
 
-1. Generate a new repository from the template:
+<Steps>
+<Step>
+Generate a new repository from the template:
+```sh
+cargo generate gh:rete-labs/rust-template
+```
 
-	```sh
-	cargo generate gh:rete-labs/rust-template
-	```
+The command will prompt for `Project Name` and `Project Description`. These values will be used to fill placeholders in the template.
 
-	The command will prompt for `Project Name` and `Project Description`. These values will be used to fill placeholders in the template.
+A new repository will be created in a subdirectory with the provided `Project Name`. `Project Name` must follow kebab-case naming conventions (e.g., `my-cool-project`).
 
-	A new repository will be created in a subdirectory with the provided `Project Name`.
-	`Project Name` must follow kebab-case naming conventions (e.g., `my-cool-project`).
-
-	By default, a binary project is created. To create a library project, add `--lib`:
-
-	```sh
-	cargo generate gh:rete-labs/rust-template --lib
-	```
-
-	For more details, see the [cargo-generate documentation](https://cargo-generate.github.io/cargo-generate/index.html).
-
-2. Change into the created repository directory. You will find all files needed for the initial commit. Commit them.
-
-3. Create the repository on GitHub and push the code:
-
-	```sh
-	gh repo create rete-labs/<my-cool-project> --source=. --push
-	```
-
+By default, a binary project is created. To create a library project, add `--lib`:
+```sh
+cargo generate gh:rete-labs/rust-template --lib
+```
+For more details, see the [cargo-generate documentation](https://cargo-generate.github.io/cargo-generate/index.html).
+</Step>
+<Step>
+Change into the created repository directory. You will find all files needed for the initial commit. Commit them.
+</Step>
+<Step>
+Create the repository on GitHub and push the code:
+```sh
+gh repo create rete-labs/<my-cool-project> --source=. --public --push
+```
 Fill in `<my-cool-project>` with the desired repository name.
+<Callout title="Visibility">
+You can specify `--public`, `--internal` or `--private` to control visibility of the new project.
+</Callout>
+</Step>
+</Steps>
