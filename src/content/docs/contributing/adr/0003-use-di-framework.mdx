@@ -1,0 +1,107 @@
+---
+title: "0003: Use DI Framework"
+---
+
+## Status
+
+Accepted
+
+## Context
+
+The Dependency Injection (DI) concept is widely used in OOP languages. It helps address common issues such as tight coupling, object lifecycle management, and improves maintainability, scalability, and unit testing.
+
+In our case, the question is not whether to use DI as a concept, but whether it makes sense to adopt a dedicated DI framework in Rust. We want to evaluate if such frameworks are mature and beneficial, or if managing dependencies manually would be a simpler and more idiomatic approach.
+
+## Decision
+
+We decided to adopt the Shaku[^shaku] framework.
+
+## Rationale
+
+There are multiple DI frameworks available in Rust, but none of them are widely recognized as a community standard. This is likely due to the nature of Rust itself: it is not a traditional OOP language, and its ownership and lifetime system already enforces many constraints at compile time. This can both complicate DI usage and reduce some of its benefits.
+
+When evaluating frameworks, we used the following criteria:
+- **Popularity**: At least 10,000 total downloads on [crates.io](https://crates.io)
+- **Maintenance**: The project must be actively maintained
+- **Maturity**: The project should be stable and time-tested
+- **Documentation**: Clear and comprehensive documentation
+- **Ease of use**: Simple integration and developer-friendly API
+
+We evaluated the following options:
+
+1. **dill**[^dill]
+
+	Pros:
+	- Simple and intuitive API
+	- Actively maintained
+		
+	Cons:
+	- Dependency graph is built and validated at runtime
+	- Errors may only surface during execution rather than at compile time
+
+2. **nject**[^nject]
+
+	Pros:
+	- Compile-time dependency graph validation
+	- Claims zero runtime overhead
+
+	Cons:
+		- Relatively complex API
+
+3. **Shaku**[^shaku] - Accepted
+
+	Pros:
+	- Compile-time dependency graph validation
+	- Simple and intuitive API
+	- Mature project with significant adoption
+	- Used in production systems
+	- Built-in thread safety
+
+	Cons:
+	- Limited recent activity (last commit about a year ago)
+	- However, the maintainer has stated the project is not abandoned and remains open to contributions
+
+4. **aerosol**[^aerosol]
+
+	Pros:
+	- Simple API
+	- Supports asynchronous dependency construction
+
+	Cons:
+	- Does not significantly differ from manual dependency management
+	- Mainly provides a standardized wrapper rather than a full DI solution
+
+5. **Bevy ECS**[^bevy_ecs]
+
+	This is not a DI framework, but an implementation of the Entity Component System (ECS) pattern. It was considered as it is sometimes suggested (e.g., in community discussions) as an alternative to DI.
+
+	However, ECS solves a different class of problems. It focuses on separating data from behavior and organizing systems around data queries.
+
+	Using ECS for dependency management would introduce unnecessary complexity and reduce code clarity.
+
+	In short:
+	- DI: `I have an object → it needs dependencies → I provide them.`
+	- ECS: `I have a world of data → systems query what they need.`
+
+## Consequences
+
+### Benefits
+
+- Compile-time validation of dependency graph reduces runtime errors
+- Improved modularity and testability
+- Clear and explicit dependency wiring
+- Reduced boilerplate compared to manual dependency management
+- Thread-safe by design, so it can be used in async runtime
+
+### Trade-offs
+
+- Additional abstraction layer over idiomatic Rust patterns
+- Risk associated with lower ecosystem standardization
+- Potential limitations due to slower project evolution
+- May not fit all use cases as naturally as manual dependency wiring
+
+[^shaku]: [Shaku on crates.io](https://crates.io/crates/shaku)
+[^dill]: [Dill on crates.io](https://crates.io/crates/dill)
+[^nject]: [Nject on crates.io](https://crates.io/crates/nject)
+[^aerosol]: [Aerosol on crates.io](https://crates.io/crates/aerosol)
+[^bevy_ecs]: [Bevy ECS on crates.io](https://crates.io/crates/bevy_ecs)
