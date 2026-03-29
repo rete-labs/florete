@@ -1,6 +1,7 @@
 {
     "pages": [
         "0001-record-adrs",
-        "0002-use-single-crate"
+        "0002-use-single-crate",
+        "0003-use-di-framework"
     ]
 }
