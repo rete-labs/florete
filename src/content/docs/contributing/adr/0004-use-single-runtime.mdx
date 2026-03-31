@@ -1,0 +1,50 @@
+---
+title: "0004: Use Single Tokio Runtime for C1"
+---
+
+## Status
+
+Accepted
+
+## Context
+
+The `flor` daemon needs an async runtime for both data plane operations (packet forwarding, QUIC connections) and control/management tasks (e.g. configuration updates). We must decide how many Tokio runtimes to use and their threading models.
+
+## Decision
+
+For the C1 milestone, we will use **a single multi‑threaded Tokio runtime**. The runtime will be configured with a number of worker threads equal to the number of CPU cores (the default).
+
+We explicitly note that this is a temporary choice. When later milestones introduce Control Plane itself, we will reevaluate and likely adopt the two‑runtime architecture.
+
+## Rationale
+
+We evaluated two main options:
+
+1. **Two runtimes**: a multi‑threaded runtime for the data plane, and a single‑threaded runtime for control/management. This is common in production systems (e.g., ztunnel[^ztunnel]) to isolate high‑throughput data paths from management tasks that may block or require separate scheduling.
+
+    Pros:
+    - Industry standard: production-tested approach for splitting data plane and control plane.
+
+    Cons:
+    - Implementation complexity.
+
+2. **Single multi‑threaded runtime** (accepted): all tasks run on the same set of worker threads.
+
+	Pros:
+	- Simplicity: one runtime is easier to set up, tune, and debug. No need to coordinate between runtimes or decide which task belongs where.
+    - Sufficient for C1: its scope has no Control Plane tasks. Configuration is manual and static, the only management is reading config files at startup and handling signals.
+
+	Cons:
+    - Will need to refactor into double-runtime architecture later.
+
+## Consequences
+
+**Benefits**:
+- Implementation and testing for C1 are straightforward. Task spawning uses the same handle everywhere.
+
+**Trade-offs**:
+  - Refactoring into two-runtime architecture will be a significant effort, overall probably larger than adopting it from day one. But we explicitly offload this effort to later stages.
+
+We will revisit this decision during the design of the C2 milestone, when Control Plane features are introduced.
+
+[^ztunnel]: [Architecture of ztunnel](https://github.com/istio/ztunnel/blob/master/ARCHITECTURE.md), the daemon of Istio's Ambient Mesh.
