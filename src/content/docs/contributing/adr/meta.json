@@ -2,6 +2,7 @@
     "pages": [
         "0001-record-adrs",
         "0002-use-single-crate",
-        "0003-use-di-framework"
+        "0003-use-di-framework",
+        "0004-use-single-runtime"
     ]
 }
