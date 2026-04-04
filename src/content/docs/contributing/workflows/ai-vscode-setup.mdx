@@ -1,0 +1,77 @@
+---
+title: AI VS Code Setup
+description: How to configure VS Code extensions to use AI agents for development
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+This guide walks you through setting up an AI coding assistant in VS Code. You can choose between cloud-based providers or run models locally.
+
+## Extension Setup
+
+<Steps>
+<Step>
+### Install an AI Extension
+
+Several AI coding assistant extensions are available for VS Code, including [Roo Code](https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline), [Cline](https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev), and [Continue](https://marketplace.visualstudio.com/items?itemName=Continue.continue). This guide focuses on **Roo Code**.
+
+Install Roo Code from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline) or search for "Roo Code" in the Extensions panel (`Ctrl+Shift+X` / `Cmd+Shift+X`).
+</Step>
+<Step>
+### Choose a Provider and Get an API Key
+
+<Callout type="info">
+You don't need to create a Roo Code account unless you plan to use Roo Code itself as a provider.
+</Callout>
+
+This guide uses **OpenRouter**, which provides access to many models through a single API.
+
+- Go to [https://openrouter.ai/](https://openrouter.ai/)
+- Create an account
+- Click **Get API Key**
+- Generate a new key and copy it
+- In VS Code, open the Roo Code extension settings and paste the key into the **OpenRouter API Key** field
+</Step>
+<Step>
+### Select a Model
+
+From the model dropdown in Roo Code settings, choose a model that fits your needs. To find free models, type `:free` in the search field. This filters the list to show only models available at no cost.
+</Step>
+</Steps>
+
+## Local Provider Setup
+
+If you prefer to run models locally instead of relying on a cloud provider, you can use **Ollama**.
+
+<Steps>
+<Step>
+### Install Ollama
+
+Download and install Ollama from [https://ollama.com/download](https://ollama.com/download), or follow the installation instructions in the [official repository](https://github.com/ollama/ollama).
+</Step>
+<Step>
+### Download a Model
+
+Browse available models at [https://ollama.com/search](https://ollama.com/search) and pick one suitable for your needs. Install it by running the command shown on the model page:
+
+```bash
+ollama run <model-name>
+```
+
+Replace `<model-name>` with the actual model identifier, for example:
+
+```bash
+ollama run gemma4:e4b
+```
+</Step>
+<Step>
+### Configure Roo Code for Ollama
+
+- Open the Roo Code extension settings in VS Code
+- Add a new configuration profile
+- Select **Ollama** from the provider list
+- Choose the model you installed in the previous step from the model dropdown
+
+Your AI assistant is now ready to use with the local Ollama instance.
+</Step>
+</Steps>
