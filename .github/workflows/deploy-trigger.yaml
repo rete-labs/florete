@@ -1,0 +1,53 @@
+name: Deploy Trigger
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  deploy-trigger:
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '/deploy') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Get PR branch
+        id: pr-branch
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('repo', pr.data.head.repo.full_name);
+
+      - name: Trigger deploy workflow
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yaml',
+              ref: '${{ steps.pr-branch.outputs.ref }}'
+            })
+
+      - name: Add success reaction
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ github.event.comment.id }}
+          reactions: '+1'
+
+      - name: Add success comment
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          body: |
+            🚀 **Deploy workflow triggered** for branch `${{ steps.pr-branch.outputs.ref }}`
+            
+            Check progress: [Actions](https://github.com/${{ github.repository }}/actions)
