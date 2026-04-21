@@ -1,0 +1,118 @@
+---
+title: Scope
+description: Scope of the C0 milestone "Tended Tunnels"
+---
+
+## Goals
+
+### Use Case
+
+The resulting Florete system must be suitable for production usage in a small IT company (design partner) which has:
+- One or more infrastructure sites (cloud, on-prem)
+- 3-5 server nodes, 10-20 services, 10-20 users
+
+Limitations:
+- No active control plane server
+- Enrolled & maintained manually by an operator (member of Florete Core Team) with the help of IT admin of the design partner
+- All **principals** (users, services) can reach **targets** (services) by 1-hop connections (i.e. no relaying is supported)
+- Only TCP services are supported (can be located at the nodes as well as in internal IP LAN)
+- Only SOCKS5 inbound is supported (i.e. users must use clients with SOCKS5 support; services that connect to other services - too)
+- No NAT Traversal; server nodes must be Internet-facing (have a routable public IP)
+
+**Success criteria**: the use case works stable for daily use.
+
+### Service Mesh
+
+In order to create a service mesh, we need per-node proxies. This is common service mesh design pattern we follow. We call our per-node proxy workload `flor` (agent `flor`).
+
+The C0. Tended Tunnels milestone doesn't include real multi-hop mesh. It does include a simple set of tunnels between principals and targets - QUIC connections over UDP. But from the user PoV it already looks like a service mesh. The only visible limitation is the tunnels are 1-hop. We expect that for up to 90% of small IT companies this is actually enough.
+
+Internally there are more important differences:
+- there will be no links between nodes (or, rather cluster vertices) - the connections will be between principals and targets directly
+- the targets (services) will be visible publicly (i.e. anybody will be able to attempt connecting), secured by mTLS
+
+This differs from C1. Manual Mesh - there only cluster vertices will be visible publicly, not the targets. Aside from this information disclosure, security guarantees between C0 and C1 will be the roughly the same, provided by mTLS (two layers of it for C1, but managed in the same manual control plane).
+
+#### Vertex
+
+In C0. Tended Tunnels there will be only single vertex per node. Formally, it is a link vertex. But we won't call it this way because here it isn't used to create links between vertices of the higher layer, as there is none. It will serve workloads directly, just like cluster vertex will in C1. So effectively in C0 we will test
+- inbound and outbound interfaces
+- links over UDP and tunnels between principals and targets (these will be the same in C0; separated in C1)
+
+This vertex must provide following services.
+
+**Transport service** originates and terminates connections between workloads. Mandatory features:
+- stream (TCP-like)
+- mutual authentication, confidentiality & integrity (mTLS-like): required for Zero Trust architecture
+
+**Forwarding service** in a degenerate form: provides UDP packet delivery between nodes, used by transport service directly. This UDP service provides star-like topology of UDP peers and services located at them.
+
+#### Local Proxy Interface
+
+We need local proxy interface for user workloads running at the node. The scope limitation of C0: user workloads use TCP/IP. Later on we may want to add support for UDP, local sockets, shared memory and whatever other means (e.g. MASQUE).
+
+We need the ability to map workload, its identity, and the destination identity for outgoing connections.
+
+#### Gateway Interface
+
+We need an ability to support clients and servers from IP LAN - like smart home devices that cannot be nodes for some reason, or servers within corporate LAN that don't need Florete network protection (can be served by TCP/IP within LAN). The latter is especially important for C0, because it lacks routing - this way we'd be able to publish internal services that are not located at the Internet-facing nodes. Later on we'd develop a Distributed IP Gateway Service, but for the beginning we may just expose our local proxy to the LAN.
+
+### Configuration
+
+We need config files for manual configuration of the cluster. And CLI utilites to manage it. What must be configurable:
+- identities of users and services
+- UDP links of vertices (IPs and ports)
+- location of services at vertices (no service discovery, so this config should be duplicated among all nodes)
+
+We need automated user and node enrollment, and config deploy to manage production environments.
+
+### Maintenance
+
+We need means to detect and resolve problems that arise in production environments. Especially important events:
+- loss of connectivity
+- crashes, abnormal terminations
+- slowdown of traffic flows
+- excessive resource usage (memory leaks, CPU consumption)
+- security issues (unauthenticated, unauthorized access, DoS)
+
+For C0 we need the bare minimum to run the production pilots successfully.
+
+### Environments
+
+#### Dev Env
+
+We need a local dev environment for the system. Minimally we can have it emulated as multiple processes at the same PC. Optionally, we may implement container-based testbed (container nodes). This testbed will be mandatory later, but for initial development of C0 may be omitted - until we start testing disconnects/reconnects, packet loss and so on.
+
+#### Test Env
+
+We need a test environment that is not limited to a single PC nor local containers/VMs. Minimally we require a pilot-like Florete cluster with multiple VMs (2 cloud providers will be nice), services, users. Optimally we'd need a CI/CD process to deploy to them.
+
+## Development Constraints
+
+Implementation must be done mainly in Rust language, in an async fashion using Tokio runtime.
+
+## Evolution Constraints
+
+We must design the C0 version in a way to be extensible for future work, but without over-engineering.
+
+### Security
+
+Core security feature, mTLS, is mandatory for C0 release. Because we're going to use this prototype in production: dogfooding and for pilots with design partners. Also not doing Zero Trust from ground up can result in architectural oversights and non-upgradable solutions (e.g. we could have used insecure MPLS, but it isn't clear how to secure it properly later).
+
+So we must produce a design and implementation that is secure from day one.
+
+### Cross-platform
+
+For C0, our target OSes are Linux, MacOS and Windows. But later on (B1+) we'd like to support mobile OSes (Andoid, iOS, even HarmonyOS).
+
+So we need to design our implementation an a way that is portable to different OSes without much effort.
+
+## No-Goals
+
+We don't want to check "recursive hypothesis": it was successfully checked in previous prototype, the approach is working and with known limitations.
+
+We don't want to build abstract Portal APIs in Rust. That was checked and it works, but is very clunky. It seems Rust isn't designed for such trait-based APIs. It works best with typed, struct-based APIs.
+
+We don't want to make an execution environment for workloads and dynamic components etc. This task is out of scope for C0.
+
+We are not doing active control plane features, service discovery and various adaptive mechanics in C0.

@@ -1,0 +1,37 @@
+---
+title: Data Plane
+description: Design of the data plane for C0
+---
+
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+
+This document is created as a subset of [Data Plane for C1. Manual Mesh](../../c1-manual-mesh/design/).
+
+## Design Sketch
+
+```mermaid
+graph TD
+    subgraph Northbound [Northbound Interfaces]
+        IP_Inbound["**IP Inbound**\nSOCKS5 (TCP)"]
+        IP_Outbound["**IP Outbound**\nDirect TCP (reverse proxy)"]
+    end
+
+    subgraph Core [Core Modules]
+        TransportEndpoint["**TransportEndpoint**\nQUIC"]
+    end
+
+    subgraph Southbound [Southbound Interfaces]
+        UDP_SB["**UDP Socket**"]
+    end
+
+    %% Relationships
+    Northbound -->|use| TransportEndpoint
+    TransportEndpoint -->|use| Southbound
+```
+
+**Proposal**:<br/>
+Implement single executable called `flor` with following modules:
+- IP Inbound: SOCKS5 for TCP
+- IP Outbound: direct TCP (reverse proxy)
+- TransportEndpoint: QUIC, provides connections for clients
+- UDP socket: star topology forwarding
