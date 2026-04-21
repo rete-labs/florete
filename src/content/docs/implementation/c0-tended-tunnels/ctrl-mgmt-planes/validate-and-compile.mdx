@@ -1,0 +1,137 @@
+---
+title: Validate & Compile
+description: Validator rules and compile step for producing per-node artifacts in C0
+---
+
+## Validator Rules
+
+`flor validate` is the only safety net against hand-edit errors, so it must be strict.
+
+1. **Schema** — every file matches its JSON Schema.
+2. **Cross-references** — every node/service/group/role name referenced exists and is unique across the whole cluster.
+3. **Principal registry** — every principal name (users, services, nodes) is unique across all principal kinds; no name collision across YAML files.
+4. **Enrollment log consistency** — every principal in `users.yaml`, `services.yaml`, and every entry in `nodes.yaml` has a matching sign-event in `enrollment.log` that hasn't been superseded by a revoke-event.
+5. **Service placement** — every service's `at` field names a known node in `nodes.yaml`.
+6. **Management-node integrity** — services named `config-server` and `config-publisher` must exist in groups `control-plane` and `control-plane-write` respectively, both hosted on the same node (the management node) with a publicly-reachable `addresses` entry. If missing or malformed, validator fails with a clear message rather than silently producing artifacts that can't sync.
+7. **Reserved-name protection** — `node` and `operator` (roles), `control-plane` and `control-plane-write` (groups) must be present in the YAML with their canonical `allow` / member definitions. Validator fails if they're missing or redefined with different structure. The compiler never writes YAML — these live in the repo as part of the initial cluster template.
+8. **Operator presence** — at least one user in `users.yaml` must have `role: operator`. Without it, no one can call `config-publisher`, so the cluster can't receive new state after the initial bootstrap — worth catching at validate time.
+9. **Reachability feasibility** — every node hosting a workload service (other than `control-plane` services) must have at least one Internet-reachable `addresses` entry. User-only nodes (pure initiators) may omit addresses; referencing them as a service host is an error.
+10. **Access consistency** — every principal's role permits only groups defined in `groups.yaml`; every service's `group` is defined; every service with an egress `role` has that role defined.
+11. **Principal role coherence** — services that act as clients (outbound) must have a `role` declared; services without `role` may only appear as targets.
+
+Cert chain verification happens at runtime during mTLS, not at validate time — the repo doesn't hold individual certs.
+
+## Compile Step
+
+`florctl compile` produces **one artifact per node**: `<node>.json`. It carries an envelope common to all Florete compiled artifacts:
+
+```json
+{
+  "schema_version": "1.0",
+  "layer": "cluster",
+  "version": 42,
+  "node": "alpha",
+  "generated_at": "2026-04-20T12:00:00Z",
+  "payload": { ... }
+}
+```
+
+The `schema_version` tracks the compiled-artifact public contract (semver). The `version` is a **monotonic per-compilation number** — lets future delta-based distribution ask "what version do you have?" without re-sending the full artifact. `layer: "cluster"` distinguishes this from the additional `layer: "link"` artifact C1 will introduce.
+
+### Terminology
+
+The payload uses two pairs of terms consistently, both from **flor's point of view** at the network boundary:
+
+- **ingress** / **egress** — peer-to-local and local-to-peer QUIC sessions respectively. `ingress` lists which remote principals may connect to our local principals; `egress` lists which of our local principals may connect to a given remote target, along with how to dial that target.
+- **upstream_addr** / **socks5_proxy** — the two local-workload sockets. `upstream_addr` is the loopback address where a service itself listens (flor forwards decrypted ingress traffic here); `socks5_proxy` is the loopback listener flor exposes for outbound SOCKS5 requests from a local principal.
+
+Only services that accept inbound traffic have `upstream_addr`; only principals that initiate outbound traffic have `socks5_proxy`. Most services have both; users typically have only `socks5_proxy`; pure-target services like mongodb (when `role` is absent) have only `upstream_addr`.
+
+### Example: user-node payload
+
+A user device initiates connections only — no `listen_udp`, no `local_services`:
+
+```json
+{
+  "node": "alice-laptop",
+  "ca_cert_path": "~/.flor/ca.crt",
+  "local_users": [
+    {
+      "name": "alice",
+      "spiffe_id": "spiffe://rete-lovers/users/alice",
+      "identity": { "cert_path": "~/.flor/alice.crt", "priv_path": "~/.flor/alice.key" },
+      "socks5_proxy": "127.0.0.1:1080"
+    }
+  ],
+  "egress": [
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/api",
+      "target_node": "alpha",
+      "target_udp": "1.2.3.4:4433",
+      "allow": ["spiffe://rete-lovers/users/alice"]
+    },
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/kafka",
+      "target_node": "beta",
+      "target_udp": "5.6.7.8:4433",
+      "allow": ["spiffe://rete-lovers/users/alice"]
+    }
+  ]
+}
+```
+
+### Example: server-node payload
+
+A server node hosts services and accepts inbound QUIC on `listen_udp`. Services with a `role` also appear as initiators (`api` calls `mongodb`, producing an egress row). `ssh` binds `0.0.0.0:22` because of the emergency-access exception — the `upstream_addr` in the artifact just mirrors whatever `services.yaml` declared.
+
+```json
+{
+  "node": "alpha",
+  "ca_cert_path": "~/.flor/ca.crt",
+  "listen_udp": "0.0.0.0:4433",
+  "local_services": [
+    {
+      "name": "api",
+      "spiffe_id": "spiffe://rete-lovers/services/api",
+      "identity": { "cert_path": "~/.flor/api.crt", "priv_path": "~/.flor/api.key" },
+      "upstream_addr": "127.0.0.1:8000",
+      "socks5_proxy": "127.0.0.1:18000"
+    },
+    {
+      "name": "ssh",
+      "spiffe_id": "spiffe://rete-lovers/services/alpha/ssh",
+      "identity": { "cert_path": "~/.flor/ssh.crt", "priv_path": "~/.flor/ssh.key" },
+      "upstream_addr": "0.0.0.0:22"
+    }
+  ],
+  "ingress": [
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/api",
+      "allow": [
+        "spiffe://rete-lovers/users/alice",
+        "spiffe://rete-lovers/users/bob"
+      ]
+    },
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/alpha/ssh",
+      "allow": ["spiffe://rete-lovers/users/bob"]
+    }
+  ],
+  "egress": [
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/mongodb",
+      "target_node": "beta",
+      "target_udp": "5.6.7.8:4433",
+      "allow": ["spiffe://rete-lovers/services/api"]
+    }
+  ]
+}
+```
+
+### Key points
+
+- **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's flor and the target service's flor. The compiler pre-resolves only (a) which remote peers may initiate to this node's services (`ingress`) and (b) where this node's principals may initiate to (`egress`).
+- **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's flor can dial the correct UDP address and fail fast on disallowed SOCKS5 requests. A compromised initiator could ignore its own egress table; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a dialing table with a local convenience filter.
+- **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `florctl compile` + push — no cert reissuance needed, no role-resolution at runtime on the agent hot path.
+- **Deterministic** — same `florctl compile --repo X` produces identical output on any machine given identical inputs.
+- **Per-node filtering** — `alpha.json` contains only the identity material and ACL rows relevant to alpha's local services and principals.

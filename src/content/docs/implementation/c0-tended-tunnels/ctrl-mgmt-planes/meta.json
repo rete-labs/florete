@@ -1,0 +1,12 @@
+{
+    "pages": [
+        "source-layout",
+        "identity",
+        "validate-and-compile",
+        "cli",
+        "config-server",
+        "enrollment",
+        "distribution-and-reload",
+        "reasoning"
+    ]
+}

@@ -1,0 +1,189 @@
+---
+title: Source Layout
+description: Git repo structure and YAML source files for C0
+---
+
+## Git Repo Layout
+
+```
+my-cluster/
+├── cluster.yaml          # name, version, crypto params
+├── ca.crt                # cluster root CA certificate (public)
+├── nodes.yaml            # nodes: UDP reachability
+├── services.yaml         # published services + their principal roles (incl. infra)
+├── groups.yaml           # service groups
+├── roles.yaml            # role → allowed groups (applies to any principal)
+├── users.yaml            # user identity names, home-node, role
+├── enrollment.log        # append-only operator sign events (auditable)
+└── .flor/
+    └── compiled/         # committed; operator runs `florctl compile` then commits
+        ├── mgmt01.json   # management node — bootstrap-applied manually (see Config-server)
+        ├── alpha.json
+        ├── beta.json
+        └── ...
+```
+
+What's **not** in the repo:
+
+- **CA private key** — lives on the operator's workstation (password-protected file).
+- **Individual signed certs** (`alice.crt`, `api.crt`, ...) — delivered to their holders via enrollment bundles; stored locally next to each holder's private key. They're public material, but there's no reason to duplicate them in the repo.
+- **Individual private keys** — generated on the holder's machine (security-purist flow) or on the operator's machine for bundle issuance (convenience flow). Never committed.
+
+The repo holds **names + ACLs + topology + CA cert**. That's what's needed to compile per-node artifacts and to audit who has access.
+
+### cluster.yaml
+
+```yaml
+cluster:
+  name: rete-lovers               # also the SPIFFE trust domain
+  crypto:
+    ca_cert: ca.crt
+    signature_algorithm: ed25519
+    cert_validity_days: 90
+```
+
+The cluster `name` doubles as the SPIFFE trust domain: every principal in this cluster has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
+
+### nodes.yaml
+
+```yaml
+nodes:
+  # management node — hosts config-server and metrics
+  mgmt01:
+    addresses:
+      - { name: public, udp: 9.10.11.12:4433 }
+
+  # server nodes — Internet-facing, host services
+  alpha:
+    addresses:
+      - name: public
+        udp: 1.2.3.4:4433
+      - name: internal
+        udp: 10.0.0.5:4433
+  beta:
+    addresses:
+      - { name: public,   udp: 5.6.7.8:4433 }
+      - { name: internal, udp: 10.0.0.6:4433 }
+
+  # user nodes — dynamic IPs, behind NAT, initiate connections only
+  alice-laptop: {}
+  bob-workstation: {}
+```
+
+In C0 every node that hosts a publicly-reachable service must be Internet-facing (see [scope](../../scope)) — service/user endpoints establish QUIC directly to the service's host node, with no relaying.
+
+Nodes that only initiate connections (user laptops, phones) don't need `addresses` — they connect outbound from whatever ephemeral UDP port they get. Address names on server nodes are a forward-compat hook (C1 uses them for link selection).
+
+Node-naming convention for pilots: short DNS-like names for servers (`alpha`, `web01`), and `<user>-<device>` for user devices (`alice-laptop`, `bob-phone`). Names must be unique within a cluster.
+
+### services.yaml
+
+```yaml
+services:
+  # Cluster infrastructure — on the management node (reserved; validator enforces)
+  config-server:                      # read side — nodes poll for compiled artifacts
+    at: mgmt01
+    addr: 127.0.0.1:9000
+    groups: [control-plane]
+  config-publisher:                   # write side — operators push new state
+    at: mgmt01
+    addr: 127.0.0.1:9001              # same process as config-server, different endpoint
+    groups: [control-plane-write]
+  metrics:
+    at: mgmt01
+    addr: 127.0.0.1:9090
+    groups: [control-plane]
+
+  # Workload services
+  api:
+    at: alpha
+    addr: 127.0.0.1:8000             # flor forwards here; service binds localhost
+    socks5_proxy: 127.0.0.1:18000    # SOCKS5 port flor exposes to this service
+    groups: [api]                        # what group api belongs to (ingress ACL side)
+    roles: [api-backend]                 # api's role when acting as a client (egress ACL side)
+  mongodb:
+    at: beta
+    addr: 127.0.0.1:27017
+    groups: [db]
+    # no roles — mongodb doesn't initiate Florete connections
+  kafka:
+    at: beta
+    addr: 127.0.0.1:9092
+    groups: [brokers]
+  ssh:
+    at: alpha                         # node-scoped service (published per-node)
+    scope: node                       # vs. default `scope: cluster`
+    addr: 0.0.0.0:22                  # also reachable directly for emergency admin access
+    groups: [admin]
+```
+
+Two conventions in this example:
+
+- **`addr` binds 127.0.0.1** for all services reached exclusively through Florete. This is the whole point of publishing them via flor — the service itself must not be Internet-facing. SSH is the standard exception: it binds `0.0.0.0` so that the emergency access path (see [Safety net](../distribution-and-reload#safety-net-server-nodes)) survives a bad Florete rollout.
+- **`socks5_proxy`** is intentionally direction-neutral. From the service's perspective it's an outbound proxy; from flor's perspective it's an inbound interface. Neutral naming sidesteps the PoV flip that would otherwise confuse operators reading this file.
+
+There is no `protocol` field in C0/C1: flor is a pure L4 TCP forwarder, so whether the payload is gRPC, HTTP, or plain TCP is opaque to it. L7-aware features are a deliberate future addition; until then, operators can annotate with YAML comments if they want to remember what's running.
+
+A service is simultaneously a **target** (its `groups` govern who may reach it) and, optionally, a **principal** (its `roles` govern what it may call). Services without `roles` only accept connections; they never initiate.
+
+### groups.yaml, roles.yaml
+
+```yaml
+# groups.yaml — applies to any target (service)
+groups:
+  # reserved (must be present; validator enforces):
+  control-plane:       # read side — nodes poll for artifacts
+  control-plane-write: # write side — operators push new state
+
+  # user-defined:
+  api:
+  db:
+  brokers:
+  admin:
+```
+```yaml
+# roles.yaml — applies to any principal (user OR service)
+roles:
+  # reserved (must be present, must have exactly these `allow` sets):
+  node:     { allow: [control-plane]       }   # auto-assigned by compiler to every node
+  operator: { allow: [control-plane-write] }   # manually assigned via `role: operator` in users.yaml
+
+  # user-defined:
+  devops:      { allow: [api, db, brokers, admin] }
+  developer:   { allow: [api, brokers] }
+  sales:       { allow: [api] }
+  api-backend: { allow: [db, brokers] }    # api service calls db + brokers
+```
+
+### users.yaml
+
+```yaml
+users:
+  fyodor:
+    roles: [operator]
+    nodes: [fyodor-laptop]
+  alice:
+    roles: [developer]
+    nodes: [alice-laptop]            # nodes where alice's flor runs
+  bob:
+    roles: [devops]
+    nodes: [bob-workstation]
+```
+
+`nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice.
+
+**Multi-device users**: list all the user's devices, e.g. `nodes: [alice-laptop, alice-phone]`. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
+
+If per-device revocation matters (lost phone without wanting to re-issue laptop), model each device as its own user with a shared role:
+
+```yaml
+users:
+  alice-laptop:
+    roles: [developer]
+    nodes: [alice-laptop]
+  alice-phone:
+    roles: [developer]
+    nodes: [alice-phone]
+```
+
+No special mechanism is needed for this pattern — it falls out of the principal model.

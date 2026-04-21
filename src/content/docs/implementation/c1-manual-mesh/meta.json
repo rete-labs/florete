@@ -1,7 +1,8 @@
 {
     "pages": [
         "scope",
-        "data-plane"
+        "data-plane",
+        "ctrl-mgmt-planes"
     ],
     "defaultOpen": false
 }
