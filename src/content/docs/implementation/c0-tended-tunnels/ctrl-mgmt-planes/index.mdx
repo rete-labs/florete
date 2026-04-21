@@ -1,0 +1,97 @@
+---
+title: Control & Mgmt Planes
+description: Design of control and management planes for C0
+---
+
+## Context
+
+C0 has no automatic control and management planes. Cluster state is declared manually in a git repo and distributed to every node through a lightweight operator workflow: declare → validate → compile → commit (audit) → publish → nodes sync. The two planes will split conceptually in B1+ when a coordination server lands and push replaces poll. Both C0 and C1 share this manual foundation; C0 is the reference design, and C1 layers the mesh-specific additions on top.
+
+The design must balance three forces:
+
+- **Simple to build** — small team, MVP ASAP.
+- **Prod-ready for small pilots** — 3-5 server nodes, 10-20 users, a handful of services, running a few weeks.
+- **Manually manageable by a single operator** during pilots.
+
+This spec is also the boundary that the rest of C0 (agent internals, identity, forwarding) must meet, and it should evolve naturally into C1 Manual Mesh (cluster-flor layer added on top via FlorIO, same CA and enrollment reused unchanged), then into B1 Cloud Control (coordination server replaces the file-based source of truth), and beyond into a fully distributed control plane.
+
+## Design Highlights
+
+- **Source of truth is a git repo of YAML files, hand-edited.** No embedded DB. No CLI mutators that round-trip through YAML. Git diffs are the audit log; YAML comments explain intent.
+- **The CLI does a handful of things**: CA operations, identity / bundle issuance, validation, per-node compilation, safe apply. It never mutates source YAML. Smallest surface that still gives us safety.
+- **SPIFFE identities from day one.** Cluster has a root CA; principals get CSRs signed into X.509 certs whose SAN holds a SPIFFE URI (`spiffe://<cluster>/<kind>/<name>`). Peers verify by CA signature, not pinned cert. Only `ca.crt` lives in the repo — individual certs are delivered to their holders and stored locally. Real SPIFFE X.509-SVIDs, no extra cost.
+- **Principals are uniform.** Users, services, and nodes are principals with cluster-scoped identities. Roles attach to any principal. Users and services hold workload identities (end-to-end mTLS); nodes hold a separate control-plane identity used to reach the cluster's own infrastructure services (config-server, metrics). (C1 adds cluster vertices as a further, distinct principal kind — a mesh-transit identity that stays separate from the node identity.)
+- **Access is fully derived in C0.** With no multi-hop routing, who-reaches-what is determined by `users.yaml` + `services.yaml` + `roles.yaml` + `groups.yaml` + service location. No `paths.yaml`, no label allocation — the compiler walks the ACL matrix directly.
+- **Restart-with-rollback, not SIGHUP (for C0).** `flor sync` fetches the pre-compiled artifact from the config-server and restarts the agent; `--commit-timeout` auto-rolls-back if the operator doesn't confirm within the window. Full hot-reload is hard; but the agent should be built with swappable ACL tables from day one so that a near-term post-C0 **ACL-only hot-reload** (see [Hot reload](distribution-and-reload#hot-reload)) can swap permission tables in place — that covers ~80% of day-to-day changes (add/remove user, change role membership) without dropping connections. Structural changes (new service, port change, identity rotation) still need a restart.
+- **RBAC, not per-principal ACLs.** Permissions attach to roles; principals get roles. Keeps the access control matrix smaller.
+- **Atomic full-artifact state delivery, with a monotonic version stamp.** Deltas are a later optimization; the version number is a zero-cost forward-compat anchor for them.
+- **Operator-issued bundles, not user-initiated PRs.** Users never need git write access or forge accounts. The operator is the only writer of cluster state.
+- **Stable boundary = the compiled per-node artifact.** C0 produces it from YAML; C1 adds a second artifact for the cluster-flor layer with the same envelope; B1 fetches it from a coordination server; distributed control plane later emits it by consensus. The agent consumes the same shape throughout.
+
+## Details
+
+Specific design topics are placed in separate pages:
+<SiblingCards path="/docs/implementation/c0-tended-tunnels/ctrl-mgmt-planes" />
+
+## Evolution
+
+The compiled per-node artifact is the stable public contract. What changes across milestones is **who produces it** and **how it's distributed** — never the shape the agent consumes.
+
+| Aspect            | C0 Tended Tunnels              | C1 Manual Mesh                 | B1 Cloud Control                | Distributed CP (later)        |
+|-------------------|--------------------------------|--------------------------------|---------------------------------|-------------------------------|
+| Scope             | Service-to-service direct      | Full mesh, manual paths        | Same mesh, derived paths        | Same mesh                     |
+| Protocol entities | Users, services, nodes         | + Cluster vertices             | Same as C1                      | Same as C1                    |
+| Binaries          | Single `flor` (link role)      | Two `flor` (link+cluster)      | Same as C1                      | Same as C1                    |
+| Source of truth   | YAML in git repo               | YAML in git repo               | Coordination server DB          | Consensus across agents       |
+| Compile           | Local, service-level only      | Local, both layers             | Server-side                     | Any agent / consensus-derived |
+| Distribution      | Bundle + config-server fetch   | Bundle + config-server fetch   | Server push (WebSocket/gRPC)    | Gossip + pull                 |
+| Reload            | Restart w/ commit timeout      | Restart w/ commit timeout      | Hot reload                      | Hot reload                    |
+| Consensus         | Operator (1 person)            | Operator (1 person)            | Single-writer server            | Raft / CRDT                   |
+| Paths             | N/A (direct forwards)          | Manual `paths.yaml`            | Derived from topology + access  | Derived, per-agent resolution |
+| State updates     | Atomic (poll config-server)    | Atomic (poll config-server)    | Atomic push                     | Atomic; deltas in B2+         |
+
+**Preserving manual mode as a power mode**: manual configuration (YAML in git + operator-run config-server) is a permanent capability tier, not a stepping stone. Hackers, personal setups, airgapped environments, and disaster-recovery fallback all depend on it. Every higher tier is additive — no C0/C1 capability is removed in B1 or beyond.
+
+## Scope Checklist
+
+- [ ] YAML schemas for all source files + `ca.crt` location + `enrollment.log` format
+- [ ] Compiled artifact schema, semver'd, envelope with version stamp
+- [ ] Naming scheme: canonical URI + `.rete` hostname resolver
+- [ ] `florctl ca init` / `florctl ca sign` (file backend)
+- [ ] `florctl issue-bundle` (operator-side bundle issuer; Flow A keypair generation + Flow B CSR signing)
+- [ ] `florctl validate` with all rules above
+- [ ] `florctl compile --node <name>` emitting deterministic per-node artifact
+- [ ] `florctl publish` pushing the compiled tree to the cluster config-server
+- [ ] Config-server implementation (`GET /artifact/<node>`, `POST /publish`) as a regular Florete-published service
+- [ ] Reserved-name handling: `node` / `operator` roles and `control-plane[-write]` groups must be present in YAML (template); validator enforces; compiler auto-assigns `node` role to every node principal, operators are assigned manually via `role: operator` in `users.yaml`
+- [ ] `flor id create` (CSR bundle producer, node-side)
+- [ ] `flor enroll` (two-step bootstrap: install certs, fetch artifact from config-server, start agent)
+- [ ] `flor sync` with `--commit-timeout` default 5m, `--confirm`, `--dry-run`
+- [ ] `flor agent run` (single-layer, service endpoints over UDP)
+- [ ] `flor status` over local Unix socket
+- [ ] Per-service SOCKS5 outbound proxy with port→identity binding
+- [ ] Installer: `install.sh` for Linux/Mac, MSI for Windows
+- [ ] Static landing page template (per-cluster, zero backend)
+- [ ] Example `my-cluster/` repo including a management node (`mgmt01` with config-server + metrics)
+- [ ] Playbook doc: operator bootstrap (incl. management-node manual bootstrap), issuing bundles, publishing a service, maintenance window, emergency rollback
+
+## Open Follow-ups
+
+Not blockers for C0 release:
+
+- **ACL-only hot reload** — near-term post-C0; design in [Hot reload](distribution-and-reload#hot-reload). Requires the agent to hold ACL tables behind an `Arc`/similar indirection from day one (cheap).
+- **L7 awareness as a general capability (C1+, design needed).** Several planned features need the HTTP layer to know which Florete principal is calling: per-node isolation on `config-server`, HTTP-level authorization policies, per-principal metrics tagging, request-level access logs, per-principal rate limiting. All of them want something like an `X-Florete-Peer-SpiffeID` header (or equivalent out-of-band signal) derived from the mTLS peer identity. **flor itself is deliberately L4/L5** (QUIC/mTLS + TCP bytes) and should stay that way at the C0 layer — promoting it to an L7 proxy would balloon scope, entangle buffering/framing concerns with identity concerns, and make the data-plane harder to reason about. Options to explore in C1+:
+  - A dedicated L7 sidecar process between flor and upstream HTTP services (flor keeps forwarding TCP bytes; the sidecar handles HTTP + identity augmentation).
+  - A side-channel lookup: flor exposes a Unix socket where upstream services can ask "which SPIFFE ID is on local socket X?" Upstream owns its own HTTP plumbing.
+  - A Florete-specific header-injection shim that's opt-in per service in YAML, so most services stay pure-L4 and only those that want L7 identity metadata get the extra path.
+
+  No one of these is obviously right; the tradeoffs (process count, resource cost, API stability, who-owns-which-failure-mode) need honest exploration. Picking one now would lock us in prematurely.
+
+- **Per-node isolation of `config-server` reads** is the most immediate use-case driving the L7 question: replacing the two-service split with one service + L7 identity-aware authZ so alpha can only fetch `alpha.json`. Gated on the L7 design above. Pilot-scale metadata disclosure is tolerable until then.
+- **Cert fingerprint allowlist** — include the cert fingerprint alongside the SPIFFE ID in each `allow` entry so a rogue CA-signed cert for the same SPIFFE ID is rejected even if name-removal hasn't propagated yet. Adds a field to the compiled artifact schema (semver bump); deferred because name-removal revocation is already effective at pilot scale.
+- Full structural hot-reload (new services, cert rotation, port changes) with connection-preserving restart semantics.
+- CRL / OCSP for immediate mid-cert-lifetime revocation without a new compile cycle.
+- Transparent outbound for non-SOCKS5 apps (iptables / SO_PEERCRED / libc shim).
+- `flor doctor` diagnostics (ping peers, check access matrix, confirm config-server reachability).
+- Backend-hosted enrollment forms, Slack/Discord approval bots.
+- Config-server HA (two management nodes, replicated published state).

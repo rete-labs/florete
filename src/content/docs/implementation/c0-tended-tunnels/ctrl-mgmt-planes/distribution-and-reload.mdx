@@ -1,0 +1,58 @@
+---
+title: Distribution & Reload
+description: State distribution, sync mechanics, hot reload, and safety net for C0
+---
+
+## Distribution & Reload
+
+- **Primary mechanism**: operator edits YAML → `florctl validate` → `florctl compile` → commits (audit trail) → `florctl publish` pushes the compiled tree to the config-server. Each node then runs `flor sync` during an announced maintenance window — `sync` fetches its per-node artifact from the config-server over Florete and restarts the agent.
+- **Git is for audit, not for distribution.** Nodes never hold a git credential. The cluster repo is the operator's authoring workspace; its commits give you `git log .flor/compiled/alpha.json` to answer "what config did alpha actually get?", but the wire path into nodes is always the config-server.
+- **`--commit-timeout` default-on** (5 min): new artifact activates, previous is preserved; if operator doesn't run `flor sync --confirm` within the timeout, the previous artifact is restored and the agent restarts. Prevents remote lockout from bad config.
+- **`--dry-run`**: show which artifact version would be installed vs. what's currently active; no restart. Catches stale-node situations before committing to a window.
+- **Expected disruption**: active QUIC connections drop on agent restart. C0 assumes a maintenance window of a few minutes.
+- **Version stamping** (see [Compile Step](validate-and-compile#compile-step)) is monotonic across the whole cluster. The config-server serves `?version=<n>` queries so operators can confirm which version each node fetched; mismatch = stale node (never synced, or sync failed).
+
+## Hot Reload
+
+Full restart for every permission change is wasteful at server-node scale — waiting for a maintenance window to add one permission is hard to justify even in pilots. The spectrum of changes isn't all-or-nothing:
+
+| Change | Needs restart? | Frequency |
+|---|---|---|
+| `ingress.allow` / `egress.allow` additions or removals (role membership, RBAC edits) | **No** — swap tables in place | Very high |
+| New / removed local service | Yes — new listener / teardown | Medium |
+| `upstream_addr` / `socks5_proxy` change | Yes — reopens sockets | Low |
+| Identity rotation (new cert, same SPIFFE ID) | Yes — rebuild mTLS contexts | Low |
+| Peer UDP address change | Possibly — kills active QUIC sessions | Low |
+
+**C0 ships with full-restart only** — simpler, safer, one code path. The design rule: **build the agent so ACL tables are swappable from day one** (hold ingress/egress rules behind an `Arc<Tables>` or equivalent), so the near-term post-C0 addition is narrow. The post-C0 flow:
+
+1. `flor sync` fetches the new artifact and diffs it against the current one.
+2. If the diff is **ACL-only** (every changed field is an `allow` list), swap the tables atomically — no connection drop, no handshake interruption.
+3. Otherwise, fall back to the current restart-with-`--commit-timeout` flow.
+
+This handles the common case (permission edits) with zero disruption and leaves the rare structural changes on the existing safe path. Agent code complexity stays low: one table swap plus a diff check.
+
+## Safety Net (server nodes)
+
+**Don't make Florete the only path to SSH during pilots.** Florete-published SSH is the *preferred* path; keep one of these as the *emergency* path:
+
+- Cloud-provider access (AWS SSM, GCP OS Login, Azure Serial Console).
+- Hypervisor console.
+- A separate admin VPN (WireGuard, Tailscale) that coexists with Florete.
+- An unpublished backup SSH port on an out-of-band address.
+
+Combined with `--commit-timeout`, this bounds the blast radius of a bad sync.
+
+Playbook for a change:
+
+1. Edit YAML (operator, on workstation).
+2. `florctl validate` — catch errors before anything reaches a node.
+3. `florctl compile` — regenerate `.flor/compiled/<node>.json` for all nodes.
+4. `git add -A && git commit && git push` — commit both YAML and compiled artifacts for audit (nodes don't read this, but it's the shipment log).
+5. `florctl publish` — upload the compiled tree to the config-server. From this moment nodes *can* fetch the new state; they won't until they sync.
+6. Announce window.
+7. On one node: `flor sync --dry-run` — confirm expected artifact version.
+8. `flor sync --commit-timeout 5m` — activate with guard.
+9. Smoke-test the published services.
+10. `flor sync --confirm` — finalise before timeout.
+11. Repeat per node, or use a simple parallel script for homogeneous rollouts.

@@ -1,0 +1,295 @@
+---
+title: Control & Mgmt Planes
+description: Control & management plane additions for C1 Manual Mesh
+---
+
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+
+This milestone inherits the control & management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/ctrl-mgmt-planes/) unchanged — same git repo as source of truth, same CA and enrollment bundles, same `flor sync` with commit-timeout, same naming scheme, same atomic-artifact distribution.
+
+What C1 adds is the **mesh layer**: cluster vertices as an additional principal kind (with SPIFFE IDs of the form `spiffe://<cluster>/cluster-vertices/<node>`) — distinct from the node principal C0 already introduced for control-plane traffic — plus declared inter-node links, explicit multi-hop paths, and a second compiled artifact per node for the cluster-flor instance running on top of link-flor via FlorIO.
+
+**Link vertices are not principals.** Link-flor is a passive UDP forwarder — it doesn't terminate mTLS, so it has no identity. All mTLS crypto in C1 happens above the UDP layer: cluster-vertex-to-cluster-vertex QUIC for the mesh itself, and service-to-service / user-to-service QUIC end-to-end for workloads. The UDP between nodes is just packet transport; QUIC on top handles authentication.
+
+## What C1 adds
+
+- **Cluster vertex as an additional principal kind** — one per node per Florete cluster, distinct from the node principal introduced in C0. SPIFFE ID `spiffe://<cluster>/cluster-vertices/<node>`. Used for inter-vertex mTLS on mesh links (the hop-by-hop layer). By convention the short name equals the node name; no extra field in `nodes.yaml` needed. The node's control-plane identity (`spiffe://<cluster>/nodes/<node>`) is kept separate — see the identity model note below.
+- **`links.yaml`** — declares UDP peerings between nodes. C0 has no inter-node links.
+- **`paths.yaml`** — manual multi-hop route specs. Labels are machine-allocated by the compiler; operators write hop sequences, not labels.
+- **Two compiled artifacts per node** — `link.json` (just UDP socket + peer addresses, no crypto) and `cluster.json` (FlorIO upward + QUIC + Portal APIs + cluster-vertex identity). Operator YAML stays single-layered; the compiler fans out into the recursive structure.
+- **FlorIO socket convention in `cluster.yaml`** — the datagram socket by which cluster-flor talks to link-flor at the same node.
+- **`flor agent run --role <link|cluster>`** — two long-running processes per node instead of C0's one.
+- **Additional validator rules** — link validity, address-feasibility (public↔public or shared internal network), multi-hop path validity, label feasibility, principal-role coherence for services that appear as path initiators.
+
+Everything else (CA, per-node bundles, revocation, `flor sync --commit-timeout`, config-server-fronted distribution, naming, version-stamped envelope, SOCKS5 proxy, emergency-access safety net) is identical to C0.
+
+## Source layout additions
+
+```
+my-cluster/
+├── …                     # everything from C0 ctrl-mgmt-planes
+├── links.yaml            # NEW: declared UDP peerings between nodes
+├── paths.yaml            # NEW: manual route specs (hop sequences)
+└── .flor/
+    └── compiled/         # committed (operator runs `florctl compile` then commits)
+        ├── labels.json   # NEW: compiler-allocated label map (part of published state)
+        ├── alpha/        # NEW: per-node subdir (two artifacts per node)
+        │   ├── link.json
+        │   └── cluster.json
+        └── …
+```
+
+### cluster.yaml (additions only)
+
+```yaml
+cluster:
+  name: rete-lovers                 # same as C0
+  florio:                           # NEW in C1
+    socket: /run/flor/io.sock       # convention; per-node override allowed
+  crypto:
+    ca_cert: ca.crt
+    signature_algorithm: ed25519
+    cert_validity_days: 90
+```
+
+### nodes.yaml (additions only)
+
+```yaml
+nodes:
+  alpha:                            # cluster-vertex name defaults to "alpha"
+    addresses:
+      - { name: public,   udp: 1.2.3.4:4433 }
+      - { name: internal, udp: 10.0.0.5:4433 }
+  gamma:
+    addresses:
+      - { name: internal, udp: 10.0.0.7:4433 }
+    internal_only: true             # not reachable from Internet; only reachable via peers
+```
+
+No new field is needed in `nodes.yaml`: by convention, the cluster-vertex at node `alpha` has SPIFFE ID `spiffe://rete-lovers/cluster-vertices/alpha`. A node joining multiple Florete clusters simply appears in each cluster's repo under whatever name that cluster uses; cross-cluster multi-tenancy is handled at the repo level, not the nodes.yaml level.
+
+### links.yaml (new)
+
+```yaml
+# Undirected UDP peerings between cluster vertices.
+# Both endpoints must be known nodes, with addresses that can reach each other.
+links:
+  - { a: alpha, b: beta,  via: public   }
+  - { a: beta,  b: gamma, via: internal }
+```
+
+`via` names one of the address entries on each node. The validator checks that both sides have an address with that name and that the two addresses can plausibly reach each other (public↔public, or shared internal network).
+
+### paths.yaml (new)
+
+```yaml
+# Route notation: "<initiator>|<hop1>|<hop2>|...|<target-service>"
+# Initiator forms:
+#   <user-name>                 — user on their own node
+#   <service>@<node>            — service instance on a specific node
+# Every intermediate hop is a node; last element is the target service.
+# Labels are allocated by `florctl compile`, not hand-written.
+paths:
+  # user → service
+  - alice|alpha|api
+  - alice|beta|gamma|kafka
+  - bob|alpha|ssh
+  # service → service (api calls db and brokers)
+  - api@alpha|beta|mongodb
+  - api@alpha|beta|gamma|kafka
+  # fallback via alpha (post-C1 feature; reserved syntax)
+  # - alice|alpha|beta|mongodb  [priority: 2]
+```
+
+## CLI additions
+
+Only the `--role` flag on the agent command and the second compiled-artifact path shape are new:
+
+```
+# operator (florctl) — authoring
+florctl compile --node <name> [--repo <dir>] [--out <dir>]
+                                            # emits <dir>/<node>/{link,cluster}.json
+
+# node (flor) — runtime
+flor agent run --role <link|cluster> --config <compiled.json>
+                                            # two instances per node in C1
+```
+
+`flor sync` behaviour is unchanged from C0; it just restarts both agent instances in sequence.
+
+## Additional validator rules
+
+On top of C0's validator:
+
+- **Link validity** — every link is between two distinct, known nodes with declared addresses reachable from each other.
+- **Address feasibility** — link pairings use addresses that can actually reach each other (public↔public, or shared internal network). Internal-only nodes can only pair with peers on the same internal network.
+- **Multi-hop path validity** —
+  - Initiator is a user or `service@node`.
+  - Every intermediate hop is a node.
+  - Every adjacent pair of hops has a declared link.
+  - The last element is a published service.
+  - The service's host node is the last hop before the service name.
+- **Label feasibility** — per-link label space is finite; validator ensures the allocator will succeed.
+- **Principal role coherence** — services that appear as path initiators must have a `role` declared.
+
+## Compile step additions
+
+`florctl compile` produces **two artifacts per node** in C1, both carrying the same envelope shape as C0:
+
+```json
+{
+  "schema_version": "1.0",
+  "layer": "cluster",     // or "link"
+  "version": 42,
+  "node": "alpha",
+  "generated_at": "2026-04-20T12:00:00Z",
+  "payload": { ... }
+}
+```
+
+Terminology (`ingress` / `egress`, `upstream_addr` / `socks5_proxy`) is inherited unchanged from [C0's compile step](../../c0-tended-tunnels/ctrl-mgmt-planes/validate-and-compile#terminology). C1 adds two things to the cluster-layer artifact: a `vertex_identity` for the cluster vertex, and a `forwarding_table` of MPLS-style labels for transit traffic. Per-entry `local_label` in `ingress`/`egress` binds an initiator→target path to its forwarding-table entry.
+
+Example `cluster.json` payload:
+
+```json
+{
+  "node": "alpha",
+  "vertex_identity": {
+    "spiffe_id": "spiffe://rete-lovers/cluster-vertices/alpha",
+    "cert_path": "~/.flor/alpha.crt",
+    "priv_path": "~/.flor/alpha.key"
+  },
+  "ca_cert_path": "~/.flor/ca.crt",
+  "florio": { "socket": "/run/flor/io.sock" },
+  "peers": [
+    { "node": "beta", "via_florio_service": "link:beta",
+      "vertex_spiffe_id": "spiffe://rete-lovers/cluster-vertices/beta" }
+  ],
+  "local_services": [
+    {
+      "name": "api",
+      "spiffe_id": "spiffe://rete-lovers/services/api",
+      "identity": { "cert_path": "~/.flor/api.crt", "priv_path": "~/.flor/api.key" },
+      "upstream_addr": "127.0.0.1:8000",
+      "socks5_proxy": "127.0.0.1:18000"
+    }
+  ],
+  "forwarding_table": [
+    { "in_label": 17, "out_peer": "beta", "out_label": 42 }
+  ],
+  "ingress": [
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/api",
+      "allow": [
+        { "spiffe_id": "spiffe://rete-lovers/users/alice", "local_label": 9 }
+      ]
+    },
+    {
+      "target_spiffe_id": "spiffe://rete-lovers/services/alpha/ssh",
+      "allow": [
+        { "spiffe_id": "spiffe://rete-lovers/users/bob", "local_label": 11 }
+      ]
+    }
+  ]
+}
+```
+
+In C1 the `allow` entries carry `local_label` alongside the initiator's SPIFFE ID — each accepted (initiator, target) pair binds to a forwarding-table row. The C0 shape (bare SPIFFE ID strings) is subsumed by this form; C0 simply omits `local_label` because there's no multi-hop forwarding.
+
+Example `link.json` payload:
+
+```json
+{
+  "node": "alpha",
+  "listen_udp": "0.0.0.0:4433",
+  "florio": { "socket": "/run/flor/io.sock" },
+  "peers": [
+    { "node": "beta",  "addr": "5.6.7.8:4433"  },
+    { "node": "gamma", "addr": "10.0.0.7:4433" }
+  ]
+}
+```
+
+Note what's **not** in `link.json`: no identity, no cert, no CA cert. Link-flor doesn't terminate mTLS — it shuttles UDP datagrams between nodes, and the QUIC sessions tunnelled through it (established by cluster-flors on top) carry all the crypto. This mirrors how QUIC normally sits on unauthenticated UDP; bogus datagrams just fail the QUIC handshake at the cluster-flor level.
+
+The source YAML does not expose the recursive structure — the operator thinks in nodes + links + services; the compiler splits cleanly into link-layer transport and cluster-layer crypto+forwarding artifacts.
+
+### Label allocation
+
+- Per-link counter. For each path, walk hop-by-hop and assign the next unused labels on each link for forward and backward directions.
+- Allocations stored in `.flor/compiled/labels.json`. Committed alongside the per-node artifacts — the label map is part of the published cluster state.
+- `florctl compile --repo X` produces identical output on any machine given identical inputs (deterministic walk order).
+
+## Identity model additions
+
+C1 adds one new principal kind on top of C0's users, services, and nodes:
+
+| Kind | In C0 | In C1 | SPIFFE ID | Used for |
+|---|---|---|---|---|
+| Cluster vertex | No | **Yes** | `spiffe://<cluster>/cluster-vertices/<node>` | Inter-vertex mTLS on mesh links (one per node per cluster) |
+
+Key points:
+
+- **Link vertices have no identity.** Link-flor is a dumb UDP forwarder; all mTLS happens above it in cluster-flor. This keeps the crypto model minimal: one identity per entity that actually initiates or terminates mTLS.
+- **Node identity and cluster-vertex identity stay separate.** C0's `nodes/` principal scopes to a machine's control-plane traffic (config-server, metrics); C1's `cluster-vertices/` scopes to a specific cluster membership's mesh-transit mTLS. One physical node joining two Florete clusters runs one control-plane `nodes/` identity per cluster **and** one `cluster-vertices/` identity per cluster — and in theory could carry more than one cluster vertex per cluster. Collapsing the two kinds is an open design question deferred to C1+; for now they're modelled independently.
+- **Two mTLS layers in C1** for workload traffic: the mesh itself (cluster-vertex ↔ cluster-vertex, hop-by-hop) and the workloads (service ↔ service or user ↔ service, end-to-end). Both share the same CA; identities differ by SPIFFE path kind. The control-plane layer (node ↔ infrastructure) is a third, pre-existing mTLS flow from C0.
+
+Enrollment flow is unchanged: `florctl issue-bundle --node alpha --cluster <config-server-url>` packages alpha's node identity **and** alpha's cluster-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `cluster-vertices/<node>` principal for every node in C1; operators don't declare it anywhere. SPIFFE IDs are derived from the kind (`nodes`, `cluster-vertices`, `users`, `services`) + the principal name + the cluster trust domain.
+
+## Explicitly deferred (in addition to C0's list)
+
+- `florctl compile --derive-paths` — declarative path derivation from topology + access. Ships post-C1 once the topology model is stable.
+- Priority / fallback paths.
+
+## Evolution
+
+Unchanged from [the C0 evolution table](../../c0-tended-tunnels/ctrl-mgmt-planes#evolution). C1 is the first milestone where the full row reads as written; C0 is the left column.
+
+## Scope checklist (delta over C0)
+
+- [ ] YAML schemas for `links.yaml` and `paths.yaml`, plus `florio.socket` in `cluster.yaml`
+- [ ] Second compiled artifact schema (`link.json`) and revised per-node output layout (`<node>/{link,cluster}.json`)
+- [ ] Cluster-vertex SPIFFE ID convention (`cluster-vertices/<node>`) wired through issuance, compile, and runtime
+- [ ] Deterministic label allocator
+- [ ] `florctl compile` emitting two-artifact per-node layout (`<node>/{link,cluster}.json`)
+- [ ] Additional validator rules (link validity, address feasibility, multi-hop path validity, label feasibility, principal role coherence)
+- [ ] `florctl issue-bundle --node <n>` includes the node's cluster-vertex identity alongside workload principals
+- [ ] `flor agent run --role link|cluster` (two daemon instances per node)
+- [ ] Example `my-cluster/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
+
+## Reasoning
+
+Captured justifications for the C1-specific additions. See the [C0 reasoning](../../c0-tended-tunnels/ctrl-mgmt-planes/reasoning) for everything else.
+
+<Accordions type="single">
+  <Accordion title="Reasons behind the C1 additions">
+
+### Why two compiled artifacts per node (recursive stack)
+
+C1 runs two flor instances per node: **link-flor** (UDP socket on the wire, FlorIO datagram socket upward) and **cluster-flor** (FlorIO downward, QUIC mTLS and Portal APIs upward). This is the recursive architecture from [Data Plane](./data-plane/) — QUIC-in-userspace on top requires a datagram socket it can own, hence the split.
+
+Each flor instance needs its own compiled artifact. The source YAML does not expose the recursive structure — it stays operator-centric (nodes, links, services) and the compiler fans out into `link.json` + `cluster.json`. Exposing the recursion in YAML would be a leaky abstraction: operators would configure the same node twice with slightly different framings, and any mistake in "which layer does this belong to" would only be caught at runtime.
+
+### Why cluster vertex is a principal, but link vertex isn't
+
+Crypto identity only exists for entities that **initiate or terminate mTLS**. Applying that rule to C1's two-layer stack:
+
+- **Cluster-flor** initiates/terminates QUIC mTLS with peer cluster-flors (and additionally, end-to-end mTLS to/from services and users). So it needs an identity: the cluster vertex.
+- **Link-flor** is a pure UDP forwarder — it shuttles datagrams between the local cluster-flor (over FlorIO) and peer nodes' link-flors (over UDP). It doesn't inspect payloads and doesn't terminate any cryptographic session. So it needs no identity.
+
+"Link vertex" is therefore a data-plane role, not a principal. Making it a principal would mean inventing a second mTLS layer on the UDP wire (pre-shared keys, or another CA-signed cert, or noise handshake), which would duplicate what QUIC already does on top. Empty configuration on the link side is deliberate — the cleanest possible statement of "this is just UDP transport."
+
+The cluster vertex, by contrast, is a genuine protocol entity: one per node per Florete cluster, with its own SPIFFE ID (`spiffe://<cluster>/cluster-vertices/<node>`), used for hop-by-hop mTLS on the mesh. Multi-tenancy works naturally: one physical node joining two Florete clusters runs two cluster-flors with two cluster-vertex identities, one per trust domain.
+
+Cluster-vertex identity is kept separate from the node identity introduced in C0 (`spiffe://<cluster>/nodes/<node>`) on purpose. The two serve different lifecycles — the node principal scopes to a machine's control-plane traffic (which outlives any single cluster membership), whereas a cluster-vertex identity scopes to participation in one specific cluster's mesh, and in theory a single node could hold more than one cluster vertex per cluster. Merging them would collapse those lifecycles; the question is left open as a later design iteration.
+
+### Why multi-hop paths need MPLS-style labels (and why they're compiler-allocated)
+
+Multi-hop forwarding needs a way for each intermediate vertex to know, per incoming packet, where to forward it without re-doing access-control checks end-to-end. MPLS-style labels are the standard answer: a small integer attached per hop that indexes directly into a forwarding table.
+
+Hand-written labels are the biggest footgun in manual-mode routing — two operators edit the same link and clash; a label gets reused after deletion; the forwarding table silently blackholes traffic. Compiler-allocated labels eliminate the class: operators write hop sequences (the thing they actually want), and the allocator produces a collision-free, deterministic labelling from there.
+
+Declarative path derivation (`--derive-paths`) is deferred because operator intent for multi-hop routing (especially redundancy and preferred paths) doesn't yet have a clean declarative shape in our model. Manual paths are the minimum viable form while the topology+access model stabilises.
+
+  </Accordion>
+</Accordions>

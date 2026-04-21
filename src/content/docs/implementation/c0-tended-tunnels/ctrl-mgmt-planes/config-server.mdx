@@ -1,0 +1,58 @@
+---
+title: Config-server
+description: Management-node config distribution service for C0
+---
+
+## Config-server
+
+The **config-server** is the cluster infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
+
+It's declared in `services.yaml` as **two separate services** — one for reads (nodes) and one for writes (operators) — so Florete's per-service RBAC can gate them cleanly:
+
+```yaml
+# services.yaml — cluster infrastructure
+services:
+  config-server:                # read-only: serves compiled artifacts to nodes
+    at: mgmt01
+    addr: 127.0.0.1:9000
+    group: control-plane        # reserved group; read-access for `node` role
+  config-publisher:             # write: accepts new compiled trees from florctl
+    at: mgmt01
+    addr: 127.0.0.1:9001        # same process as config-server, different port+endpoint
+    group: control-plane-write  # reserved group; write-access for `operator` role
+  metrics:
+    at: mgmt01
+    addr: 127.0.0.1:9090
+    group: control-plane
+  # ... workload services
+
+# groups.yaml — reserved groups
+groups:
+  control-plane:       [config-server, metrics]
+  control-plane-write: [config-publisher]
+
+# roles.yaml — reserved role definitions (must be provided; validator enforces)
+roles:
+  node:     { allow: [control-plane]       }   # auto-assigned by compiler to every node
+  operator: { allow: [control-plane-write] }   # manually assigned in users.yaml
+```
+
+**Reserved-name conventions:**
+
+- `node`, `operator` (roles), `control-plane`, `control-plane-write` (groups), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial cluster template.
+- **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `nodes/` principal (so each node's compiled artifact has the right egress row to reach `config-server`). The `operator` role is assigned manually in `users.yaml` (`fyodor: { role: operator }`) — the validator rejects the cluster if no user has it (otherwise nothing can publish).
+
+**Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "config-server" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `control-plane`) and one for writes (gated by `operator` role via `control-plane-write`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
+
+This split doesn't give per-node isolation of *reads* — every `node` principal can `GET /artifact/<any-node>` as long as it reaches the read-service. Tightening this (so alpha can only fetch `alpha.json`) requires passing the verified peer SPIFFE ID to the HTTP layer, which flor deliberately does **not** do today — flor is a pure L4/L5 forwarder (QUIC/mTLS + TCP bytes), and reaching into HTTP to inject `X-Florete-Peer-SpiffeID` headers would promote it to an L7 proxy. That's a meaningful architectural shift with knock-on design questions (which component owns L7? is it flor itself, an adjacent sidecar, a side-channel lookup API?), and it needs careful design in C1+ rather than a rushed solution now. Flagged in [Open Follow-ups](../#open-follow-ups) and tied to the broader L7 awareness topic there. For pilots, the exposed ACL-matrix metadata is tolerable.
+
+**Wire protocol (C0).** Both services speak plain HTTP over the Florete mTLS tunnel.
+
+- `config-server: GET /artifact/<node>?version=<n>` — returns `<node>.json` if the caller passed the `control-plane` ingress gate. (No path/identity cross-check in C0; see note above.)
+- `config-publisher: POST /tree` — accepts a new compiled tree from `florctl`. Only reachable by callers with `operator` role.
+
+C0 doesn't need anything more elaborate — no streaming, no deltas, no watch. Nodes poll on their own cadence via `flor sync`.
+
+**Management-node bootstrap (chicken-and-egg).** The config-server can't fetch its own artifact from itself before it's running. Resolution: the management node is bootstrapped manually. The operator runs `florctl compile`, copies `mgmt01.json` and its enrollment bundle to the management node over SSH, and starts `flor agent run` directly against that local artifact. Once it's up (with the config-server service listening on `127.0.0.1:9000` via Florete), the operator runs `florctl publish` and from then on `mgmt01` refreshes itself via the normal `flor sync` flow. The manual step is genuinely one-shot per management node.
+
+**Availability.** Config-server downtime doesn't break running traffic — nodes keep running their last installed artifact. The only thing that fails is publishing new state. HA (two management nodes with replicated state) is a post-C0 concern; pilots can tolerate short outages.
