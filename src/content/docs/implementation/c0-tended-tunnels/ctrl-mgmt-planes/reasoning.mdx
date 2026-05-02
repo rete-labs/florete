@@ -47,9 +47,9 @@ The full list of motivators:
 4. **Stable boundary** — we can restructure YAML sources freely as long as the compiled schema is stable. Agent code decouples from operator ergonomics.
 5. **Validation before distribution** — a bad edit fails `florctl validate` locally; it never reaches nodes.
 6. **Determinism** — same-input same-output across machines; two operators independently compiling produce identical artifacts, detectable by diff.
-7. **Committed artifacts = inspectable, auditable shipments.** "What config did alpha actually get?" = `git log .flor/compiled/alpha.json`. No need to reconstruct from YAML. Artifacts contain only path references (no secrets), so committing them is safe. The config-server is the live wire path; git is the audit trail.
+7. **Committed artifacts = inspectable, auditable shipments.** "What config did alpha actually get?" = `git log .flor/compiled/alpha/`. No need to reconstruct from YAML. Artifacts contain only path references (no secrets), so committing them is safe. The config-server is the live wire path; git is the audit trail.
 
-This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C1 the pattern carries forward with two compiled artifacts per node (one per flor instance in the recursive stack) instead of one.
+This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C0 the per-node output is two artifacts (`agent.json` + `vertices/flor.json`); in C1 a third is added for the second flor vertex in the recursive stack. The split is between supervisor (agent) and data-plane (vertex), so each consumer's contract stays minimal.
 
 ## Why CA-based identity (not pinned certs)
 
@@ -79,7 +79,23 @@ Istio (`AuthorizationPolicy` + SPIFFE IDs), Linkerd (`MeshTLSAuthentication`), a
 
 For Florete, modelling both `user` and `service` as principals means a single role mechanism covers both "which users can reach which services" (ingress ACL) and "which services can call which other services" (egress from service perspective). The compiler evaluates the same matrix either way.
 
-This also makes p2p service pairs trivial: two services that call each other just hold two overlapping role grants. No special "p2p" primitive needed. C1 extends the same principle to cluster vertices as an additional principal kind for mesh-layer mTLS; nodes are already principals in C0 (for control-plane traffic), so the uniformity holds across all four kinds.
+This also makes p2p service pairs trivial: two services that call each other just hold two overlapping role grants. No special "p2p" primitive needed. The per-node `flor agent` workload extends the same principle: it owns the `nodes/<node>` identity and is wired into the vertex's `workloads` list like any other principal, with a SOCKS5 inbound channel for its outbound calls to config-server. C1 extends the principle to cluster-vertices as a fourth kind for hop-by-hop mesh-layer mTLS, so all kinds — users, services, nodes, cluster-vertices — share the same principal mechanism.
+
+## Why `flor agent` is a separate principal from `flor vertex`
+
+C0 could plausibly be one process per node (the data-plane vertex doing its own config-server talk on the side, with the node identity baked in). That works for C0's single-vertex case but breaks down the moment there's more than one vertex on a node — *which* of them owns the node identity and the config-server poll loop? With C1's recursive stack right around the corner, picking that answer per release would be churn.
+
+Splitting up front avoids the issue: `flor agent` is a first-class workload that **owns** the node identity (`spiffe://<cluster>/nodes/<node>`) and is the only thing that talks to the config-server. The flor vertex below it is a pure data-plane component, driven entirely by its compiled config, with no awareness of the cluster control plane. The agent, like any other principal, doesn't *hold* the node cert+key — it delegates the mTLS handshake to the vertex via a SOCKS5 channel, exactly as alice delegates her mTLS to flor. Same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
+
+This also maps cleanly to the HLD's [Execution Plane Agent concept](../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and the vertices it supervises are themselves workloads. Adding more vertex kinds (C1's link+cluster, future interrete layers) is just listing more entries under `vertices` in `agent.json`.
+
+How the agent actually launches a vertex — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C0. The runtime contract is just "a vertex starts when given its config"; the rest is platform detail. The shape resembles kubelet's relationship to its container runtime; that analogy is intentional, but the WRI design is deferred.
+
+## Why one `workloads` list with directional `io[]`
+
+An earlier draft of the per-node payload had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated principal-vs-target with workload kind, and started straining as soon as a second flor binary (link-flor in C1) needed to carry an entry that's both principal and target on a single FlorIO channel.
+
+Unifying to `workloads[].io[].direction` resolves the asymmetry: a workload is a principal if it has at least one `inbound` channel, a target if it has at least one `outbound` channel, both if both. Users, services, the agent's `nodes/<node>` principal, and (in C1) cluster-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
 
 ## Why per-service SOCKS5 outbound (no container namespaces)
 
@@ -101,11 +117,11 @@ Transparent outbound for non-SOCKS5 apps (iptables redirect, libc shim) is a lat
 
 ## Why C0 has no inter-node links (and no cluster-vertex identity)
 
-In C0, QUIC connections are established **directly between service/user endpoints over UDP** — there's no mesh-of-vertices in between. The single `flor` at each node hosts QUIC endpoints for its local principals and services; there are no node-to-node mTLS links.
+In C0, QUIC connections are established **directly between service/user endpoints over UDP** — there's no mesh-of-vertices in between. The single flor vertex at each node hosts QUIC endpoints for its local principals and services; there are no node-to-node mTLS links.
 
-This means C0 has **no cluster-vertex identity layer**, no `links.yaml`, no `paths.yaml` — the hop-by-hop mesh crypto layer simply doesn't exist. Workload access is fully derivable from users + services + roles + groups without any routing configuration. Nodes do carry their own principal identity (for control-plane communication with the config-server and metrics services), but that's orthogonal to the workload data plane and to mesh transit.
+This means C0 has **no cluster-vertex identity layer**, no `links.yaml`, no `paths.yaml` — the hop-by-hop mesh crypto layer simply doesn't exist. Workload access is fully derivable from users + services + roles + groups without any routing configuration. The agent at each node carries its own principal identity (for control-plane communication with the config-server and metrics services), but that's orthogonal to the workload data plane and to mesh transit.
 
-Inter-node links appear only in C1, when cluster-flor is introduced on top and pairs of cluster vertices need authenticated channels over which multiple service-to-service connections can multiplex. That's when cluster vertex identity, `links.yaml`, and `paths.yaml` become necessary.
+Inter-node links appear only in C1, when cluster-flor is introduced on top and pairs of cluster-vertices need authenticated channels over which multiple service-to-service connections can multiplex. That's when cluster-vertex identity, `links.yaml`, and `paths.yaml` become necessary.
 
 ## Why RBAC (not per-principal ACLs)
 
@@ -131,20 +147,20 @@ This is how WireGuard / OpenVPN enterprise deployments work. Users never see git
 Every node needs the operator's latest compiled artifact for its own machine. Options considered:
 
 - **Nodes git-pull from the cluster repo.** Requires embedding a git client in `flor` plus a deploy-key credential in every enrollment bundle. Adds a second auth plane on top of Florete mTLS, binds us to a git forge, and makes bundle revocation painful (rotate deploy key + re-issue every legitimate bundle).
-- **Operator runs `scp <node>.json` to each node.** No audit trail; operator can't do this from a phone; doesn't survive the management use-case of "user wants to sync on demand".
+- **Operator runs `scp` of the per-node compiled directory to each node.** No audit trail; operator can't do this from a phone; doesn't survive the management use-case of "user wants to sync on demand".
 - **Nodes fetch from a Florete-protected HTTPS service run by the cluster itself.** Reuses the cluster's existing mTLS + SPIFFE identity model. No second auth plane. Bundle revocation = remove principal from YAML and publish. Runs on any provider (or none — self-hosted). Also gives us a natural home for the metrics sink (`POST /metrics/...`) and future features (event streams, CRL distribution).
 
 The third option — the config-server — wins on every axis that matters at our scale: fewer moving parts, one access-control system, no forge lock-in, no extra credential to rotate. The cost is that we now have one always-on server per cluster (the management node), but pilots already need that machine for metrics anyway, and the config-server is just another Florete-published service living next to it.
 
 **Why HTTP inside Florete instead of a bespoke RPC.** HTTPS is already ubiquitous, trivially testable with `curl`, and has every client library any operator tool will want. Our mTLS happens at the Florete layer, not the HTTP layer — the HTTP endpoint binds `127.0.0.1` and is only reachable through the Florete tunnel, so HTTP is just the framing.
 
-**Why polling, not push.** Pilot scale doesn't justify the complexity of server-push (long-polling, WebSocket, reconnect handling). Nodes poll on a timer (default: every 10 minutes, configurable) and operators can always trigger an immediate `flor sync` for urgent rollouts. Push lands in B1 when the coordination server becomes first-class anyway.
+**Why polling, not push.** Pilot scale doesn't justify the complexity of server-push (long-polling, WebSocket, reconnect handling). Agents poll on a timer (default: every 10 minutes, configurable) and operators can always trigger an immediate `flor agent sync` for urgent rollouts. Push lands in B1 when the coordination server becomes first-class anyway.
 
 **Management-node bootstrap is the only inherent drawback.** The config-server can't serve its own artifact before it's running. The one-shot manual bootstrap (scp the bundle + `mgmt01.json`, start the agent) is documented as a playbook step and handles this cleanly — once `mgmt01` is up, everything else flows through it.
 
 ## Why `--commit-timeout` by default (safety net)
 
-Publishing SSH over Florete means a bad `flor sync` can remotely brick a server. This is the classic network-device failure mode, and the industry-standard mitigation is `commit confirmed`: activate the change, require explicit confirmation within a timeout, else auto-rollback.
+Publishing SSH over Florete means a bad `flor agent sync` can remotely brick a server. This is the classic network-device failure mode, and the industry-standard mitigation is `commit confirmed`: activate the change, require explicit confirmation within a timeout, else auto-rollback.
 
 Cisco IOS, Juniper JunOS, and most serious network-equipment CLIs default to this pattern. For Florete's pilot use case, the same pattern:
 
@@ -189,7 +205,7 @@ The resolution: **both, interchangeably**. Canonical form is the SPIFFE URI `spi
 
 An earlier draft used a bespoke `flor://` scheme. Switching to `spiffe://` costs nothing and buys real compatibility: what we produce is a SPIFFE X.509-SVID by definition (trust domain in the authority, workload path in the URI, URI in the SAN). Any SPIFFE consumer — SPIRE agents, Istio, Linkerd, Vault, Envoy, third-party auditing — can ingest our identities without adapters. The brand loss is tiny; the optionality gain is large.
 
-Path-kind namespacing (`users/`, `services/`, `cluster-vertices/`) is layered inside the SPIFFE path. SPIFFE itself leaves path structure to the implementer; we use these prefixes to prevent cross-kind collisions (alice-the-user vs. alice-the-service). The convenience hostname elides the `services/` segment because services are the only kind of entity a workload ever dials.
+Path-kind namespacing (`users/`, `services/`, `nodes/`, `cluster-vertices/`) is layered inside the SPIFFE path. SPIFFE itself leaves path structure to the implementer; we use these prefixes to prevent cross-kind collisions (alice-the-user vs. alice-the-service). The convenience hostname elides the `services/` segment because services are the only kind of entity a workload ever dials.
 
 `.rete` is unregistered. It's not a good DNS citizen in the strict sense (RFC 6761 reserves specific names, not this one), but Florete's stub resolver intercepts before the OS resolver sees it, so queries never leave the host. Alternatives like `.rete.test` or URI-only were considered; `.rete` won on ergonomics. Can be revisited if IETF registers something better.
 
@@ -214,12 +230,14 @@ An earlier draft deferred this split to later milestones ("single binary is fast
 
 ## Why C0 before C1
 
-A single-flor prototype (service-to-service QUIC over UDP, identity-based tunnels, no FlorIO, no recursion, no cluster vertex layer) is:
+The architecture was designed C1-first — the recursive vertex/principal model, the agent/vertex split, and the unified `workloads`/`io[]` schema all only fully earn their keep once there's more than one vertex per node. C0 ships first anyway, because it's a strict reduction: same agent, same single vertex with the same compiled-artifact shape, just no cluster-flor on top, no FlorIO, no recursion, no cluster-vertex layer.
+
+A single-flor-vertex prototype (service-to-service QUIC over UDP, identity-based tunnels) is:
 
 - Smaller scope → faster to ship.
 - Useful on its own as a "better VPN" product category.
 - Dogfoodable in our own prod/staging immediately.
 - First-pilot surface: we can sell "identity-based VPN replacement" before we sell "service mesh".
-- De-risks C1: the service-endpoint machinery is exercised in production before cluster-vertex meshing lands on top.
+- De-risks C1: the agent + service-endpoint machinery is exercised in production before cluster-vertex meshing lands on top.
 
-C1 reuses the full CA + identity + enrollment + install + bundle machinery from this spec. C1 adds cluster vertex identities, `links.yaml`, `paths.yaml`, a second compiled artifact, and the cluster-flor instance on top — additive, not replacing.
+C1 reuses the full CA + identity + enrollment + install + bundle machinery from this spec. C1 adds cluster-vertex identities, `links.yaml`, `paths.yaml`, a second compiled vertex artifact, and the cluster-flor instance on top — additive, not replacing.

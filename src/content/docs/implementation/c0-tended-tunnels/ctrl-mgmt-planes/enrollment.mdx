@@ -14,8 +14,8 @@ Once per cluster:
 1. `florctl ca init` — generate CA keypair; `ca.crt` committed to the repo, private key stays on the operator's laptop.
 2. Create the private git repo for YAML source-of-truth (GitHub, GitLab, Gitea, self-hosted). Only the operator needs write access; nodes never pull from it. Seed it with the cluster template: `cluster.yaml`, reserved entries in `groups.yaml` and `roles.yaml`, empty `nodes.yaml`/`services.yaml`/`users.yaml` scaffolds, the operator's own `users.yaml` entry (`fyodor: { role: operator, nodes: [fyodor-laptop] }`).
 3. Designate a management node (`mgmt01` by convention) with an Internet-reachable UDP address. Declare it in `nodes.yaml`, publish `config-server` + `config-publisher` + `metrics` on it (copy from the template), and commit.
-4. **Bootstrap `mgmt01` manually** (pre-Florete): issue its bundle with `florctl issue-bundle --node mgmt01`, run `florctl compile`, SSH to the machine, install the bundle + `mgmt01.json` compiled artifact, start `flor agent run`. Once it's up, the config-server and config-publisher services are reachable over Florete.
-5. **Bootstrap the operator's own machine** (the first Florete participant): issue `florctl issue-bundle --node fyodor-laptop`, copy its `fyodor-laptop.json` compiled artifact locally (same pre-Florete route, since publish isn't available yet), install the bundle + artifact, start `flor agent run`. The operator now runs flor as the `fyodor` user principal with `role: operator`, and `florctl` auto-discovers the operator's SOCKS5 port via the local agent socket (see [florctl local wiring](#florctl-local-wiring) below).
+4. **Bootstrap `mgmt01` manually** (pre-Florete): issue its bundle with `florctl issue-bundle --node mgmt01`, run `florctl compile`, SSH to the machine, install the bundle (which already includes mgmt01's `agent.json` and `vertices/flor.json`), start `flor agent run`. Once it's up, the config-server and config-publisher services are reachable over Florete.
+5. **Bootstrap the operator's own machine** (the first Florete participant): issue `florctl issue-bundle --node fyodor-laptop`, install it (the bundle carries fyodor-laptop's compiled artifacts; same pre-Florete route, since publish isn't available yet), start `flor agent run`. The operator now runs as the `fyodor` user principal with `role: operator`, and `florctl` auto-discovers the operator's SOCKS5 port via the local agent socket (see [florctl local wiring](#florctl-local-wiring) below).
 6. Run `florctl publish` for the first time — this is the first Florete-over-Florete call (via `fyodor`'s SOCKS5 → config-publisher on mgmt01). From this point on, the config-server is authoritative and all further state changes flow through it.
 7. Publish a static landing page (GitHub Pages or equivalent) with generic platform one-liners for end users to install `flor`. No secrets on it.
 
@@ -25,7 +25,7 @@ Steps 4–6 are the only pre-Florete operations in the cluster's lifetime. Every
 
 `florctl` is a Florete client; `florctl publish` talks to `config-publisher` over the cluster's own mTLS. It doesn't need its own config file: it auto-discovers context from the local `flor` agent.
 
-- `florctl` looks up `~/.flor/agent.sock` (the local control socket that `flor status` already uses) and asks it: "which local SOCKS5 listener is bound to a principal with the `operator` role?" The agent answers `127.0.0.1:NNNN`, and `florctl` uses that as its HTTP client's SOCKS5 proxy.
+- `florctl` looks up `~/.flor/agent.sock` (the local control socket that `flor agent status` already uses) and asks it: "which local SOCKS5 listener is bound to a principal with the `operator` role?" The agent answers `127.0.0.1:NNNN`, and `florctl` uses that as its HTTP client's SOCKS5 proxy.
 - The config-publisher's URL (`https://config-publisher.<cluster>.rete` or the SPIFFE ID form) is read from `cluster.yaml` in the checked-out repo.
 - Fallback if the agent isn't running or the operator prefers not to depend on it: `florctl --socks5 127.0.0.1:NNNN --as fyodor publish`. No persistent state required.
 
@@ -41,12 +41,12 @@ Bundles are **per node**, not per principal. A bundle enrolls a machine and ever
 2. Operator: `florctl issue-bundle --node alice-laptop --cluster <config-server-url> --validity 30d --out alice-laptop.bundle`.
    - Looks up every principal that runs on `alice-laptop` (here: `alice` user + the `alice-laptop` node itself).
    - Generates keypairs for each on the operator's machine; signs each cert.
-   - Packages: `ca.crt`, node cert + key, per-principal cert + key, config-server URL, expected config-server SPIFFE ID.
+   - Packages: `ca.crt`, node cert + key, per-principal cert + key, config-server URL, expected config-server SPIFFE ID, plus a current `agent.json` and `vertices/flor.json` for alice-laptop.
    - Encrypts with a one-time symmetric key; produces a short-lived personalized URL.
    - Appends one sign-event per signed cert to `enrollment.log`.
 3. Operator runs `florctl compile && florctl publish` to push the new state.
 4. Operator sends the URL to alice via Telegram/email: _"Run `curl <url> | sh`. Expires in 24h."_
-5. Alice runs the one-liner. The installer downloads `flor` and runs `flor enroll alice-laptop.bundle`, which writes `~/.flor/{ca.crt, alice-laptop.crt, alice-laptop.key, alice.crt, alice.key}`, makes a single mTLS call to the config-server using the node identity, installs `alice-laptop.json`, and starts the agent.
+5. Alice runs the one-liner. The installer downloads `flor` and runs `flor enroll alice-laptop.bundle`, which writes `~/.flor/{ca.crt, alice-laptop.crt, alice-laptop.key, alice.crt, alice.key}` plus the bundled `agent.json` and `vertices/flor.json`, then starts `flor agent run`. The agent brings up the vertex and immediately runs `flor agent sync` once to pick up any newer state from the config-server.
 6. The agent is live; alice can connect to her permitted services immediately.
 
 **Flow B — principal-generated keypair (security-purist):**
@@ -70,7 +70,7 @@ Operator:
 1. Removes the principal from YAML (`users.yaml` / `services.yaml`).
 2. Appends a revoke-event to `enrollment.log` (records cert fingerprint, timestamp, operator identity).
 3. `florctl compile && florctl publish`.
-4. Nodes pick up the change on their next `flor sync` (automatic on a timer, or operator-triggered).
+4. Nodes pick up the change on their next `flor agent sync` (automatic on a timer, or operator-triggered).
 
 The revoked principal's SPIFFE ID no longer appears in any `ingress.allow` anywhere, so even a still-live private key holder can't pass the mTLS handshake on any peer. (Post-C0 hardening: include the cert fingerprint alongside the SPIFFE ID in `allow` entries so a rogue CA-signed cert for the same ID is also rejected — see [Open Follow-ups](../#open-follow-ups).) Since distribution is via the config-server (not git + deploy keys), there is no pull-credential to rotate: compromising the bundle compromises one principal's cert, which is already handled by removing it from the YAML. If the leak predates any compile, the principal never reached the published state in the first place.
 

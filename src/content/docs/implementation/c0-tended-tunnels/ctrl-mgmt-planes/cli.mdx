@@ -42,8 +42,8 @@ Notes:
 - `florctl ca init` runs **once per cluster**. CA private key never leaves operator's secure storage.
 - `florctl ca sign` is the low-level primitive; `florctl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and config-server bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
 - `--kind` on `ca sign` selects the SPIFFE path namespace (`users`, `services`, `nodes` in C0; C1 adds `cluster-vertices`).
-- `florctl compile` writes artifacts to `.flor/compiled/` inside the repo. Artifacts contain only path references to local `~/.flor/` keys, no secrets — committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
-- `florctl publish` uploads the current `.flor/compiled/` tree to the cluster's config-server; nodes fetch their own artifact on the next `flor sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
+- `florctl compile` writes artifacts to `.flor/compiled/<node>/` inside the repo (with `agent.json` and `vertices/flor.json` per node). Artifacts contain only path references to local `~/.flor/` keys, no secrets — committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
+- `florctl publish` uploads the current `.flor/compiled/` tree to the cluster's config-server; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
 - Nothing in `florctl` affects running agents directly. It reads and writes the cluster repo plus operator-local CA material, and talks to the config-server over the cluster's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.
 
 ### flor (node, daemon + user CLI)
@@ -53,33 +53,37 @@ flor id create --node <node> [--principal <kind>/<name>]...
                                             # generate keypairs locally for the node and
                                             # any workload principals to run on it;
                                             # package CSRs into a bundle (Flow B)
-flor enroll <bundle>                        # bootstrap: install certs, fetch artifact,
-                                            # start agent (two-step: bundle → sync)
-
-flor sync [--commit-timeout <duration>]     # default 5m; 0 disables
-          [--dry-run]                       # show artifact diff, no restart
-          [--confirm]                       # finalise a pending commit-timeout sync
-
-flor status                                 # local agent state + active artifact version
+flor enroll <bundle>                        # bootstrap: install certs, install initial
+                                            # compiled artifacts, start agent
+                                            # (two-step: bundle → sync)
 flor version                                # binary version
 
-flor agent run --config <compiled.json>     # the daemon (system service)
+flor agent run    --config <agent.json>     # the supervisor daemon (system service);
+                                            # supervises one `flor vertex run` in C0
+flor agent sync   [--commit-timeout <d>]    # default 5m; 0 disables
+                  [--dry-run]               # show artifact diff, no restart
+                  [--confirm]               # finalise a pending commit-timeout sync
+flor agent status                           # local agent state + active artifact version
+
+flor vertex run   --config <vertex.json>    # the data-plane daemon spawned by the agent;
+                                            # can also be run by hand for debugging
 ```
 
 Notes:
 
 - `flor id create` runs on the target machine for **Flow B** (security-purist) enrollment; generates keypairs for the named node + any principals hosted on it, emitting a CSR bundle for the operator to sign. The operator tells the user which principal names to include (out-of-band), so the bundle matches what `users.yaml` + `services.yaml` declare for that node.
-- `flor enroll <bundle>` is a **two-step bootstrap**. **Step 1**: unpack the bundle (CA cert + node cert + key + workload certs + keys + config-server URL + expected config-server SPIFFE ID) and write everything to `~/.flor/`. This gives the node exactly enough material to make one mTLS connection. **Step 2**: internally run `flor sync` to fetch the node's full compiled artifact from the config-server over Florete, then start the agent. Re-keying (or adding a new workload on this node) re-runs the same command with a freshly-issued bundle.
-- `flor sync` fetches `<this-node>.json` from the cluster's config-server over Florete, installs it, and restarts the agent with a commit-timeout guard. No compilation on the node — the artifact was pre-compiled by the operator and published to the config-server.
-- **`--commit-timeout` is on by default** (5 min). A new artifact becomes active; if `flor sync --confirm` isn't run within the timeout, the previous artifact is restored and the agent restarts. Cisco IOS `commit confirmed` pattern.
-- `flor agent run` is the single long-running process per node in C0. (C1 adds a second instance for the cluster-flor layer.)
-- `flor status` reads from a **local Unix socket** exposed by the daemon. A future tray-icon GUI (B1+) will be another client of the same socket — CLI and GUI share the same daemon API.
+- `flor enroll <bundle>` is a **two-step bootstrap**. **Step 1**: unpack the bundle (CA cert + node cert + key + workload certs + keys + config-server URL + expected config-server SPIFFE ID + a current `agent.json` and `vertices/flor.json`) and write everything to `~/.flor/`. This gives the node enough material to start running immediately. **Step 2**: start `flor agent run`, which brings up the vertex and then runs `flor agent sync` once to refresh against whatever the cluster currently runs. Re-keying (or adding a new workload on this node) re-runs the same command with a freshly-issued bundle.
+- `flor agent sync` fetches `<this-node>/{agent.json, vertices/flor.json}` from the cluster's config-server over Florete (acting as the `nodes/<node>` principal via the local vertex's SOCKS5), installs the new artifacts, and restarts the supervised vertex with a commit-timeout guard. No compilation on the node — artifacts were pre-compiled by the operator and published to the config-server.
+- **`--commit-timeout` is on by default** (5 min). New artifacts become active; if `flor agent sync --confirm` isn't run within the timeout, the previous artifacts are restored and the vertex restarts. Cisco IOS `commit confirmed` pattern.
+- `flor agent run` is the long-running supervisor process per node. In C0 it manages one `flor vertex run` child; C1 adds a second vertex for the cluster-flor layer. How exactly the agent launches vertices (direct fork, systemd unit, future local workload-runtime interface) is intentionally not pinned here; the runtime contract is just "a vertex starts when given its config".
+- `flor vertex run` is the data-plane daemon. It reads its own config and runs the workloads/io/transport-endpoint/connection-manager described there — no awareness of the agent, the config-server, or the rest of the cluster.
+- `flor agent status` reads from a **local Unix socket** exposed by the agent. A future tray-icon GUI (B1+) will be another client of the same socket — CLI and GUI share the same daemon API.
 
 **Explicitly deferred from C0**:
 
 - Any YAML-mutation subcommands.
 - Multi-hop paths and label allocation (C1 feature).
 - SIGHUP hot reload.
-- CRL / OCSP. (Revocation is by name removal + `flor sync`.)
+- CRL / OCSP. (Revocation is by name removal + `flor agent sync`.)
 - Delta state updates.
 - iptables-based transparent outbound redirection for services that can't speak SOCKS5.

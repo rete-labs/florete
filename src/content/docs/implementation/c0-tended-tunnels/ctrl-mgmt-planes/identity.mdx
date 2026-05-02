@@ -7,18 +7,20 @@ description: Principal types, CA management, and SPIFFE naming scheme for C0
 
 ### Types of Principal
 
-| Kind | Exists in C0 | Used for |
-|---|---|---|
-| Cluster CA root | Yes | Signs all other identities |
-| User | Yes | Human workload, end-to-end mTLS to services |
-| Service | Yes | Service workload, end-to-end mTLS + as caller (principal role) |
-| Node | Yes | Control-plane mTLS — node ↔ cluster infrastructure (config-server, metrics) |
+| Kind | Exists in C0 | Owned by | Used for |
+|---|---|---|---|
+| Cluster CA root | Yes | The operator | Signs all other identities |
+| User | Yes | The human (their workload) | End-to-end mTLS to services |
+| Service | Yes | The service workload | End-to-end mTLS + as caller (principal role) |
+| Node | Yes | The per-node `flor-agent` workload | Control-plane mTLS — agent ↔ cluster infrastructure (config-server, metrics) |
+
+Each principal's cert+key are *held* by a flor vertex acting on the principal's behalf. In C0 there's only one vertex per node, so it holds the node identity (for the agent), every user identity hosted on that node, and every service identity hosted on that node — all on their respective owners' behalves. The vertex isn't any of those principals, just like C0 flor isn't alice or api; it carries their material because that's where mTLS terminates.
 
 Key points:
 
-- **Nodes are principals, but only at the control-plane layer.** Every node has a SPIFFE identity (`spiffe://<cluster>/nodes/<node>`) used solely for node ↔ cluster-infrastructure mTLS — fetching compiled state from the config-server, pushing metrics. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals, with the node's own identity out of the picture.
+- **`flor-agent` is a principal, not a vertex.** It owns the node identity (`spiffe://<cluster>/nodes/<node>`) and uses it solely for agent ↔ cluster-infrastructure mTLS — fetching compiled state from the config-server, pushing metrics. The agent does not hold the cert+key; it delegates the mTLS handshake to the local flor vertex via a SOCKS5 channel, the same way alice does. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals, with the agent's own identity out of the picture.
 - **Services are first-class principals.** A service's identity is both the server side of its inbound mTLS and the client side of its outbound connections. The `role` field in services.yaml governs what the service can call.
-- **Node identity is a separate kind from the future cluster-vertex identity.** C1 introduces `cluster-vertices/` for hop-by-hop mesh-transit mTLS. The two kinds stay distinct: a machine can join multiple Florete clusters (one node identity per cluster) and could, in theory, carry more than one cluster vertex per cluster. Whether to merge them is an open design question deferred to C1.
+- **Node identity and cluster-vertex identity are distinct principal kinds with distinct holders.** C1 introduces `cluster-vertices/` for hop-by-hop mesh-transit mTLS, owned by cluster-flor (the upper vertex in C1's recursive stack) and held by link-flor below it. Node identity is owned by `flor-agent`. The two kinds belong to different workloads, used at different mTLS layers, with different lifecycles — there's no question of merging. A machine can join multiple Florete clusters (one agent + one node identity per cluster) and in C1 also carries one cluster-vertex per cluster (or more, in theory).
 
 ### CA Management
 
@@ -28,7 +30,7 @@ Key points:
 - **Private keys**: stay on the machine that generated them (`~/.flor/<name>.key`). Never in the repo.
 - **Signed certs**: delivered to the principal that holds the matching private key; stored locally at `~/.flor/<name>.crt`. Not committed to the repo. CA cert (`ca.crt`) is the only shared cert in git.
 - **Audit**: `enrollment.log` in the repo records every sign event (operator identity, principal name, role, timestamp, cert fingerprint). Append-only, optionally GPG-signed by the operator.
-- **Revocation in C0**: remove the principal's entry from `users.yaml` / `services.yaml` and append a revoke-event to `enrollment.log`. Operator runs `florctl compile` → `florctl publish`. The next `flor sync` drops the principal from every affected node's ingress table, so even if the revoked private key is still on a machine somewhere, it can no longer pass any peer's access check. CRL/OCSP is deferred until B1.
+- **Revocation in C0**: remove the principal's entry from `users.yaml` / `services.yaml` and append a revoke-event to `enrollment.log`. Operator runs `florctl compile` → `florctl publish`. The next `flor agent sync` drops the principal from every affected node's ingress table, so even if the revoked private key is still on a machine somewhere, it can no longer pass any peer's access check. CRL/OCSP is deferred until B1.
 
 ### CA Key Protection
 
@@ -66,7 +68,7 @@ Examples:
 - `spiffe://rete-lovers/services/alpha/ssh` — SSH on node alpha.
 - `spiffe://rete-lovers/nodes/alpha` — alpha's node principal (used to reach the config-server and metrics services over Florete).
 
-C1 extends this with `spiffe://<cluster>/cluster-vertices/<node>` for mesh-transit mTLS — a **separate** kind from `nodes/`, because a single machine can participate in multiple Florete clusters (one node identity per cluster) and could in theory carry more than one cluster vertex per cluster. Merging the two kinds is a C1+ design question.
+C1 extends this with `spiffe://<cluster>/cluster-vertices/<node>` for hop-by-hop mesh-transit mTLS — a **separate** kind from `nodes/` because the two are owned by different workloads (`flor-agent` for `nodes/`, cluster-flor for `cluster-vertices/`) and held at different layers in C1's recursive stack.
 
 ### Convenience Hostname (services only)
 
