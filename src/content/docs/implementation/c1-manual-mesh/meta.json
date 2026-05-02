@@ -2,7 +2,7 @@
     "pages": [
         "scope",
         "data-plane",
-        "ctrl-mgmt-planes"
+        "mgmt-plane"
     ],
     "defaultOpen": false
 }

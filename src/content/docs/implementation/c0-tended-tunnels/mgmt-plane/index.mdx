@@ -1,11 +1,11 @@
 ---
-title: Control & Mgmt Planes
-description: Design of control and management planes for C0
+title: Management Plane
+description: Design of the management plane for C0
 ---
 
 ## Context
 
-C0 has no automatic control and management planes. Cluster state is declared manually in a git repo and distributed to every node through a lightweight operator workflow: declare → validate → compile → commit (audit) → publish → nodes sync. The two planes will split conceptually in B1+ when a coordination server lands and push replaces poll. Both C0 and C1 share this manual foundation; C0 is the reference design, and C1 layers the mesh-specific additions on top.
+C0 has only a management plane — operator-authored, signed cluster state. There is no control plane yet: nothing makes dynamic decisions about traffic at runtime. State is declared manually in a git repo and distributed to every node through a lightweight operator workflow: declare → validate → compile → commit (audit) → publish → nodes sync. A control plane lands in B1+ as a separate, parallel artifact stream operating within the bounds set by signed mgmt state (see [Decision authority layers](#decision-authority-layers) below). Both C0 and C1 share this manual foundation; C0 is the reference design, and C1 layers the mesh-specific additions on top.
 
 The design must balance three forces:
 
@@ -32,7 +32,7 @@ This spec is also the boundary that the rest of C0 (agent internals, identity, f
 ## Details
 
 Specific design topics are placed in separate pages:
-<SiblingCards path="/docs/implementation/c0-tended-tunnels/ctrl-mgmt-planes" />
+<SiblingCards path="/docs/implementation/c0-tended-tunnels/mgmt-plane" />
 
 ## Evolution
 

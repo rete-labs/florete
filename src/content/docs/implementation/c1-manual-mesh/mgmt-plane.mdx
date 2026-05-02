@@ -1,11 +1,11 @@
 ---
-title: Control & Mgmt Planes
-description: Control & management plane additions for C1 Manual Mesh
+title: Management Plane
+description: Management plane additions for C1 Manual Mesh
 ---
 
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 
-This milestone inherits the control & management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/ctrl-mgmt-planes/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` with commit-timeout, same naming scheme, same atomic-artifact distribution.
+This milestone inherits the management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/mgmt-plane/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` with commit-timeout, same naming scheme, same atomic-artifact distribution. C1 still has no control plane — that lands in B1+.
 
 What C1 adds is the **mesh layer**: cluster-vertex as a new principal kind (with SPIFFE IDs of the form `spiffe://<cluster>/cluster-vertices/<node>`), declared inter-node links, explicit multi-hop paths, and a second flor vertex per node so the recursive stack from [Data Plane](../data-plane/) can run.
 
@@ -44,7 +44,7 @@ Everything else (CA, per-node bundles, revocation, `flor agent sync --commit-tim
 
 ```
 my-cluster/
-├── …                     # everything from C0 ctrl-mgmt-planes
+├── …                     # everything from C0 mgmt-plane
 ├── links.yaml            # NEW: declared UDP peerings between cluster-vertices
 ├── paths.yaml            # NEW: manual route specs (hop sequences)
 └── .flor/
@@ -160,7 +160,7 @@ On top of C0's:
 
 ## Compile step additions
 
-`florctl compile` produces **three artifacts per node** in C1, all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/ctrl-mgmt-planes/validate-and-compile#compile-step)):
+`florctl compile` produces **three artifacts per node** in C1, all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)):
 
 ```json
 {
@@ -383,7 +383,7 @@ The bundle may also include a current `agent.json` + per-vertex configs from the
 
 ## Evolution
 
-Unchanged from [the C0 evolution table](../../c0-tended-tunnels/ctrl-mgmt-planes#evolution). The "Binaries" row updates from "Single `flor` (link role)" to "`flor agent` + N `flor vertex` per node, same binary, different subcommands." C1 is the first milestone where every row reads as written.
+Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolution). The "Binaries" row updates from "Single `flor` (link role)" to "`flor agent` + N `flor vertex` per node, same binary, different subcommands." C1 is the first milestone where every row reads as written.
 
 ## Scope checklist (delta over C0)
 
@@ -403,7 +403,7 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/ctrl-mgmt-planes
 
 ## Reasoning
 
-Captured justifications for the C1-specific additions. See the [C0 reasoning](../../c0-tended-tunnels/ctrl-mgmt-planes/reasoning) for everything else.
+Captured justifications for the C1-specific additions. See the [C0 reasoning](../../c0-tended-tunnels/mgmt-plane/reasoning) for everything else.
 
 <Accordions type="single">
   <Accordion title="Reasons behind the C1 additions">
