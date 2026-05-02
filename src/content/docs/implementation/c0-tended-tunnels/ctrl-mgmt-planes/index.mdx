@@ -20,13 +20,13 @@ This spec is also the boundary that the rest of C0 (agent internals, identity, f
 - **Source of truth is a git repo of YAML files, hand-edited.** No embedded DB. No CLI mutators that round-trip through YAML. Git diffs are the audit log; YAML comments explain intent.
 - **The CLI does a handful of things**: CA operations, identity / bundle issuance, validation, per-node compilation, safe apply. It never mutates source YAML. Smallest surface that still gives us safety.
 - **SPIFFE identities from day one.** Cluster has a root CA; principals get CSRs signed into X.509 certs whose SAN holds a SPIFFE URI (`spiffe://<cluster>/<kind>/<name>`). Peers verify by CA signature, not pinned cert. Only `ca.crt` lives in the repo — individual certs are delivered to their holders and stored locally. Real SPIFFE X.509-SVIDs, no extra cost.
-- **Principals are uniform.** Users, services, and nodes are principals with cluster-scoped identities. Roles attach to any principal. Users and services hold workload identities (end-to-end mTLS); nodes hold a separate control-plane identity used to reach the cluster's own infrastructure services (config-server, metrics). (C1 adds cluster vertices as a further, distinct principal kind — a mesh-transit identity that stays separate from the node identity.)
+- **Principals are uniform.** Users, services, and nodes are principals with cluster-scoped identities. Roles attach to any principal. Users and services own workload identities (end-to-end mTLS); the per-node `flor-agent` workload owns a separate node identity used to reach the cluster's own infrastructure services (config-server, metrics). Each principal's cert+key are *held* by a flor vertex acting on the principal's behalf — the agent included. (C1 adds cluster-vertices as a further, distinct principal kind for hop-by-hop mesh transit.)
 - **Access is fully derived in C0.** With no multi-hop routing, who-reaches-what is determined by `users.yaml` + `services.yaml` + `roles.yaml` + `groups.yaml` + service location. No `paths.yaml`, no label allocation — the compiler walks the ACL matrix directly.
-- **Restart-with-rollback, not SIGHUP (for C0).** `flor sync` fetches the pre-compiled artifact from the config-server and restarts the agent; `--commit-timeout` auto-rolls-back if the operator doesn't confirm within the window. Full hot-reload is hard; but the agent should be built with swappable ACL tables from day one so that a near-term post-C0 **ACL-only hot-reload** (see [Hot reload](distribution-and-reload#hot-reload)) can swap permission tables in place — that covers ~80% of day-to-day changes (add/remove user, change role membership) without dropping connections. Structural changes (new service, port change, identity rotation) still need a restart.
+- **Restart-with-rollback, not SIGHUP (for C0).** `flor agent sync` fetches the pre-compiled artifacts from the config-server and restarts the supervised vertex; `--commit-timeout` auto-rolls-back if the operator doesn't confirm within the window. Full hot-reload is hard; but the agent should be built with swappable ACL tables from day one so that a near-term post-C0 **ACL-only hot-reload** (see [Hot reload](distribution-and-reload#hot-reload)) can swap permission tables in place — that covers ~80% of day-to-day changes (add/remove user, change role membership) without dropping connections. Structural changes (new service, port change, identity rotation) still need a restart.
 - **RBAC, not per-principal ACLs.** Permissions attach to roles; principals get roles. Keeps the access control matrix smaller.
 - **Atomic full-artifact state delivery, with a monotonic version stamp.** Deltas are a later optimization; the version number is a zero-cost forward-compat anchor for them.
 - **Operator-issued bundles, not user-initiated PRs.** Users never need git write access or forge accounts. The operator is the only writer of cluster state.
-- **Stable boundary = the compiled per-node artifact.** C0 produces it from YAML; C1 adds a second artifact for the cluster-flor layer with the same envelope; B1 fetches it from a coordination server; distributed control plane later emits it by consensus. The agent consumes the same shape throughout.
+- **Stable boundary = the compiled per-node artifacts.** C0 produces an `agent.json` plus one `vertices/flor.json` per node from YAML; C1 adds a second vertex artifact for the cluster-flor layer with the same envelope; B1 fetches them from a coordination server; distributed control plane later emits them by consensus. The agent and vertex consume the same shapes throughout.
 
 ## Details
 
@@ -41,7 +41,7 @@ The compiled per-node artifact is the stable public contract. What changes acros
 |-------------------|--------------------------------|--------------------------------|---------------------------------|-------------------------------|
 | Scope             | Service-to-service direct      | Full mesh, manual paths        | Same mesh, derived paths        | Same mesh                     |
 | Protocol entities | Users, services, nodes         | + Cluster vertices             | Same as C1                      | Same as C1                    |
-| Binaries          | Single `flor` (link role)      | Two `flor` (link+cluster)      | Same as C1                      | Same as C1                    |
+| Binaries          | `flor agent` + 1 `flor vertex` | `flor agent` + 2 `flor vertex` | Same as C1                      | Same as C1                    |
 | Source of truth   | YAML in git repo               | YAML in git repo               | Coordination server DB          | Consensus across agents       |
 | Compile           | Local, service-level only      | Local, both layers             | Server-side                     | Any agent / consensus-derived |
 | Distribution      | Bundle + config-server fetch   | Bundle + config-server fetch   | Server push (WebSocket/gRPC)    | Gossip + pull                 |
@@ -55,20 +55,22 @@ The compiled per-node artifact is the stable public contract. What changes acros
 ## Scope Checklist
 
 - [ ] YAML schemas for all source files + `ca.crt` location + `enrollment.log` format
-- [ ] Compiled artifact schema, semver'd, envelope with version stamp
+- [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and `flor.json` vertex config (`kind: vertex`), semver'd, envelope with version stamp
+- [ ] Per-node compiled output layout: `<node>/{agent.json, vertices/flor.json}`
 - [ ] Naming scheme: canonical URI + `.rete` hostname resolver
 - [ ] `florctl ca init` / `florctl ca sign` (file backend)
 - [ ] `florctl issue-bundle` (operator-side bundle issuer; Flow A keypair generation + Flow B CSR signing)
 - [ ] `florctl validate` with all rules above
-- [ ] `florctl compile --node <name>` emitting deterministic per-node artifact
+- [ ] `florctl compile --node <name>` emitting deterministic per-node artifacts
 - [ ] `florctl publish` pushing the compiled tree to the cluster config-server
 - [ ] Config-server implementation (`GET /artifact/<node>`, `POST /publish`) as a regular Florete-published service
 - [ ] Reserved-name handling: `node` / `operator` roles and `control-plane[-write]` groups must be present in YAML (template); validator enforces; compiler auto-assigns `node` role to every node principal, operators are assigned manually via `role: operator` in `users.yaml`
 - [ ] `flor id create` (CSR bundle producer, node-side)
-- [ ] `flor enroll` (two-step bootstrap: install certs, fetch artifact from config-server, start agent)
-- [ ] `flor sync` with `--commit-timeout` default 5m, `--confirm`, `--dry-run`
-- [ ] `flor agent run` (single-layer, service endpoints over UDP)
-- [ ] `flor status` over local Unix socket
+- [ ] `flor enroll` (two-step bootstrap: install certs, fetch artifacts from config-server, start agent)
+- [ ] `flor agent sync` with `--commit-timeout` default 5m, `--confirm`, `--dry-run`
+- [ ] `flor agent run --config <agent.json>` supervises one `flor vertex` instance in C0
+- [ ] `flor vertex run --config <vertex.json>` daemon entry point
+- [ ] `flor agent status` over local Unix socket
 - [ ] Per-service SOCKS5 outbound proxy with port→identity binding
 - [ ] Installer: `install.sh` for Linux/Mac, MSI for Windows
 - [ ] Static landing page template (per-cluster, zero backend)

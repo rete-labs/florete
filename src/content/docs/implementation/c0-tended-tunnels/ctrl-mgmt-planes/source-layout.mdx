@@ -16,10 +16,16 @@ my-cluster/
 ├── users.yaml            # user identity names, home-node, role
 ├── enrollment.log        # append-only operator sign events (auditable)
 └── .flor/
-    └── compiled/         # committed; operator runs `florctl compile` then commits
-        ├── mgmt01.json   # management node — bootstrap-applied manually (see Config-server)
-        ├── alpha.json
-        ├── beta.json
+    └── compiled/                # committed; operator runs `florctl compile` then commits
+        ├── mgmt01/              # management node — bootstrap-applied manually (see Config-server)
+        │   ├── agent.json
+        │   └── vertices/flor.json
+        ├── alpha/
+        │   ├── agent.json
+        │   └── vertices/flor.json
+        ├── beta/
+        │   ├── agent.json
+        │   └── vertices/flor.json
         └── ...
 ```
 
@@ -30,6 +36,8 @@ What's **not** in the repo:
 - **Individual private keys** — generated on the holder's machine (security-purist flow) or on the operator's machine for bundle issuance (convenience flow). Never committed.
 
 The repo holds **names + ACLs + topology + CA cert**. That's what's needed to compile per-node artifacts and to audit who has access.
+
+Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `vertices/flor.json` (read by the single `flor vertex run` instance the agent supervises in C0). C1 adds a second vertex artifact under `vertices/`; the agent.json shape is stable across both.
 
 ### cluster.yaml
 
