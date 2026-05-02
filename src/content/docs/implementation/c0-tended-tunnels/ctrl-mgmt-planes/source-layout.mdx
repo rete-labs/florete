@@ -39,6 +39,8 @@ The repo holds **names + ACLs + topology + CA cert**. That's what's needed to co
 
 Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `vertices/flor.json` (read by the single `flor vertex run` instance the agent supervises in C0). C1 adds a second vertex artifact under `vertices/`; the agent.json shape is stable across both.
 
+The `.flor/compiled/` tree holds **`plane: "mgmt"` artifacts only.** Ctrl artifacts (`plane: "ctrl"`, B1+) never live in the repo: they're CP-generated, fast-changing, and unsigned — wrong lifecycle for git. They live only in the coordination server's runtime store and in the agent's local state cache. The repo's job is operator-authored signed state and its audit log; that scope doesn't change when CP lands.
+
 ### cluster.yaml
 
 ```yaml

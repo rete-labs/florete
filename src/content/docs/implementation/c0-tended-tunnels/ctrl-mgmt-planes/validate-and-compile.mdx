@@ -28,15 +28,29 @@ Cert chain verification happens at runtime during mTLS, not at validate time —
 ```json
 {
   "schema_version": "1.0",
+  "plane": "mgmt",
   "kind": "agent",
   "version": 42,
   "node": "alpha",
   "generated_at": "2026-04-20T12:00:00Z",
-  "payload": { ... }
+  "payload": { ... },
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "operator:<fingerprint>",
+    "value": "<base64>"
+  }
 }
 ```
 
-`kind` is `"agent"` for `agent.json` and `"vertex"` for vertex configs. (C1 keeps the same envelope shape and reuses `kind: vertex` for both of its per-node vertex artifacts.) `schema_version` tracks the compiled-artifact public contract (semver). `version` is a **monotonic per-compilation number** — lets future delta-based distribution ask "what version do you have?" without re-sending the full tree.
+Field semantics:
+
+- `schema_version` — semver of the compiled-artifact public contract.
+- `plane` — `"mgmt"` for everything in C0/C1. Reserved: `"ctrl"` for the unsigned control-plane decision stream that lands in B1+ (carried in a separate envelope, not inside this one). Discriminating now keeps the envelope schema stable across the split.
+- `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs. (C1 keeps the same envelope shape and reuses `kind: vertex` for both of its per-node vertex artifacts.)
+- `version` — **monotonic per-compilation number**. Lets future delta-based distribution ask "what version do you have?" without re-sending the full tree, and lets agents reject older-than-current artifacts (rollback-attack defense).
+- `signature` — operator signature over the canonical-form envelope minus the `signature` field itself. `key_id` pins which operator key produced it; the agent verifies against the operator public key delivered alongside `ca.crt` at enrollment. The signing key never leaves operator hardware. Algorithm details, key rotation, and emergency-revocation mechanics are not designed in C0/C1 — single operator key with file-backed storage is sufficient at this scale.
+
+In B1+, a parallel `plane: "ctrl"` envelope (unsigned) will carry CP decisions and reference the mgmt `version` it obeys; agents will refuse a ctrl artifact whose claimed mgmt version is older than what the agent already holds. C0/C1 do not produce ctrl artifacts.
 
 ### Terminology
 
@@ -52,6 +66,7 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
 ```json
 {
   "schema_version": "1.0",
+  "plane": "mgmt",
   "kind": "agent",
   "version": 42,
   "node": "alice-laptop",
@@ -65,7 +80,8 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
       "principal":     "spiffe://rete-lovers/nodes/alice-laptop",
       "config_server": "spiffe://rete-lovers/services/config-server"
     }
-  }
+  },
+  "signature": { "alg": "ed25519", "key_id": "operator:<fingerprint>", "value": "<base64>" }
 }
 ```
 
@@ -78,6 +94,7 @@ A user device initiates connections only — no `listen_udp`-served services. Th
 ```json
 {
   "schema_version": "1.0",
+  "plane": "mgmt",
   "kind": "vertex",
   "version": 42,
   "node": "alice-laptop",
@@ -122,7 +139,8 @@ A user device initiates connections only — no `listen_udp`-served services. Th
         "allow": ["spiffe://rete-lovers/users/alice"]
       }
     ]
-  }
+  },
+  "signature": { "alg": "ed25519", "key_id": "operator:<fingerprint>", "value": "<base64>" }
 }
 ```
 
@@ -133,6 +151,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 ```json
 {
   "schema_version": "1.0",
+  "plane": "mgmt",
   "kind": "vertex",
   "version": 42,
   "node": "alpha",
@@ -192,7 +211,8 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
         "allow": ["spiffe://rete-lovers/services/api"]
       }
     ]
-  }
+  },
+  "signature": { "alg": "ed25519", "key_id": "operator:<fingerprint>", "value": "<base64>" }
 }
 ```
 
