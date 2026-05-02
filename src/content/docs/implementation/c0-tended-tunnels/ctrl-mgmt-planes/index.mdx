@@ -25,6 +25,7 @@ This spec is also the boundary that the rest of C0 (agent internals, identity, f
 - **Restart-with-rollback, not SIGHUP (for C0).** `flor agent sync` fetches the pre-compiled artifacts from the config-server and restarts the supervised vertex; `--commit-timeout` auto-rolls-back if the operator doesn't confirm within the window. Full hot-reload is hard; but the agent should be built with swappable ACL tables from day one so that a near-term post-C0 **ACL-only hot-reload** (see [Hot reload](distribution-and-reload#hot-reload)) can swap permission tables in place — that covers ~80% of day-to-day changes (add/remove user, change role membership) without dropping connections. Structural changes (new service, port change, identity rotation) still need a restart.
 - **RBAC, not per-principal ACLs.** Permissions attach to roles; principals get roles. Keeps the access control matrix smaller.
 - **Atomic full-artifact state delivery, with a monotonic version stamp.** Deltas are a later optimization; the version number is a zero-cost forward-compat anchor for them.
+- **Mgmt artifact is signed by the operator; agents verify locally.** The signing key never leaves operator hardware — the cluster's coordination server (today the config-server, B1+ a managed cloud service) only stores and serves; it cannot mint or modify state. C0/C1 are the degenerate case: every artifact is signed mgmt and there are no control-plane decisions yet. The envelope carries a `plane: "mgmt"` discriminator and a `signature` field from day one so a parallel unsigned `plane: "ctrl"` stream can land in B1+ without schema churn. See [Decision authority layers](#decision-authority-layers) below for the evolution target.
 - **Operator-issued bundles, not user-initiated PRs.** Users never need git write access or forge accounts. The operator is the only writer of cluster state.
 - **Stable boundary = the compiled per-node artifacts.** C0 produces an `agent.json` plus one `vertices/flor.json` per node from YAML; C1 adds a second vertex artifact for the cluster-flor layer with the same envelope; B1 fetches them from a coordination server; distributed control plane later emits them by consensus. The agent and vertex consume the same shapes throughout.
 
@@ -49,8 +50,26 @@ The compiled per-node artifact is the stable public contract. What changes acros
 | Consensus         | Operator (1 person)            | Operator (1 person)            | Single-writer server            | Raft / CRDT                   |
 | Paths             | N/A (direct forwards)          | Manual `paths.yaml`            | Derived from topology + access  | Derived, per-agent resolution |
 | State updates     | Atomic (poll config-server)    | Atomic (poll config-server)    | Atomic push                     | Atomic; deltas in B2+         |
+| Decision authority| Operator only (signed mgmt)    | Operator only (signed mgmt)    | + bounded CP (unsigned, within signed policy) | + agent fast-path autonomy (FRR-class) within CP/policy bounds |
+| Artifact streams  | `plane: "mgmt"` (signed)       | `plane: "mgmt"` (signed)       | + `plane: "ctrl"` (unsigned)    | Same                          |
 
 **Preserving manual mode as a power mode**: manual configuration (YAML in git + operator-run config-server) is a permanent capability tier, not a stepping stone. Hackers, personal setups, airgapped environments, and disaster-recovery fallback all depend on it. Every higher tier is additive — no C0/C1 capability is removed in B1 or beyond.
+
+### Decision authority layers
+
+A second evolution axis, orthogonal to producer/distribution, is **who is allowed to decide what**. The model is one delegation rule applied at three points: at every layer, decisions operate within bounds the layer above signed. C0/C1 use only the top layer; B1+ activates the lower two.
+
+| Layer | Speed | Authority | Scope of decision | How it's verified |
+|---|---|---|---|---|
+| Operator (mgmt plane) | minutes–days | signed | grammar of permitted states (identities, reachability, topology, path constraints) | flors verify operator signature on the mgmt artifact |
+| Control plane (B1+) | seconds–minutes | unsigned, bounded | pick a state within grammar (path failover, link selection, NAT signaling, later: placement) | flors check each ctrl decision against the signed mgmt policy locally |
+| Agent fast-path (B1+) | µs–ms | unsigned, local | sub-millisecond reactions inside what CP/operator allowed (e.g. MPLS-style FRR over reserved paths, BFD-class liveness, queue mgmt) | self-bounded by the configured policy/CP state already in the agent |
+
+This is **policy-bounded autonomy** (capability attenuation): the operator signs *bounds*, lower layers act freely *within* them, and verification stays local — no online operator key, no hot signing key in the cloud. Precedent: Macaroons (caveats narrow capabilities held by untrusted parties), RPKI/ROAs (signed origin authorizations bound dynamic BGP), BGP/FIB + ECMP/FRR (control plane sets paths; data plane reroutes locally on failure), OPA-style admission policies.
+
+The CP can always *narrow* what policy allows (drain a node, rate-limit, circuit-break) but never broaden it. Identity issuance stays operator-only forever; CP and agents never mint identities.
+
+C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determines runtime state. The shape we lock in now — signed mgmt envelope, `plane` discriminator, monotonic versioning — is what lets B1+ add the lower layers additively. The policy language itself is **not** designed now; it grows feature by feature as B1+ capabilities pull on it.
 
 ## Scope Checklist
 

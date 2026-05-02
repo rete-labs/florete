@@ -194,6 +194,40 @@ Because the agent-facing contract stays constant, every stage is an additive cap
 
 The practical consequence: treat the compiled-artifact JSON Schema as public API from C0 onward. Semver it. Document it. Don't let implementation details leak into it.
 
+## Why signed mgmt artifacts and policy-bounded autonomy
+
+The cluster's coordination point — config-server today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the cluster. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware; agents verify locally against a pinned operator public key (delivered with `ca.crt` at enrollment). The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
+
+This is the same posture as TUF / Sigstore / Tailscale's Tailnet Lock: sensitive state has a signed root of authority that lives outside the distribution path. We adopt it from C0 — even though C0 has no cloud component yet — because (a) verification logic is cheap to write once and grows with the system, (b) the operational story we sell to security-conscious buyers in B1+ ("you don't need to trust our cloud") is only credible if the property held from day one, and (c) retrofitting signature-checking into a deployed agent base is far harder than shipping it now.
+
+In B1+ the system grows a control plane that makes dynamic decisions (path failover, NAT signaling, link selection, eventually placement). Two choices we explicitly **don't** make:
+
+- **Sign every CP decision.** Round-tripping every dynamic decision through an offline operator key is operationally impossible.
+- **Put a signing key in the cloud.** That defeats the entire posture.
+
+Instead: the operator signs *bounds* — a grammar of allowed states (reachability matrix, topology subset, path constraints, resource caps) — and the unsigned CP picks any state inside the grammar. Each agent verifies CP decisions against the signed bounds locally; the CP holds no key and can be fully untrusted. This is **policy-bounded autonomy** / capability attenuation. Precedent runs deep: Macaroons (caveats narrow capabilities held by untrusted parties), RPKI/ROAs (signed origin authorizations bound dynamic BGP), OPA-style admission policies, BGP/FIB+FRR (control plane sets paths; data plane reroutes locally on failure). The principle nests one more level for sub-millisecond agent decisions (FRR-class fast reroute within reserved paths) — same delegation rule, finer timescale.
+
+Why this beats the obvious alternatives:
+
+- **vs. simple "everything in mgmt is signed, CP is access-irrelevant":** works for B1 with minimal CP scope but degrades as features land. Service discovery, path selection, load balancing all sit in the grey zone — under simple split you re-litigate "does this leak access?" feature by feature. Under bounded-CP you write the bound once.
+- **vs. signed CP with delegated intermediate key:** equivalent in security iff the key is scoped to the same bounds — and you've put a hot signing key in the cloud, which is exactly what we're selling against. Intermediate keys reappear later as the *implementation* mechanism for delegation, not as a parallel trust chain.
+- **vs. attested CP (TPM/SGX):** wrong shape for cross-platform agents.
+
+What we do **now** in C0/C1 (cheap, hard to retrofit):
+
+1. Sign every mgmt artifact. Single operator key, file-backed, ed25519. Agents verify on every fetch.
+2. Add a `plane` discriminator to the envelope (`"mgmt"` today; `"ctrl"` reserved). The two artifact streams will be parallel files with separate envelopes — not one envelope with mixed signed/unsigned regions, which would make signature scope ambiguous and partial verification fragile.
+3. Keep the monotonic `version` already in the envelope; in B1+ ctrl artifacts will reference the mgmt `version` they obey, and agents will reject ctrl referencing a stale mgmt — same rollback-attack defense applied to CP.
+
+What we deliberately **don't** design now:
+
+- The policy language. Risk: sliding into Cedar/Rego-class complexity. Defense: introduce primitives only as B1+ features pull on them. Most policy will derive from YAML operators already write, with a small "freedoms" addition.
+- Intermediate-key delegation, multi-operator quorum, transparency log, HSM integration. All B1+ when concrete needs justify them.
+- Threat modeling, key ceremony, recovery procedures, emergency revocation. Operational/security-design phase, not the architectural-shape phase. Captured here as evolution direction, not commitment.
+- Agent fast-path autonomy primitives (FRR-class). C0/C1 have nothing dynamic to react to.
+
+C0/C1 are the degenerate case of the model: empty CP, empty agent autonomy, full mgmt determines runtime state. The shape we lock in now is what lets B1+ add the lower decision layers additively without re-cutting envelopes or reissuing identities.
+
 ## Why SPIFFE IDs (not a bespoke `flor://` scheme)
 
 Two use cases pull in opposite directions:

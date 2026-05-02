@@ -160,18 +160,22 @@ On top of C0's:
 
 ## Compile step additions
 
-`florctl compile` produces **three artifacts per node** in C1, all sharing a common envelope (same as in C0):
+`florctl compile` produces **three artifacts per node** in C1, all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/ctrl-mgmt-planes/validate-and-compile#compile-step)):
 
 ```json
 {
   "schema_version": "1.0",
+  "plane": "mgmt",
   "kind": "agent",          // or "vertex"
   "version": 42,
   "node": "alpha",
   "generated_at": "2026-04-20T12:00:00Z",
-  "payload": { ... }
+  "payload": { ... },
+  "signature": { "alg": "ed25519", "key_id": "operator:<fingerprint>", "value": "<base64>" }
 }
 ```
+
+`plane` and `kind` are orthogonal: `plane` is the decision-authority axis (`"mgmt"` signed by the operator today; `"ctrl"` reserved for the unsigned control-plane stream introduced in B1+), `kind` distinguishes the supervisor artifact from the data-plane vertex artifacts. C1 stays at `plane: "mgmt"` for everything; the CP stream lands later.
 
 ### Workloads & IO
 
