@@ -47,7 +47,7 @@ Playbook for a change:
 
 1. Edit YAML (operator, on workstation).
 2. `florctl validate` — catch errors before anything reaches a node.
-3. `florctl compile` — regenerate `.flor/compiled/<node>/{agent.json, vertices/flor.json}` for all nodes.
+3. `florctl compile` — regenerate `.flor/compiled/<node>/mgmt/{agent.json, vertices/flor.json}` for all nodes.
 4. `git add -A && git commit && git push` — commit both YAML and compiled artifacts for audit (nodes don't read this, but it's the shipment log).
 5. `florctl publish` — upload the compiled tree to the config-server. From this moment nodes *can* fetch the new state; they won't until they sync.
 6. Announce window.

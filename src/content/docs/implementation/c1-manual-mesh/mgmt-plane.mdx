@@ -5,7 +5,11 @@ description: Management plane additions for C1 Manual Mesh
 
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 
-This milestone inherits the management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/mgmt-plane/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` with commit-timeout, same naming scheme, same atomic-artifact distribution. C1 still has no control plane — that lands in B1+.
+This milestone inherits the management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/mgmt-plane/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` with commit-timeout, same naming scheme, same atomic-artifact distribution.
+
+C1 is also where the **ctrl-plane artifact stream** appears for the first time, even though no autonomous control-plane service exists yet. In C1 the ctrl artifact is operator-produced via `florctl compile` (degenerate case — every "decision" equals the corresponding bound), but it travels in its own envelope, has its own signature, and is verified separately by each agent against bounds expressed here in mgmt. This page covers the **bounds**; ctrl mechanics and how decisions are derived from them live in [Ctrl Plane](../ctrl-plane/).
+
+**All source YAMLs in the cluster repo author mgmt-plane bounds.** Ctrl-plane decisions are derived: in C1 by `florctl compile`, in B1+ by an autonomous CP service. The authoring surface stays mgmt-shaped throughout — operators never edit ctrl artifacts directly.
 
 What C1 adds is the **mesh layer**: cluster-vertex as a new principal kind (with SPIFFE IDs of the form `spiffe://<cluster>/cluster-vertices/<node>`), declared inter-node links, explicit multi-hop paths, and a second flor vertex per node so the recursive stack from [Data Plane](../data-plane/) can run.
 
@@ -30,13 +34,12 @@ This is also why publication should always go through cluster-flor in the standa
 - **One or two flor vertices per node** instead of C0's one. Same `flor` binary, no `--role` flag — what makes a vertex link-shaped or cluster-shaped is its compiled config (transport_endpoint + connection_manager + which workloads it carries). A node with only UDP-link peerings runs just cluster-flor; nodes with any QUIC peerings additionally run link-flor.
 - **Cluster-vertex as a new principal kind** — one per node per Florete cluster, distinct from C0's node principal. SPIFFE ID `spiffe://<cluster>/cluster-vertices/<node>`. Used for hop-by-hop link-layer mTLS.
 - **`flor-agent` as a first-class principal**, distinct from any vertex. The agent owns the node identity; it delegates mTLS for control-plane traffic to a vertex like every other principal does.
-- **`links.yaml`** — declares UDP peerings between cluster-vertices.
-- **`paths.yaml`** — manual multi-hop route specs at the cluster layer. Labels are compiler-allocated; operators write hop sequences.
-- **Three compiled artifacts per node** — one `agent.json` plus `vertices/{link,cluster}.json`. Operator YAML stays single-layered; the compiler fans out into the recursive structure.
-- **Unified workloads schema** — `local_users` + `local_services` from C0 collapse into a single `workloads` list, with each workload's `io[]` channels carrying explicit directions (`inbound` / `outbound` / `bidirectional`). Same shape used by both vertex configs; cluster-vertex on link-flor and api on cluster-flor are different rows of the same table.
-- **`flor vertex run`** — vertex daemon entry point. The agent supervises one or more of these per node.
+- **`links.yaml`** — declares allowed UDP peerings between cluster-vertices (a topology bound).
+- **`paths.yaml`** — declares allowed multi-hop routes at the cluster layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
+- **Three mgmt artifacts per node** — one `agent.json` plus `vertices/{link,cluster}.json` under `<node>/mgmt/`. Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/vertices/cluster.json` (see [Ctrl Plane](../ctrl-plane/)).
+- **`authorized_control_planes`** in mgmt — the cluster's mgmt artifact carries one or more authorized CP signing pubkeys; agents accept ctrl artifacts only if signed by one of these. In C1 there's a single CP key, operator-held.
 - **Cluster-level FlorIO socket convention in `cluster.yaml`** — a default the compiler bakes into per-workload `io` entries.
-- **Additional validator rules** — link validity, address feasibility, multi-hop path validity, label feasibility, principal-role coherence for services that appear as path initiators.
+- **Additional validator rules** — link validity, address feasibility, multi-hop path validity, principal-role coherence for services that appear as path initiators. (Label feasibility moves to ctrl-plane.)
 
 Everything else (CA, per-node bundles, revocation, `flor agent sync --commit-timeout`, config-server-fronted distribution, naming, version-stamped envelope, SOCKS5 proxy, emergency-access safety net) is identical to C0.
 
@@ -44,19 +47,25 @@ Everything else (CA, per-node bundles, revocation, `flor agent sync --commit-tim
 
 ```
 my-cluster/
-├── …                     # everything from C0 mgmt-plane
-├── links.yaml            # NEW: declared UDP peerings between cluster-vertices
-├── paths.yaml            # NEW: manual route specs (hop sequences)
+├── …                            # everything from C0 mgmt-plane
+├── links.yaml                   # NEW: declared allowed peerings (topology bound)
+├── paths.yaml                   # NEW: declared allowed paths (path bound — hop sequences only, no labels)
+├── .gitignore                   # contains `.flor/compiled/*/ctrl/`
 └── .flor/
-    └── compiled/         # committed (operator runs `florctl compile` then commits)
-        ├── labels.json   # NEW: compiler-allocated label map (part of published state)
-        ├── alpha/        # NEW: per-node subdir (three artifacts per node)
-        │   ├── agent.json
-        │   └── vertices/
-        │       ├── link.json
-        │       └── cluster.json
+    └── compiled/                # committed (operator runs `florctl compile` then commits)
+        ├── alpha/
+        │   ├── mgmt/            # signed by operator; committed
+        │   │   ├── agent.json
+        │   │   └── vertices/
+        │   │       ├── link.json
+        │   │       └── cluster.json
+        │   └── ctrl/            # signed by CP key; gitignored
+        │       └── vertices/
+        │           └── cluster.json
         └── …
 ```
+
+YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is the compiled, signed projection of those bounds. The ctrl subtree alongside it is produced by the same `florctl compile` step in C1 (the ctrl producer becomes a CP service in B1+); it's gitignored because its lifecycle is "runtime state, not authoring artifact." See [Ctrl Plane](../ctrl-plane/) for what's inside `ctrl/`.
 
 ### cluster.yaml (additions only)
 
@@ -87,44 +96,62 @@ nodes:
 
 By convention, the cluster-vertex at node `alpha` has SPIFFE ID `spiffe://rete-lovers/cluster-vertices/alpha`. A node joining multiple Florete clusters appears in each cluster's repo under whatever name that cluster uses; cross-cluster multi-tenancy is handled at the repo level, not in `nodes.yaml`.
 
-### links.yaml (new)
+### links.yaml (new) — topology bound
 
 ```yaml
-# Undirected peerings between cluster-vertices.
-# Both endpoints must be known nodes, with addresses that can reach each other.
-# `type` selects the link adapter:
-#   quic — mTLS over UDP, terminated by link-flor (default; right for Internet-facing)
-#   udp  — bare UDP, terminated directly in cluster-flor (right for trusted private networks)
-links:
-  - { a: alpha, b: beta,  via: public,   type: quic }
-  - { a: alpha, b: gamma, via: internal, type: udp  }
-  - { a: beta,  b: gamma, via: internal, type: udp  }
+# Bound: the set of cluster-vertex peerings the CP is allowed to bring up.
+# Each entry under `allowed_links` is a typed rule. Agents verify ctrl's
+# active peers against the union of all rules' results.
+# In C1 the only rule type is `enum`. New rule types can be added as
+# additional entries in this list without reshaping the schema.
+allowed_links:
+  - type: enum
+    links:
+      - { a: alpha, b: beta,  via: public,   link_type: quic }
+      - { a: alpha, b: gamma, via: internal, link_type: udp  }
+      - { a: beta,  b: gamma, via: internal, link_type: udp  }
+  # Future rule types — illustrative, not implemented in C1:
+  # - { type: any-pair-via, nodes: [alpha, beta, gamma], via_names: [internal], link_type: udp }
 ```
 
 `via` names one of the address entries on each node. The validator checks that both sides have an address with that name and that the two addresses can plausibly reach each other (public↔public, or shared internal network).
 
-`type` defaults to `quic` and selects which connection-manager adapter cluster-flor uses for that peering. A node with at least one `quic` link runs both cluster-flor and link-flor; a node with only `udp` links runs cluster-flor alone.
+`link_type` (renamed from `type` so the rule's own `type` discriminator stays unambiguous) defaults to `quic` and selects which connection-manager adapter cluster-flor uses for that peering. A node with at least one `quic` link runs both cluster-flor and link-flor; a node with only `udp` links runs cluster-flor alone.
 
-### paths.yaml (new)
+In C1 these declared peerings are the **bound** — the operator signs that *only* these peerings are allowed. The ctrl artifact's per-node `active_peers` is a subset (in C1, the full set — degenerate case). In B1+ a CP service might activate a subset based on health, with the bound still capping what's possible.
+
+### paths.yaml (new) — path bound
 
 ```yaml
-# Route notation: "<initiator>|<hop1>|<hop2>|...|<target-service>"
-# Initiator forms:
-#   <user-name>                 — user on their own node
-#   <service>@<node>            — service instance on a specific node
-# Every intermediate hop is a node; last element is the target service.
-# Labels are allocated by `florctl compile`, not hand-written.
-paths:
-  # user → service
-  - alice|alpha|api
-  - alice|beta|gamma|kafka
-  - bob|alpha|ssh
-  # service → service (api calls db and brokers)
-  - api@alpha|beta|mongodb
-  - api@alpha|beta|gamma|kafka
-  # fallback via alpha (post-C1 feature; reserved syntax)
-  # - alice|alpha|beta|mongodb  [priority: 2]
+# Bound: the set of multi-hop routes the CP is allowed to provision.
+# Path notation: "<principal>|<principal-node>|<hop1>|...|<target-service>"
+#   - <principal>: user or service name (the initiator)
+#   - <principal-node>: the node whose cluster-vertex originates the path
+#   - intermediate <hop_n>: cluster-vertex node names traversed in order
+#   - <target-service>: the service name (its host node must equal the last
+#                       intermediate hop, or be the principal-node itself for
+#                       on-node services)
+allowed_paths:
+  - type: enum
+    paths:
+      # users
+      - alice|alice-laptop|alpha|api
+      - alice|alice-laptop|beta|gamma|kafka
+      - bob|bob-workstation|alpha|ssh
+      # services
+      - api|alpha|beta|mongodb
+      - api|alpha|beta|gamma|kafka
+  # Future rule types — illustrative, not implemented in C1:
+  # - { type: any-path-respecting, must_avoid: [delta], max_hops: 4 }
 ```
+
+Paths declared here are the operator-signed bound on which routes are allowed. The ctrl artifact selects which paths are *currently provisioned* and assigns labels for them; agents only ever see local slices of those decisions (their own forwarding rows + label bindings) and never the cluster-wide path enumeration — see [Ctrl Plane](../ctrl-plane/) for why.
+
+### Why typed-rule lists in the YAMLs (and where they don't apply)
+
+The `allowed_links`/`allowed_paths` shells exist in the **bounds** YAMLs because those bounds are exactly the surface CP is allowed to pick within. Adding a new rule type later (say, "any peering between nodes in this VPC") is then a strictly additive change — agents implement the bound-checker as dispatch on the rule's `type`, and unknown rule types fail-closed.
+
+Direct ACLs (`ingress`, `egress`) deliberately *don't* use this shell. They're pure operator authority — CP doesn't narrow ingress/egress allow lists, so there's no bound to express. Richer authoring grammars (roles, groups, future attribute-based selectors) resolve at compile time to flat allow lists in the JSON artifact. Same pattern as C0: rich YAML, flat compiled output.
 
 ## CLI additions
 
@@ -150,17 +177,19 @@ On top of C0's:
 - **Address feasibility** — link pairings use addresses that can actually reach each other (public↔public, or shared internal network). Internal-only nodes can only pair with peers on the same internal network.
 - **Link-type coherence** — `udp`-type links are only allowed on shared internal networks (not over Internet-facing addresses), since they carry no link-layer crypto. `quic`-type links are allowed everywhere.
 - **Multi-hop path validity** —
-  - Initiator is a user or `service@node`.
-  - Every intermediate hop is a node.
-  - Every adjacent pair of hops has a declared link.
-  - The last element is a published service.
-  - The service's host node is the last hop before the service name.
-- **Label feasibility** — per-link label space is finite; validator ensures the allocator will succeed.
+  - First segment is a known principal name (user or service); second segment is the principal's home node (must be a known node, and for users must be a node in `users.yaml::nodes`); subsequent segments before the last are intermediate cluster-vertex hops.
+  - Every adjacent pair of hop nodes has a declared link in `allowed_links`.
+  - The last segment is a published service.
+  - The service's host node equals the last intermediate hop (or, for on-node services, equals the principal's home node directly).
 - **Principal role coherence** — services that appear as path initiators must have a `role` declared.
+
+(Label feasibility is now a ctrl-plane concern — the label allocator runs against the operator-declared paths and surfaces any infeasibility there. See [Ctrl Plane](../ctrl-plane/).)
 
 ## Compile step additions
 
-`florctl compile` produces **three artifacts per node** in C1, all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)):
+`florctl compile` produces **two artifact subtrees per node** in C1: a signed mgmt subtree (`<node>/mgmt/`) and a CP-signed ctrl subtree (`<node>/ctrl/`). The mgmt subtree contains three artifacts (one `agent.json` plus `vertices/{link,cluster}.json`), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
+
+This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelope:
 
 ```json
 {
@@ -261,14 +290,19 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
       { "name": "internal", "adapter": "udp",    "listen": "10.0.0.5:5544"     }
     ]
   },
-  "peers": [
+  "allowed_peers": [
     {
-      "spiffe_id": "spiffe://rete-lovers/cluster-vertices/beta",
-      "via": { "adapter": "via-link" }
-    },
-    {
-      "spiffe_id": "spiffe://rete-lovers/cluster-vertices/gamma",
-      "via": { "adapter": "internal", "udp_peer": "10.0.0.7:5544" }
+      "type": "enum",
+      "peers": [
+        {
+          "spiffe_id": "spiffe://rete-lovers/cluster-vertices/beta",
+          "via": { "adapter": "via-link" }
+        },
+        {
+          "spiffe_id": "spiffe://rete-lovers/cluster-vertices/gamma",
+          "via": { "adapter": "internal", "udp_peer": "10.0.0.7:5544" }
+        }
+      ]
     }
   ],
   "workloads": [
@@ -288,28 +322,23 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
       ]
     }
   ],
-  "forwarding_table": [
-    { "in_label": 17, "out_peer": "spiffe://rete-lovers/cluster-vertices/beta",  "out_label": 42 },
-    { "in_label": 23, "out_peer": "spiffe://rete-lovers/cluster-vertices/gamma", "out_label": 71 }
-  ],
   "ingress": [
     {
       "target_spiffe_id": "spiffe://rete-lovers/services/api",
-      "allow": [
-        { "spiffe_id": "spiffe://rete-lovers/users/alice", "local_label": 9 }
-      ]
+      "allow": ["spiffe://rete-lovers/users/alice"]
     }
   ],
   "egress": [
     {
       "target_spiffe_id": "spiffe://rete-lovers/services/mongodb",
-      "via": {
-        "first_hop": "spiffe://rete-lovers/cluster-vertices/beta",
-        "out_label": 11
-      },
-      "allow": [
-        { "spiffe_id": "spiffe://rete-lovers/services/api", "local_label": 11 }
-      ]
+      "via": { "first_hop": "spiffe://rete-lovers/cluster-vertices/beta" },
+      "allow": ["spiffe://rete-lovers/services/api"]
+    }
+  ],
+  "authorized_control_planes": [
+    {
+      "spiffe_id": "spiffe://rete-lovers/control-planes/primary",
+      "pub_key": "<base64-ed25519>"
     }
   ]
 }
@@ -317,11 +346,17 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
 
 The agent's principal — `nodes/alpha` — appears as a workload here so the agent can dial config-server through cluster-flor like any other principal. This is the mechanism that makes the agent's bootstrap chain work: agent → cluster-flor's SOCKS5 → mTLS to config-server. It's also why the agent doesn't need to hold any cert+key itself.
 
-`connection_manager.adapters[]` is a **list**, one entry per active link type, each with a stable `name` that the `peers[].via.adapter` field references. The example above shows alpha running both adapters: `via-link` (FlorIO down to link-flor for QUIC peerings) and `internal` (a bare UDP socket for the trusted-LAN peering with gamma). A node with only QUIC peerings would have just the `florio` adapter; a node with only UDP peerings would have just the `udp` adapter and **no link-flor at all**. Other adapter values (`wg` and similar for third-party links) are foreshadowed in [Scope > Link Protocols](../scope#link-protocols) and [Data Plane](../data-plane/), not implemented in C1.
+`connection_manager.adapters[]` is a **list**, one entry per active link type, each with a stable `name` that per-peer `via.adapter` fields reference. The example above shows alpha running both adapters: `via-link` (FlorIO down to link-flor for QUIC peerings) and `internal` (a bare UDP socket for the trusted-LAN peering with gamma). A node with only QUIC peerings would have just the `florio` adapter; a node with only UDP peerings would have just the `udp` adapter and **no link-flor at all**. Other adapter values (`wg` and similar for third-party links) are foreshadowed in [Scope > Link Protocols](../scope#link-protocols) and [Data Plane](../data-plane/), not implemented in C1.
 
-`peers[]` maps each peer cluster-vertex's SPIFFE ID to the adapter that reaches it (and any per-peer dial info the adapter needs — for `udp` that's the peer's UDP address; for `florio` link-flor below already knows). `forwarding_table` and `egress.via.first_hop` reference peer SPIFFE IDs; the connection manager resolves "which adapter for this peer" via the `peers` map.
+`allowed_peers` is a **typed-rule bound list**, mirroring `allowed_links`/`allowed_paths` in the YAMLs. Each rule produces a set of allowed peers (SPIFFE ID + adapter selection); the agent's effective allowed-peer set is the union across rules. CP-shaped decisions (which subset is currently *active*, which forwarding rows reference which peer) are verified against this bound at the agent — see [Ctrl Plane](../ctrl-plane/).
 
-`forwarding_table`, `ingress.allow[].local_label`, and `egress.via` between them encode the multi-hop machinery: each accepted (initiator, target) pair binds to a forwarding-table row via its `local_label`. Egress points at the first hop (a peer cluster-vertex SPIFFE ID); the connection manager dials through whichever adapter `peers[]` assigns.
+In C1 the only rule type is `enum`; the rule body lists peers explicitly. The `via` per peer (adapter + dial info) is fixed by the operator — CP doesn't switch a peer between QUIC and bare UDP at runtime. CP can only narrow *which* allowed peers it actually uses.
+
+`ingress.allow` and `egress.allow` are **direct flat allow lists** of authorized SPIFFE IDs. They are not bounds and not typed rules — they're pure operator authority. Compile time resolves richer YAML grammar (roles, groups, future selectors) into these flat lists; the agent's check is a simple `principal ∈ allow`. CP cannot narrow ingress/egress, so there's no bounds shell to provide.
+
+Per-allow forwarding labels (`local_label`) and the `forwarding_table` itself are **not in this artifact** — they're CP-shaped state and live in the ctrl artifact (see [Ctrl Plane](../ctrl-plane/)). The mgmt artifact carries only what the operator authored: who may reach what, which peers are allowed, and (for egress) what the first hop is.
+
+`authorized_control_planes` lists CP signing identities the operator has approved; agents accept ctrl artifacts only if signed by one of these pubkeys. In C1 there's a single entry — the operator's CP key, held alongside (but separately from) the operator's mgmt signing key. In B1+ this list grows to one or more CP services.
 
 ### `agent.json` payload
 
@@ -343,19 +378,16 @@ The agent supervises every vertex listed under `vertices`. To reach `config-serv
 
 The number and shape of vertices is fully driven by `vertices`. The standard mixed-topology has two (link + cluster); a node with only `udp`-type links runs cluster-flor alone (one vertex, no link-flor); an enrollment-bootstrap config (single-vertex, direct UDP to mgmt01, just enough for the first sync) is also one. The agent doesn't care — it enumerates whatever it's told to.
 
-### Label allocation
-
-- Per-link counter. For each path, walk hop-by-hop and assign the next unused labels on each link for forward and backward directions.
-- Allocations stored in `.flor/compiled/labels.json`. Committed alongside the per-node artifacts — the label map is part of the published cluster state.
-- `florctl compile --repo X` produces identical output on any machine given identical inputs (deterministic walk order).
+Label allocation, forwarding tables, and the per-allow label bindings are ctrl-plane state, not mgmt — see [Ctrl Plane](../ctrl-plane/) for that machinery.
 
 ## Identity model additions
 
-C1 adds one new principal kind on top of C0's users, services, and nodes:
+C1 adds two new principal kinds on top of C0's users, services, and nodes:
 
 | Kind | In C0 | In C1 | SPIFFE ID | Used for |
 |---|---|---|---|---|
 | Cluster vertex | No | **Yes** | `spiffe://<cluster>/cluster-vertices/<node>` | Hop-by-hop link-layer mTLS (one per node per cluster) |
+| Control plane | Reserved | **Yes** | `spiffe://<cluster>/control-planes/<name>` | Signing authority for ctrl artifacts (one or more per cluster; in C1 a single operator-held key) |
 
 A useful "owned-by / held-by" view across all four principal kinds:
 
@@ -371,6 +403,8 @@ A vertex always *holds* identity material on someone else's behalf — that's th
 Node-identity vs. cluster-vertex-identity isn't a "should we merge them?" question any more — they're held by different vertices, owned by different principals (flor-agent vs cluster-flor), and used for different mTLS layers (control-plane vs. mesh-transit). A node joining multiple Florete clusters runs one flor-agent per cluster (one node identity each) plus the corresponding cluster-flor + link-flor stack per cluster.
 
 Enrollment flow is unchanged: `florctl issue-bundle --node alpha --cluster <config-server-url>` packages alpha's node identity *and* alpha's cluster-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `cluster-vertices/<node>` principal for every node in C1; operators don't declare it anywhere. SPIFFE IDs are derived from the kind + the principal name + the cluster trust domain.
+
+CP signing identities are issued separately on the operator's own machine (`florctl ca sign --kind control-planes --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_control_planes` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
 
 The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the cluster currently runs (which may be richer or simpler than what was bundled).
 
@@ -388,17 +422,18 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 ## Scope checklist (delta over C0)
 
 - [ ] YAML schemas for `links.yaml` (incl. `type: quic | udp`) and `paths.yaml`, plus `florio.socket` default in `cluster.yaml`
-- [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and a single `vertex.json` shape used for both link-flor and cluster-flor (`kind: vertex`)
-- [ ] Per-node compiled output layout: `<node>/{agent.json, vertices/*.json}` (vertices/ contains `cluster.json` always; `link.json` only when the node has at least one `quic`-type link)
-- [ ] Cluster-vertex SPIFFE ID convention (`cluster-vertices/<node>`) wired through issuance, compile, and runtime
-- [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in cluster-flor) implementations, plus the `peers[]` map binding each peer cluster-vertex to an adapter
+- [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and a single `vertex.json` shape used for both link-flor and cluster-flor (`kind: vertex`); `ingress.allow`/`egress.allow` are flat SPIFFE-ID lists; `allowed_peers` (and `allowed_links`/`allowed_paths` in the source YAMLs) use the typed-rule list shape
+- [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, vertices/*.json}` (vertices/ contains `cluster.json` always; `link.json` only when the node has at least one `quic`-type link)
+- [ ] Two new principal kinds wired through issuance, compile, and runtime: `cluster-vertices/<node>` and `control-planes/<name>`
+- [ ] `authorized_control_planes` field in mgmt cluster.json carrying the cluster's CP signing pubkeys
+- [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in cluster-flor) implementations, plus the `allowed_peers` typed-rule bound declaring which peer cluster-vertices are reachable through which adapter
 - [ ] Multi-hop forwarder operates uniformly across mixed adapter types
-- [ ] Deterministic label allocator
-- [ ] `florctl compile` emitting the per-node layout (omitting `link.json` when no QUIC links)
-- [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, label feasibility, principal role coherence)
+- [ ] `florctl compile` emitting the per-node mgmt layout (omitting `link.json` when no QUIC links). The ctrl subtree is produced by the same `florctl compile` invocation but documented in [Ctrl Plane](../ctrl-plane/).
+- [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, principal role coherence)
 - [ ] `florctl issue-bundle --node <n>` includes the node's cluster-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
+- [ ] `florctl ca sign --kind control-planes --name <name>` issues a CP signing keypair on operator hardware
 - [ ] `flor vertex run --config <vertex.json>` daemon entry point
-- [ ] `flor agent run` supervises vertex instances (mechanism — direct fork, systemd, or future local runtime — left open in C1)
+- [ ] `flor agent run` supervises vertex instances (mechanism — direct fork, systemd, or future local runtime — left open in C1); fetches mgmt and ctrl artifacts as separate streams from the config-server
 - [ ] Example `my-cluster/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
 
 ## Reasoning
@@ -444,7 +479,7 @@ Operator YAML doesn't expose this fan-out. The compiler is the only thing that t
 
 A single-link-type C1 forces a bad tradeoff. QUIC-only is right for Internet-facing peerings (NAT traversal, metadata-resistance, mTLS at the link layer) but burns CPU and adds a second crypto layer for peerings that already cross only trusted private network — datacenter racks, office LANs, on-vehicle Ethernet. UDP-only would leave the Internet-facing case unsolved.
 
-The clean answer is to make link type a per-link choice, with both adapters present in cluster-flor's connection manager from the start. From the workload's PoV nothing changes — the mesh looks like one mesh, services are published once in cluster-flor regardless of which underlay each hop uses. From cluster-flor's PoV the multi-hop forwarder takes a peer cluster-vertex SPIFFE ID and the `peers[]` map tells it which adapter to dial through; the forwarder doesn't know or care whether the hop is QUIC-via-link-flor or bare-UDP-direct.
+The clean answer is to make link type a per-link choice, with both adapters present in cluster-flor's connection manager from the start. From the workload's PoV nothing changes — the mesh looks like one mesh, services are published once in cluster-flor regardless of which underlay each hop uses. From cluster-flor's PoV the multi-hop forwarder takes a peer cluster-vertex SPIFFE ID, looks it up in `allowed_peers` for the adapter selection, and dials through the right adapter; the forwarder doesn't know or care whether the hop is QUIC-via-link-flor or bare-UDP-direct.
 
 A consequence worth being explicit about: bare UDP links **don't need a link-flor process**. A node with only UDP-type peerings runs cluster-flor alone, with a `udp` adapter directly bound to a UDP socket. This is also why publication should always go through cluster-flor in the standard topology — using link-flor publication for "private network optimisation" was the wrong solve; the right solve is a UDP link, which keeps the recursive principle intact and the mesh story uniform.
 
@@ -452,13 +487,19 @@ Implementing both adapters from C1 also exercises the multi-adapter shape of `co
 
 Why bare UDP and not "QUIC without crypto"? Because the simplest possible thing wins: a UDP socket is a UDP socket. Anything with QUIC framing pays per-packet header tax that's pure waste in the trusted-LAN case. Reserving "QUIC-but-cheaper" as a future option is fine; in the meantime the bare-UDP adapter is trivial to implement, trivial to reason about, and gives operators the high-performance internal-mesh story they need.
 
-### Why multi-hop paths need MPLS-style labels (and why they're compiler-allocated)
+### Why typed-rule bounds (and only for CP-narrowable surface)
 
-Multi-hop forwarding needs each intermediate vertex to know, per incoming packet, where to forward it without re-doing access-control checks end-to-end. MPLS-style labels are the standard answer: a small integer attached per hop that indexes directly into a forwarding table.
+The typed-rule list shape (`{type: <discriminator>, ...}` items) wraps three things in C1: `allowed_links`, `allowed_paths`, and `allowed_peers`. The common thread is that each is a **bound a CP can narrow within** — CP picks which peerings to actually bring up, which paths to provision, which peers to use this minute. The shell is forward-compat insurance: a future bound type (e.g. `any-pair-via`, `any-path-respecting-constraint`) plugs in as a new `type` value without reshaping the schema; agents that don't recognize a `type` fail-closed.
 
-Hand-written labels are the biggest footgun in manual-mode routing — two operators edit the same link and clash; a label gets reused after deletion; the forwarding table silently blackholes traffic. Compiler-allocated labels eliminate the class: operators write hop sequences (the thing they actually want), and the allocator produces a collision-free, deterministic labelling from there.
+We deliberately *don't* apply the shell to `ingress.allow`/`egress.allow`. Those aren't bounds — CP doesn't narrow them. They're pure operator authority: a flat SPIFFE-ID list resolved at compile time from richer YAML grammar (roles, groups, future attribute-based selectors). Wrapping a flat allow list in a one-rule typed shell would be cargo-cult — the CP-narrowing test it's meant to enable doesn't apply.
 
-Declarative path derivation (`--derive-paths`) is deferred because operator intent for multi-hop routing (especially redundancy and preferred paths) doesn't yet have a clean declarative shape in our model. Manual paths are the minimum viable form while the topology+access model stabilises.
+The pattern of "discriminator-tagged bound types" is proven elsewhere — Kubernetes admission policies, OPA policy types, AWS IAM condition operators. C1's bounds are tiny (one rule type, `enum`); the policy-language work is deferred. The *shell* is what later policy growth plugs into without forcing a schema migration.
+
+### Why labels and forwarding are ctrl-plane, not mgmt
+
+Labels and forwarding tables are intrinsically forwarding-implementation, not security-relevant facts: whether a label is 17 or 42 has no access-control consequence — security comes from the `ingress.allow` check at the target. Tying labels to operator signing cadence forces re-signing on every label change, which is dumb in C1 and impossible in B1+ (where CP changes paths in real time). They belong in the unsigned-but-bounded ctrl stream, even in C1 where the producer is `florctl compile`.
+
+Treating C1 this way also avoids a schema migration at C1→B1+. See [Ctrl Plane](../ctrl-plane/) for the actual mechanics of how labels are allocated, signed (by CP), and verified.
 
   </Accordion>
 </Accordions>

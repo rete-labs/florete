@@ -58,7 +58,8 @@ Two forms are used interchangeably: the **canonical SPIFFE URI** (in certs as SA
 spiffe://<cluster>/users/<user>                         # user principal
 spiffe://<cluster>/services/<service>                   # cluster-scoped service
 spiffe://<cluster>/services/<node>/<service>            # node-scoped service
-spiffe://<cluster>/nodes/<node>                         # node principal (control-plane)
+spiffe://<cluster>/nodes/<node>                         # node principal (used by flor-agent for control-plane traffic)
+spiffe://<cluster>/control-planes/<name>                # control-plane signing identity (added in C1)
 ```
 
 Examples:
@@ -67,8 +68,12 @@ Examples:
 - `spiffe://rete-lovers/services/api` — api service (cluster-scoped).
 - `spiffe://rete-lovers/services/alpha/ssh` — SSH on node alpha.
 - `spiffe://rete-lovers/nodes/alpha` — alpha's node principal (used to reach the config-server and metrics services over Florete).
+- `spiffe://rete-lovers/control-planes/primary` — the cluster's primary CP signing identity (operator-held in C0/C1; cloud-held in B1+).
 
-C1 extends this with `spiffe://<cluster>/cluster-vertices/<node>` for hop-by-hop mesh-transit mTLS — a **separate** kind from `nodes/` because the two are owned by different workloads (`flor-agent` for `nodes/`, cluster-flor for `cluster-vertices/`) and held at different layers in C1's recursive stack.
+C1 extends this with two further kinds:
+
+- `spiffe://<cluster>/cluster-vertices/<node>` — for hop-by-hop mesh-transit mTLS. Separate from `nodes/` because the two are owned by different workloads (`flor-agent` for `nodes/`, cluster-flor for `cluster-vertices/`) and held at different layers in C1's recursive stack.
+- `spiffe://<cluster>/control-planes/<name>` — the signing authority for ctrl artifacts. Distinct from `nodes/` (a service-class identity for control-plane *clients*) and from `services/config-server` (a service-class identity for the *coordination service*). The CP-signing authority compromises independently of those services and rotates on its own cadence, which is why it has its own kind. In C0 the kind exists only as a reservation; nothing produces ctrl artifacts there. The mgmt artifact lists authorized CP pubkeys for the cluster (see C1's ctrl-plane doc).
 
 ### Convenience Hostname (services only)
 
@@ -90,6 +95,6 @@ The `services/` segment is elided in the hostname because services are the only 
 
 To keep URIs unambiguous:
 
-- **Kind segments** used in SPIFFE paths are reserved identifiers and cannot be used as node, user, or service names: `users`, `services`, `nodes`, `cluster-vertices`.
+- **Kind segments** used in SPIFFE paths are reserved identifiers and cannot be used as node, user, or service names: `users`, `services`, `nodes`, `cluster-vertices`, `control-planes`.
 - **Node and service names** cannot contain `/` and cannot collide with each other (a service named `alpha` when there's a node `alpha` is ambiguous in the node-scoped form).
 - **Labels in hostnames** must be DNS-label-valid (lowercase alphanumeric + hyphen, 1–63 chars).

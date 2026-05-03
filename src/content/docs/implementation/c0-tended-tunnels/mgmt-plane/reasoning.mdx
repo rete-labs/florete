@@ -228,6 +228,45 @@ What we deliberately **don't** design now:
 
 C0/C1 are the degenerate case of the model: empty CP, empty agent autonomy, full mgmt determines runtime state. The shape we lock in now is what lets B1+ add the lower decision layers additively without re-cutting envelopes or reissuing identities.
 
+## Why cert rotation stays manual in C0/C1, and the B1+ shape
+
+Identity issuance in C0/C1 is **operator-driven and offline**: `florctl issue-bundle` runs on the operator's machine, mints certs from the offline CA, delivers them out-of-band. Validity is 90 days; renewal = the operator runs the same command before expiry. There's no automation because automation needs an online signer, and the whole zero-trust-cloud posture rests on "no online signing key."
+
+This is fine at pilot scale (handful of principals, weekly cadence) and fits C0/C1's manual-mode framing. It becomes untenable at B1+ scale (hundreds of workloads, ephemeral instances), so a path forward is needed.
+
+The B1+ direction: **a delegated online intermediate CA, bounded by signed operator policy.** Operator's offline root signs a policy of the form "intermediate `I` may issue certs for principal set `{alice, api, kafka, …}`, each cert valid ≤24h, until policy expiry T." The intermediate runs online (managed cloud, or self-hosted), refreshes certs at any cadence, and **cannot create new principals** — that still requires an operator-signed policy update. If the intermediate is breached, the attacker mints short-lived certs only for already-authorized principals during the policy window; they cannot expand the set, extend validity, or persist beyond the next operator-signed policy refresh. Same delegation principle as bounded-CP, applied to identity lifecycle.
+
+The **trade-off** is real and deserves to be named: rotation-via-online-intermediate defends against single-device key leaks (rotate often, leak window is short) but creates a hot signing target that, if compromised, exposes the full authorized principal set during the policy window. We don't claim this is strictly better than offline-only — it's a different point on the convenience/blast-radius curve, and the right point depends on customer risk appetite.
+
+This drives **two deployment tiers** for B1+:
+
+- **Managed issuer** — we host the bounded intermediate. Setup-and-go UX. Compromise blast radius = authorized principal set × policy window. Right for SMBs and pilots.
+- **BYO on-prem issuer** — customer runs the bounded intermediate inside their own infrastructure (DMZ, HSM, hardware-secured server). Same protocol, same operator-signed policy, just a different host. Right for security-conscious enterprises and regulated industries.
+
+Migration between tiers is a config flip, not a re-architecture, because the protocol and the operator-signed policy stay identical across both. Same cluster, different host for the issuer.
+
+A useful refinement available in either tier: **per-principal-class issuance policy.** High-risk principals (operator, infra services, anything reaching production data) keep long-lived offline-issued certs; low-risk workloads rotate frequently through the online intermediate. Same cluster, two trust profiles, both expressed in operator-signed policy. This lets the operator pay the rotation/blast-radius cost only where convenience actually matters.
+
+**SPIFFE compatibility note.** C0/C1 produce SPIFFE-format-conformant X.509-SVIDs but don't implement SPIFFE *issuance* (the SPIRE Workload API). We're a SPIFFE-compatible trust domain whose certs any SPIFFE consumer (Istio, Linkerd, Vault, Envoy) can verify, but our own workloads don't yet receive SVIDs from a Workload-API endpoint — they hold static cert+key files installed at enrollment. The bounded intermediate adds the Workload API as a natural by-product: agents can dispense SVIDs to local workloads via SPIRE-compatible UDS, with rotation driven by the intermediate. We become SPIFFE-issuance conformant without abandoning the zero-trust posture. Until then, "SPIFFE compat" means format and trust shape, not issuance protocol. Don't oversell.
+
+What we do **now** in C0/C1: nothing on rotation automation. The operator-signed mgmt artifact already references certs by path, so future rotation can replace cert files in place without recompiling the artifact — the schema doesn't need changing.
+
+## Why authoring UI must be local (and what cloud UI can do)
+
+Operator-signed mgmt artifacts mean the signing step itself is part of the trust boundary. A cloud-hosted authoring UI weakens that boundary in a specific, well-known way: a compromised cloud serves JavaScript that displays payload B but constructs payload A for signing. Operator signs A thinking it's B. No amount of HTTPS, auth, or MFA fixes this — the JavaScript itself is the attack surface. The crypto industry learned this and answered with hardware wallets that re-render the to-be-signed transaction independently; the same lesson applies here.
+
+This is **What You See Is What You Sign (WYSIWYS)**: the signature must cover the same artifact that the signer actually viewed. When the viewing surface is code served by an untrusted party, that party can disconnect the two.
+
+So the rule for B1+ authoring UX:
+
+- **Read-only views can live in the cloud.** Cluster status, who's connected, mgmt-plane history, ctrl-plane state, metrics, audit log of past signing operations. Even if the cloud lies, it can mislead but cannot make the operator sign anything.
+- **Authoring + signing stay local.** `florctl` is the primary surface; a desktop GUI (Tauri/Electron, or `florctl serve` on localhost) can be added later without changing the trust model. This is how 1Password Desktop, HashiCorp Vault Enterprise authoring tools, and serious wallet apps work — local app, cloud-synced data.
+- **"Draft in cloud, sign locally" handoff** recovers most of the cloud-UI ergonomics without compromising trust: cloud UI proposes a change (renders the canonical to-be-signed payload, generates a signing ticket); operator pulls the ticket into local `florctl`, which **independently re-canonicalizes the payload, displays it, and signs**. The signature covers the canonical form, not whatever the cloud displayed. Cosign / Sigstore container-image signing already works this way.
+
+What we should *not* build: "sign with browser extension," "sign with cloud-stored key," or "delegate signing to a cloud agent." Those failure modes have a long, embarrassing history.
+
+What we do **now** in C0/C1: nothing UI-related (`florctl` is the only authoring surface anyway). One choice we lock in that keeps every UI option open later: **canonical-form-based signing** — the signature covers a deterministic serialization of the envelope, and the envelope carries a `key_id` so any UI surface can independently re-derive and re-display "what is being signed." That property alone keeps cloud-UI, local-GUI, mobile, hardware-token, and quorum-co-signing flows reachable without re-cutting the artifact format.
+
 ## Why SPIFFE IDs (not a bespoke `flor://` scheme)
 
 Two use cases pull in opposite directions:

@@ -75,7 +75,7 @@ C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determi
 
 - [ ] YAML schemas for all source files + `ca.crt` location + `enrollment.log` format
 - [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and `flor.json` vertex config (`kind: vertex`), semver'd, envelope with version stamp
-- [ ] Per-node compiled output layout: `<node>/{agent.json, vertices/flor.json}`
+- [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, vertices/flor.json}`
 - [ ] Naming scheme: canonical URI + `.rete` hostname resolver
 - [ ] `florctl ca init` / `florctl ca sign` (file backend)
 - [ ] `florctl issue-bundle` (operator-side bundle issuer; Flow A keypair generation + Flow B CSR signing)
@@ -112,6 +112,8 @@ Not blockers for C0 release:
 - **Cert fingerprint allowlist** — include the cert fingerprint alongside the SPIFFE ID in each `allow` entry so a rogue CA-signed cert for the same SPIFFE ID is rejected even if name-removal hasn't propagated yet. Adds a field to the compiled artifact schema (semver bump); deferred because name-removal revocation is already effective at pilot scale.
 - Full structural hot-reload (new services, cert rotation, port changes) with connection-preserving restart semantics.
 - CRL / OCSP for immediate mid-cert-lifetime revocation without a new compile cycle.
+- **Automated cert rotation via a bounded online intermediate CA (B1+).** C0/C1 have only manual `florctl issue-bundle` rotation — workable at pilot scale, untenable at scale. The B1+ direction is a delegated intermediate CA whose authority (principal set, validity window) is operator-signed and narrow; can refresh certs freely within bounds, cannot create new principals. Two deployment tiers expected: managed (we host) and BYO on-prem (security-conscious customers run their own). Per-principal-class policy lets high-risk principals stay on long-lived offline-issued certs while low-risk workloads rotate frequently. Adds SPIFFE Workload-API conformance as a natural by-product. See [reasoning](reasoning#why-cert-rotation-stays-manual-in-c0-c1-and-the-b1-shape).
+- **Authoring UI surface (B1+).** Cloud-hosted UI is fine for read-only views (status, audit, metrics), but signing operations must stay local on operator hardware to avoid UI-substitution attacks. Authoring goes in `florctl` and (later) a local desktop GUI; cloud dashboards are read-only or use a "draft in cloud, sign locally" handoff. See [reasoning](reasoning#why-authoring-ui-must-be-local).
 - Transparent outbound for non-SOCKS5 apps (iptables / SO_PEERCRED / libc shim).
 - `flor doctor` diagnostics (ping peers, check access matrix, confirm config-server reachability).
 - Backend-hosted enrollment forms, Slack/Discord approval bots.
