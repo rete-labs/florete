@@ -23,7 +23,7 @@ Cert chain verification happens at runtime during mTLS, not at validate time —
 
 ## Compile Step
 
-`florctl compile` produces **two artifacts per node** in C0 — `agent.json` (consumed by `flor agent run`) and `vertices/flor.json` (consumed by `flor vertex run`) — placed under `<repo>/.flor/compiled/<node>/`. Both share a common envelope:
+`florctl compile` produces **two artifacts per node** in C0 — `agent.json` (consumed by `flor agent run`) and `vertices/flor.json` (consumed by `flor vertex run`) — placed under `<repo>/.flor/compiled/<node>/mgmt/`. The per-node `mgmt/` subdirectory is the only output tree in C0; C1+ adds a sibling `ctrl/` (see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/)). Both artifacts share a common envelope:
 
 ```json
 {
