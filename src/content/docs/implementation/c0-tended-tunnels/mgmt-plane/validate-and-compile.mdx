@@ -25,6 +25,8 @@ Cert chain verification happens at runtime during mTLS, not at validate time —
 
 `florctl compile` produces **two artifacts per node** in C0 — `agent.json` (consumed by `flor agent run`) and `vertices/flor.json` (consumed by `flor vertex run`) — placed under `<repo>/.flor/compiled/<node>/mgmt/`. The per-node `mgmt/` subdirectory is the only output tree in C0; C1+ adds a sibling `ctrl/` (see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/)). Both artifacts share a common envelope:
 
+**Paths in compiled artifacts are scope-relative.** `ca_cert_path`, `cert_path`, and `priv_path` values are bare filenames (`ca.crt`, `alpha.crt`, …). The agent resolves them against the cluster install root (`clusters/<scope>/`) at startup. This keeps artifacts portable: the same compiled JSON is valid regardless of what the operator named the cluster scope locally, and a node joining multiple clusters can hold each cluster's artifacts in separate roots without any path collisions.
+
 ```json
 {
   "schema_version": "1.0",
@@ -72,7 +74,7 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
   "node": "alice-laptop",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
-    "ca_cert_path": "~/.flor/ca.crt",
+    "ca_cert_path": "ca.crt",
     "vertices": [
       { "name": "flor", "config": "vertices/flor.json" }
     ],
@@ -100,20 +102,20 @@ A user device initiates connections only — no `listen_udp`-served services. Th
   "node": "alice-laptop",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
-    "ca_cert_path": "~/.flor/ca.crt",
+    "ca_cert_path": "ca.crt",
     "transport_endpoint": { "type": "quic" },
     "connection_manager": { "adapter": "udp" },
     "workloads": [
       {
         "spiffe_id": "spiffe://rete-lovers/nodes/alice-laptop",
-        "identity":  { "cert_path": "~/.flor/alice-laptop.crt", "priv_path": "~/.flor/alice-laptop.key" },
+        "identity":  { "cert_path": "alice-laptop.crt", "priv_path": "alice-laptop.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1081", "direction": "inbound" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/users/alice",
-        "identity":  { "cert_path": "~/.flor/alice.crt", "priv_path": "~/.flor/alice.key" },
+        "identity":  { "cert_path": "alice.crt", "priv_path": "alice.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
         ]
@@ -157,20 +159,20 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
   "node": "alpha",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
-    "ca_cert_path": "~/.flor/ca.crt",
+    "ca_cert_path": "ca.crt",
     "transport_endpoint": { "type": "quic" },
     "connection_manager": { "adapter": "udp", "listen": "0.0.0.0:4433" },
     "workloads": [
       {
         "spiffe_id": "spiffe://rete-lovers/nodes/alpha",
-        "identity":  { "cert_path": "~/.flor/alpha.crt", "priv_path": "~/.flor/alpha.key" },
+        "identity":  { "cert_path": "alpha.crt", "priv_path": "alpha.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/services/api",
-        "identity":  { "cert_path": "~/.flor/api.crt", "priv_path": "~/.flor/api.key" },
+        "identity":  { "cert_path": "api.crt", "priv_path": "api.key" },
         "io": [
           { "kind": "tcp",    "upstream": "127.0.0.1:8000",  "direction": "outbound" },
           { "kind": "socks5", "listen":   "127.0.0.1:18000", "direction": "inbound"  }
@@ -178,7 +180,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
       },
       {
         "spiffe_id": "spiffe://rete-lovers/services/alpha/ssh",
-        "identity":  { "cert_path": "~/.flor/ssh.crt", "priv_path": "~/.flor/ssh.key" },
+        "identity":  { "cert_path": "ssh.crt", "priv_path": "ssh.key" },
         "io": [
           { "kind": "tcp", "upstream": "0.0.0.0:22", "direction": "outbound" }
         ]

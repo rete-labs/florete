@@ -25,11 +25,11 @@ Steps 4–6 are the only pre-Florete operations in the cluster's lifetime. Every
 
 `florctl` is a Florete client; `florctl publish` talks to `config-publisher` over the cluster's own mTLS. It doesn't need its own config file: it auto-discovers context from the local `flor` agent.
 
-- `florctl` looks up `~/.flor/agent.sock` (the local control socket that `flor agent status` already uses) and asks it: "which local SOCKS5 listener is bound to a principal with the `operator` role?" The agent answers `127.0.0.1:NNNN`, and `florctl` uses that as its HTTP client's SOCKS5 proxy.
+- `florctl` derives the cluster scope from the `--repo` directory's `cluster.yaml` (the `cluster.name` field). It then looks up `~/.flor/clusters/<scope>/agent.sock` (the per-cluster control socket that `flor agent status` uses) and asks it: "which local SOCKS5 listener is bound to a principal with the `operator` role?" The agent answers `127.0.0.1:NNNN`, and `florctl` uses that as its HTTP client's SOCKS5 proxy.
 - The config-publisher's URL (`https://config-publisher.<cluster>.rete` or the SPIFFE ID form) is read from `cluster.yaml` in the checked-out repo.
 - Fallback if the agent isn't running or the operator prefers not to depend on it: `florctl --socks5 127.0.0.1:NNNN --as fyodor publish`. No persistent state required.
 
-This keeps `cluster.yaml` cluster-wide (no per-operator fields) and avoids a second config file. The coupling is shallow: `florctl` only needs `agent.sock` + `cluster.yaml`.
+This keeps `cluster.yaml` cluster-wide (no per-operator fields) and avoids a second config file. The coupling is shallow: `florctl` only needs the cluster-scope `agent.sock` (derived from `cluster.yaml`) and the repo path.
 
 ### Per-Node Enrollment
 
@@ -46,7 +46,7 @@ Bundles are **per node**, not per principal. A bundle enrolls a machine and ever
    - Appends one sign-event per signed cert to `enrollment.log`.
 3. Operator runs `florctl compile && florctl publish` to push the new state.
 4. Operator sends the URL to alice via Telegram/email: _"Run `curl <url> | sh`. Expires in 24h."_
-5. Alice runs the one-liner. The installer downloads `flor` and runs `flor enroll alice-laptop.bundle`, which writes `~/.flor/{ca.crt, alice-laptop.crt, alice-laptop.key, alice.crt, alice.key}` plus the bundled `agent.json` and `vertices/flor.json`, then starts `flor agent run`. The agent brings up the vertex and immediately runs `flor agent sync` once to pick up any newer state from the config-server.
+5. Alice runs the one-liner. The installer downloads `flor` and runs `flor enroll alice-laptop.bundle`, which writes `~/.flor/clusters/rete-lovers/{ca.crt, alice-laptop.crt, alice-laptop.key, alice.crt, alice.key}` plus the bundled `agent.json` and `vertices/flor.json` into that cluster scope, then starts `flor agent run`. The agent brings up the vertex and immediately runs `flor agent sync` once to pick up any newer state from the config-server.
 6. The agent is live; alice can connect to her permitted services immediately.
 
 **Flow B — principal-generated keypair (security-purist):**

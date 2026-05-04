@@ -20,7 +20,7 @@ This spec is also the boundary that the rest of C0 (agent internals, identity, f
 - **Source of truth is a git repo of YAML files, hand-edited.** No embedded DB. No CLI mutators that round-trip through YAML. Git diffs are the audit log; YAML comments explain intent.
 - **The CLI does a handful of things**: CA operations, identity / bundle issuance, validation, per-node compilation, safe apply. It never mutates source YAML. Smallest surface that still gives us safety.
 - **SPIFFE identities from day one.** Cluster has a root CA; principals get CSRs signed into X.509 certs whose SAN holds a SPIFFE URI (`spiffe://<cluster>/<kind>/<name>`). Peers verify by CA signature, not pinned cert. Only `ca.crt` lives in the repo — individual certs are delivered to their holders and stored locally. Real SPIFFE X.509-SVIDs, no extra cost.
-- **Principals are uniform.** Users, services, and nodes are principals with cluster-scoped identities. Roles attach to any principal. Users and services own workload identities (end-to-end mTLS); the per-node `flor-agent` workload owns a separate node identity used to reach the cluster's own infrastructure services (config-server, metrics). Each principal's cert+key are *held* by a flor vertex acting on the principal's behalf — the agent included. (C1 adds cluster-vertices as a further, distinct principal kind for hop-by-hop mesh transit.)
+- **Principals are uniform.** Users, services, and nodes are principals with cluster-scoped identities. Roles attach to any principal. Users and services own workload identities (end-to-end mTLS); each node has a cluster-member identity used by its `flor-agent` workload to reach the cluster's own infrastructure services (config-server, metrics). Each principal's cert+key are *held* by a flor vertex acting on the principal's behalf — the agent included. (C1 adds cluster-vertices as a further, distinct principal kind for hop-by-hop mesh transit.)
 - **Access is fully derived in C0.** With no multi-hop routing, who-reaches-what is determined by `users.yaml` + `services.yaml` + `roles.yaml` + `groups.yaml` + service location. No `paths.yaml`, no label allocation — the compiler walks the ACL matrix directly.
 - **Restart-with-rollback, not SIGHUP (for C0).** `flor agent sync` fetches the pre-compiled artifacts from the config-server and restarts the supervised vertex; `--commit-timeout` auto-rolls-back if the operator doesn't confirm within the window. Full hot-reload is hard; but the agent should be built with swappable ACL tables from day one so that a near-term post-C0 **ACL-only hot-reload** (see [Hot reload](distribution-and-reload#hot-reload)) can swap permission tables in place — that covers ~80% of day-to-day changes (add/remove user, change role membership) without dropping connections. Structural changes (new service, port change, identity rotation) still need a restart.
 - **RBAC, not per-principal ACLs.** Permissions attach to roles; principals get roles. Keeps the access control matrix smaller.
@@ -33,6 +33,35 @@ This spec is also the boundary that the rest of C0 (agent internals, identity, f
 
 Specific design topics are placed in separate pages:
 <SiblingCards path="/docs/implementation/c0-tended-tunnels/mgmt-plane" />
+
+## Multi-cluster on a single node
+
+A computing host may join more than one Florete cluster — for example, a developer's laptop enrolled in both a personal cluster and a work cluster, or a server node managed by two independent operators. This is a first-class use case and the design accommodates it without any special mode.
+
+### Cluster scope
+
+Each cluster a node joins gets its own **cluster scope**: a per-cluster namespace for runtime state and installed material on that host. The scope is identified locally by the cluster name (from `cluster.yaml`). The cryptographic anchor is the bundle's CA cert and operator pubkey — two clusters with the same name can never be confused because their trust roots differ. The local name can be overridden at install time (`flor enroll <bundle> --as <name>`) if two independent clusters happen to share one.
+
+Per cluster scope on the node:
+
+- **Install root**: `~/.flor/clusters/<scope>/` — CA cert, all principal certs and keys for this cluster, compiled artifacts (`agent.json`, `vertices/*.json`), agent control socket (`agent.sock`).
+- **Runtime root**: `/run/flor/<scope>/` — FlorIO sockets and any other runtime files (C1+).
+- **Process tree**: one `flor agent` process supervising its per-cluster vertex stack.
+
+All cert and socket paths in compiled artifacts are **scope-relative** (e.g. `ca.crt`, not `~/.flor/ca.crt`). The agent resolves them against its install root at startup, so artifacts stay portable across nodes regardless of the local scope name.
+
+### Node identity in multiple clusters
+
+A computing host that joins N clusters has N separate `nodes/<name>` principals — one in each cluster's trust domain. The names may differ across clusters (each cluster's operator chooses them independently). Each principal is acted on by a dedicated flor-agent process and held by that cluster's flor vertex. There is no shared node identity across clusters; the trust domains are fully independent.
+
+### Local listen addresses
+
+Compiled artifacts declare listen addresses for SOCKS5 inbounds, upstream TCP endpoints, and (in C1) UDP connection-manager listeners. These are provided by the cluster operator as **defaults**, not guarantees. The node operator is responsible for resolving conflicts:
+
+- **SOCKS5 and per-service inbound ports** — cluster operators pick defaults; if two clusters' defaults collide on the same host, the node operator adjusts one at install time via a local port-override config. Bind failures surface at agent start and are logged clearly.
+- **External UDP addresses** (`nodes.yaml` in C1) — the cluster operator declares which external IP and port this node is reachable on for that cluster's mesh. If the same host joins two clusters with overlapping external-address declarations, the node operator must ensure the UDP ports are distinct — they own both bundles and are the natural coordinator.
+
+This is a deliberate split of responsibility: cluster operators control cluster-wide policy; the node operator controls node-local resources. Neither can unilaterally dictate the other's domain.
 
 ## Evolution
 
