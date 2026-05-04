@@ -33,7 +33,7 @@ This is also why publication should always go through cluster-flor in the standa
 - **Two link types** — QUIC (via link-flor) and bare UDP (direct in cluster-flor). Cluster-flor's connection manager runs both adapters simultaneously and picks per peer; the multi-hop forwarder works uniformly across mixed link types.
 - **One or two flor vertices per node** instead of C0's one. Same `flor` binary, no `--role` flag — what makes a vertex link-shaped or cluster-shaped is its compiled config (transport_endpoint + connection_manager + which workloads it carries). A node with only UDP-link peerings runs just cluster-flor; nodes with any QUIC peerings additionally run link-flor.
 - **Cluster-vertex as a new principal kind** — one per node per Florete cluster, distinct from C0's node principal. SPIFFE ID `spiffe://<cluster>/cluster-vertices/<node>`. Used for hop-by-hop link-layer mTLS.
-- **`flor-agent` as a first-class principal**, distinct from any vertex. The agent owns the node identity; it delegates mTLS for control-plane traffic to a vertex like every other principal does.
+- **`flor-agent` as a distinct first-class workload**, not a vertex. The node has its own cluster-member identity (`nodes/<node>`); the agent is the workload that acts on the node's behalf — fetching configs, supervising vertices, reaching config-server. Like every other principal, the node delegates its mTLS to a vertex (cluster-flor).
 - **`links.yaml`** — declares allowed UDP peerings between cluster-vertices (a topology bound).
 - **`paths.yaml`** — declares allowed multi-hop routes at the cluster layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
 - **Three mgmt artifacts per node** — one `agent.json` plus `vertices/{link,cluster}.json` under `<node>/mgmt/`. Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/vertices/cluster.json` (see [Ctrl Plane](../ctrl-plane/)).
@@ -73,7 +73,9 @@ YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is th
 cluster:
   name: rete-lovers                 # same as C0
   florio:                           # NEW in C1
-    socket: /run/flor/io.sock       # default; the compiler emits this into workload io[] entries
+    socket: /run/flor/rete-lovers/io.sock  # default; compiler emits into workload io[] entries
+                                           # derived from cluster name by convention;
+                                           # override here if two clusters share a node
   crypto:
     ca_cert: ca.crt
     signature_algorithm: ed25519
@@ -94,7 +96,7 @@ nodes:
     internal_only: true             # not reachable from Internet; only via peers
 ```
 
-By convention, the cluster-vertex at node `alpha` has SPIFFE ID `spiffe://rete-lovers/cluster-vertices/alpha`. A node joining multiple Florete clusters appears in each cluster's repo under whatever name that cluster uses; cross-cluster multi-tenancy is handled at the repo level, not in `nodes.yaml`.
+By convention, the cluster-vertex at node `alpha` has SPIFFE ID `spiffe://rete-lovers/cluster-vertices/alpha`. A node joining multiple Florete clusters appears in each cluster's repo under whatever name that cluster uses — cross-cluster multi-tenancy is handled at the repo level, not in `nodes.yaml`. The `udp` ports in `addresses` entries must not overlap with another cluster's entries on the same external IP; the node operator is responsible for this when enrolling into multiple clusters (see [Multi-cluster on a single node](#multi-cluster-on-a-single-node) below).
 
 ### links.yaml (new) — topology bound
 
@@ -233,15 +235,15 @@ A workload entry:
 
 ```json
 {
-  "ca_cert_path": "~/.flor/ca.crt",
+  "ca_cert_path": "ca.crt",
   "transport_endpoint": { "type": "quic" },
   "connection_manager": { "adapter": "udp", "listen": "0.0.0.0:4433" },
   "workloads": [
     {
       "spiffe_id": "spiffe://rete-lovers/cluster-vertices/alpha",
-      "identity":  { "cert_path": "~/.flor/cv-alpha.crt", "priv_path": "~/.flor/cv-alpha.key" },
+      "identity":  { "cert_path": "cv-alpha.crt", "priv_path": "cv-alpha.key" },
       "io": [
-        { "kind": "florio", "socket": "/run/flor/io.sock", "direction": "bidirectional" }
+        { "kind": "florio", "socket": "/run/flor/rete-lovers/io.sock", "direction": "bidirectional" }
       ]
     }
   ],
@@ -282,11 +284,11 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
 
 ```json
 {
-  "ca_cert_path": "~/.flor/ca.crt",
+  "ca_cert_path": "ca.crt",
   "transport_endpoint": { "type": "quic" },
   "connection_manager": {
     "adapters": [
-      { "name": "via-link", "adapter": "florio", "socket": "/run/flor/io.sock" },
+      { "name": "via-link", "adapter": "florio", "socket": "/run/flor/rete-lovers/io.sock" },
       { "name": "internal", "adapter": "udp",    "listen": "10.0.0.5:5544"     }
     ]
   },
@@ -308,14 +310,14 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
   "workloads": [
     {
       "spiffe_id": "spiffe://rete-lovers/nodes/alpha",
-      "identity":  { "cert_path": "~/.flor/alpha.crt", "priv_path": "~/.flor/alpha.key" },
+      "identity":  { "cert_path": "alpha.crt", "priv_path": "alpha.key" },
       "io": [
         { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
       ]
     },
     {
       "spiffe_id": "spiffe://rete-lovers/services/api",
-      "identity":  { "cert_path": "~/.flor/api.crt", "priv_path": "~/.flor/api.key" },
+      "identity":  { "cert_path": "api.crt", "priv_path": "api.key" },
       "io": [
         { "kind": "tcp",    "upstream": "127.0.0.1:8000",  "direction": "outbound" },
         { "kind": "socks5", "listen":   "127.0.0.1:18000", "direction": "inbound"  }
@@ -362,7 +364,7 @@ Per-allow forwarding labels (`local_label`) and the `forwarding_table` itself ar
 
 ```json
 {
-  "ca_cert_path": "~/.flor/ca.crt",
+  "ca_cert_path": "ca.crt",
   "vertices": [
     { "name": "link",    "config": "vertices/link.json"    },
     { "name": "cluster", "config": "vertices/cluster.json" }
@@ -374,7 +376,7 @@ Per-allow forwarding labels (`local_label`) and the `forwarding_table` itself ar
 }
 ```
 
-The agent supervises every vertex listed under `vertices`. To reach `config-server`, the agent acts as the principal `nodes/alpha`; it finds the SOCKS5 port for that principal by scanning the referenced vertex configs for a matching workload's `inbound` channel. CA cert path and any other shared crypto material are referenced from the standard `~/.flor/` install location populated at enrollment time.
+The agent supervises every vertex listed under `vertices`. To reach `config-server`, the agent acts as the principal `nodes/alpha`; it finds the SOCKS5 port for that principal by scanning the referenced vertex configs for a matching workload's `inbound` channel. Paths in the artifact (`ca_cert_path`, `cert_path`, `priv_path`) are scope-relative and resolved by the agent against the cluster install root (`~/.flor/clusters/<scope>/`) at startup — see [C0's compile step](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step) for the convention.
 
 The number and shape of vertices is fully driven by `vertices`. The standard mixed-topology has two (link + cluster); a node with only `udp`-type links runs cluster-flor alone (one vertex, no link-flor); an enrollment-bootstrap config (single-vertex, direct UDP to mgmt01, just enough for the first sync) is also one. The agent doesn't care — it enumerates whatever it's told to.
 
@@ -391,22 +393,34 @@ C1 adds two new principal kinds on top of C0's users, services, and nodes:
 
 A useful "owned-by / held-by" view across all four principal kinds:
 
-| Kind | Owned by (the principal) | Cert+key held by (the vertex on its behalf) |
+| Kind | Principal (identity owner) | Cert+key held by (the vertex on its behalf) |
 |---|---|---|
-| node | flor-agent | cluster-flor (via the `nodes/<node>` workload entry there) |
+| node | the node (the host as cluster member) | cluster-flor (via the `nodes/<node>` workload entry there) |
 | cluster-vertex | cluster-flor (qua principal in the link layer) | link-flor |
 | user | the human (their workload) | cluster-flor |
 | service | the service workload | cluster-flor (or link-flor in mixed-topology setups) |
 
 A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../overview/high-level-design#vertex). Cluster-flor does the cluster-layer mTLS for its workloads; link-flor does the link-layer mTLS for cluster-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
 
-Node-identity vs. cluster-vertex-identity isn't a "should we merge them?" question any more — they're held by different vertices, owned by different principals (flor-agent vs cluster-flor), and used for different mTLS layers (control-plane vs. mesh-transit). A node joining multiple Florete clusters runs one flor-agent per cluster (one node identity each) plus the corresponding cluster-flor + link-flor stack per cluster.
+The `nodes/<name>` principal is the node's identity *within a specific cluster's trust domain* — the cluster's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. cluster-flor holds the cert+key and runs mTLS for `nodes/<name>`, exactly as it does for user and service principals. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach config-server through cluster-flor's SOCKS5 listener.
+
+Node-identity vs. cluster-vertex-identity aren't merged because they serve different layers and are held by different vertices — `nodes/<name>` is for control-plane traffic (agent ↔ config-server), `cluster-vertices/<name>` is for hop-by-hop mesh transit mTLS. A node joining multiple Florete clusters has one `nodes/<name>` principal per cluster (in each cluster's own trust domain) and one flor-agent process per cluster acting on its behalf.
 
 Enrollment flow is unchanged: `florctl issue-bundle --node alpha --cluster <config-server-url>` packages alpha's node identity *and* alpha's cluster-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `cluster-vertices/<node>` principal for every node in C1; operators don't declare it anywhere. SPIFFE IDs are derived from the kind + the principal name + the cluster trust domain.
 
 CP signing identities are issued separately on the operator's own machine (`florctl ca sign --kind control-planes --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_control_planes` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
 
 The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the cluster currently runs (which may be richer or simpler than what was bundled).
+
+## Multi-cluster on a single node
+
+The foundation — cluster scope, per-scope install root, one agent per cluster, scope-relative artifact paths, local listen-address ownership — is established in [C0's multi-cluster section](../../c0-tended-tunnels/mgmt-plane/#multi-cluster-on-a-single-node). C1 introduces three additional concerns specific to the mesh layer.
+
+**FlorIO socket path.** The socket at `cluster.yaml::florio.socket` is the rendezvous between cluster-flor and link-flor on the same node. Its default is derived from the cluster name (`/run/flor/<cluster-name>/io.sock`), making it scope-distinct by construction. Two clusters' stacks on the same host use different socket paths as long as their cluster names differ — which they will unless two independent operators happen to share a name, in which case the node operator overrides the default for one cluster via CLI (`flor enroll <bundle> --as <scope>`).
+
+**UDP connection-manager listeners.** Cluster-flor's bare-UDP adapter (`connection_manager.adapters[].listen`) and link-flor's QUIC-link UDP listener both bind to host addresses. Two clusters' stacks on the same host must not bind the same `IP:port`. The cluster operator provides the defaults in `nodes.yaml::addresses` and `cluster.yaml`; if two enrolled clusters collide, the node operator adjusts one cluster's listener at install time via a local port-override (same responsibility split as SOCKS5 ports in C0).
+
+**External addresses in `nodes.yaml`.** The `addresses` entries for a node declare the external `IP:port` other cluster-vertices use to reach this node. If the same host appears in two clusters' `nodes.yaml` (possibly under different node names), each cluster's `addresses` for that host must use distinct UDP ports on shared external IPs. The node operator owns both enrollment bundles and is the natural coordinator.
 
 ## Explicitly deferred (in addition to C0's list)
 
@@ -443,11 +457,11 @@ Captured justifications for the C1-specific additions. See the [C0 reasoning](..
 <Accordions type="single">
   <Accordion title="Reasons behind the C1 additions">
 
-### Why the agent is a separate principal from the vertex
+### Why the agent is separated from the vertex
 
-C0's single flor process did three jobs at once: it ran the data-plane vertex, it pulled state from config-server, and it owned the node-level control-plane identity. Conflating these works for one process per node but breaks the moment there's more than one — *which* vertex talks to config-server? With a recursive stack the answer ("just one of them, by config") becomes a design question; cleaner to make the agent a first-class principal that *owns* the node identity and to treat every vertex as a pure data-plane component.
+C0's single flor process did three jobs at once: it ran the data-plane vertex, it pulled state from config-server, and it handled node-level control-plane traffic. Conflating these works for one process per node but breaks the moment there's more than one — *which* vertex talks to config-server? With a recursive stack the answer ("just one of them, by config") becomes a design question; cleaner to give the node a first-class cluster-member identity (`nodes/<node>`) with the agent as the dedicated workload that acts on its behalf, and to treat every vertex as a pure data-plane component.
 
-The agent doesn't *hold* the node cert+key. It owns the identity (it's the principal); it delegates the actual mTLS handshake to a vertex (cluster-flor in the standard C1 topology), exactly as alice delegates her mTLS to flor in C0. The principal/vertex distinction is the same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
+The agent doesn't *hold* the node cert+key — cluster-flor does, exactly as it holds user and service identities. The node is the principal; the agent is the workload that wields that identity (fetching configs, reaching config-server via cluster-flor's SOCKS5 listener), exactly as alice's process acts on alice's behalf. The principal/vertex distinction is the same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
 
 This also maps to the HLD's [Execution Plane Agent concept](../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and in C1 the workloads it supervises are flor vertex processes plus (eventually) user and service workloads.
 
