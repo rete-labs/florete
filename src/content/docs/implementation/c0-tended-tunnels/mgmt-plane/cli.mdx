@@ -19,7 +19,7 @@ florctl ca init --out <dir>                 # once per cluster: generate CA keyp
 florctl ca sign <csr> --name <name> --kind <users|services|nodes>
                       [--scope cluster|node]
                                             # sign a CSR; append to enrollment.log
-                                            # (C1 adds `cluster-vertices` as a kind)
+                                            # (C1 adds `vertices` as a kind, `--role cluster`)
 florctl issue-bundle --node <node-name> --cluster <config-server-url>
                      [--csr <csr-bundle>] [--validity <duration>] [--out <bundle>]
                                             # per-node enrollment bundle: CA cert, node
@@ -41,7 +41,7 @@ Notes:
 
 - `florctl ca init` runs **once per cluster**. CA private key never leaves operator's secure storage.
 - `florctl ca sign` is the low-level primitive; `florctl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and config-server bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
-- `--kind` on `ca sign` selects the SPIFFE path namespace (`users`, `services`, `nodes` in C0; C1 adds `cluster-vertices`).
+- `--kind` on `ca sign` selects the SPIFFE path namespace (`users`, `services`, `nodes` in C0; C1 adds `vertices`, with `--role <role>` selecting the role within that namespace — `cluster` in C1).
 - `florctl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (with `agent.json` and `vertices/flor.json` per node). Artifacts contain only **scope-relative** path references (bare filenames like `ca.crt`, `alpha.crt`) — the agent resolves them against the cluster install root at startup. No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
 - `florctl publish` uploads the current `.flor/compiled/` tree to the cluster's config-server; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
 - Nothing in `florctl` affects running agents directly. It reads and writes the cluster repo plus operator-local CA material, and talks to the config-server over the cluster's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.

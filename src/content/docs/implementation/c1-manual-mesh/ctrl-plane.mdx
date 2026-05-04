@@ -26,12 +26,12 @@ The C1 ctrl artifact for cluster-flor:
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "active_peers": [
-      "spiffe://rete-lovers/cluster-vertices/beta",
-      "spiffe://rete-lovers/cluster-vertices/gamma"
+      "spiffe://rete-lovers/vertices/beta/cluster",
+      "spiffe://rete-lovers/vertices/gamma/cluster"
     ],
     "forwarding_table": [
-      { "in_label": 17, "out_peer": "spiffe://rete-lovers/cluster-vertices/beta",  "out_label": 42 },
-      { "in_label": 23, "out_peer": "spiffe://rete-lovers/cluster-vertices/gamma", "out_label": 71 }
+      { "in_label": 17, "out_peer": "spiffe://rete-lovers/vertices/beta/cluster",  "out_label": 42 },
+      { "in_label": 23, "out_peer": "spiffe://rete-lovers/vertices/gamma/cluster", "out_label": 71 }
     ],
     "label_bindings": [
       {
@@ -95,7 +95,8 @@ The same `florctl compile` invocation that produces mgmt artifacts also produces
 florctl compile --node alpha --repo my-cluster/
 # emits:
 #   .flor/compiled/alpha/mgmt/agent.json
-#   .flor/compiled/alpha/mgmt/vertices/{link,cluster}.json
+#   .flor/compiled/alpha/mgmt/vertices/public.json
+#   .flor/compiled/alpha/mgmt/vertices/cluster.json
 #   .flor/compiled/alpha/ctrl/vertices/cluster.json
 ```
 
