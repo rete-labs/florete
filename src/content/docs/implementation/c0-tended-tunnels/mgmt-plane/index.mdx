@@ -46,7 +46,7 @@ Per cluster scope on the node:
 
 - **Install root**: `~/.flor/clusters/<scope>/` — CA cert, all principal certs and keys for this cluster, compiled artifacts (`agent.json`, `vertices/*.json`), agent control socket (`agent.sock`).
 - **Runtime root**: `/run/flor/<scope>/` — FlorIO sockets and any other runtime files (C1+).
-- **Process tree**: one `flor agent` process supervising its per-cluster vertex stack.
+- **Process tree**: one `flor agent` process supervising its per-cluster vertex graph.
 
 All cert and socket paths in compiled artifacts are **scope-relative** (e.g. `ca.crt`, not `~/.flor/ca.crt`). The agent resolves them against its install root at startup, so artifacts stay portable across nodes regardless of the local scope name.
 
@@ -56,12 +56,24 @@ A computing host that joins N clusters has N separate `nodes/<name>` principals 
 
 ### Local listen addresses
 
-Compiled artifacts declare listen addresses for SOCKS5 inbounds, upstream TCP endpoints, and (in C1) UDP connection-manager listeners. These are provided by the cluster operator as **defaults**, not guarantees. The node operator is responsible for resolving conflicts:
+Two categories of listen addresses arise in a multi-cluster setup, and they have different audiences and different answers.
 
-- **SOCKS5 and per-service inbound ports** — cluster operators pick defaults; if two clusters' defaults collide on the same host, the node operator adjusts one at install time via a local port-override config. Bind failures surface at agent start and are logged clearly.
-- **External UDP addresses** (`nodes.yaml` in C1) — the cluster operator declares which external IP and port this node is reachable on for that cluster's mesh. If the same host joins two clusters with overlapping external-address declarations, the node operator must ensure the UDP ports are distinct — they own both bundles and are the natural coordinator.
+**External UDP listeners** appear only on nodes that accept inbound connections — nodes with a fixed public or private `IP:port` declared in `nodes.yaml`. User devices (laptops, phones) sit behind NAT and use ephemeral source ports; they have no fixed UDP listen address. Therefore:
 
-This is a deliberate split of responsibility: cluster operators control cluster-wide policy; the node operator controls node-local resources. Neither can unilaterally dictate the other's domain.
+- External UDP conflicts can only arise on server nodes, which are by definition admin-managed (datacenter, office LAN, home server). Two cluster operators wanting the same external UDP port on the same physical server must coordinate with the IT admin responsible for that host. At C0/C1 scale this involves a small number of ports and technically capable people.
+- B1+ direction: node-side capability advertisement — the node declares which external addresses and ports it has available. No implementation in C0/C1.
+
+**Local SOCKS5 and per-service inbound ports** exist on every node, including user laptops. Users cannot be asked to "adjust a port-override config." The agent must handle this on their behalf.
+
+Model:
+
+- Compiled artifacts declare local listens as **preferences**, not requirements.
+- The agent at startup binds the preferred port if free; otherwise picks any available port and records the binding in agent state.
+- Apps that need the actual port query the agent control socket — already the authoritative source for per-cluster runtime state.
+- An ergonomic default: each cluster scope is assigned a **local-port offset** at install time, deterministic from the cluster CA fingerprint (or operator-chosen at `flor enroll` time), so cluster A's SOCKS5 lands at `:1080`, cluster B's at `:1180`, and so on. Single-cluster users get their expected default; multi-cluster users get predictable separation without any manual configuration.
+- FlorIO sockets (C1+) are filesystem paths under `/run/flor/<scope>/vertices/<vertex-name>.sock` — no port space, no collision possible.
+
+The user is responsible for nothing. They install the bundle; the agent resolves any local-resource conflicts; apps discover actual port values via the control socket if they care.
 
 ## Evolution
 
@@ -119,7 +131,7 @@ C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determi
 - [ ] `flor agent run --config <agent.json>` supervises one `flor vertex` instance in C0
 - [ ] `flor vertex run --config <vertex.json>` daemon entry point
 - [ ] `flor agent status` over local Unix socket
-- [ ] Per-service SOCKS5 outbound proxy with port→identity binding
+- [ ] Per-service SOCKS5 outbound proxy with port→identity binding; local listen ports are **preferences** — agent binds preferred if free, otherwise picks any available port and records the binding; bind failures are logged, not fatal
 - [ ] Installer: `install.sh` for Linux/Mac, MSI for Windows
 - [ ] Static landing page template (per-cluster, zero backend)
 - [ ] Example `my-cluster/` repo including a management node (`mgmt01` with config-server + metrics)
@@ -143,6 +155,9 @@ Not blockers for C0 release:
 - CRL / OCSP for immediate mid-cert-lifetime revocation without a new compile cycle.
 - **Automated cert rotation via a bounded online intermediate CA (B1+).** C0/C1 have only manual `florctl issue-bundle` rotation — workable at pilot scale, untenable at scale. The B1+ direction is a delegated intermediate CA whose authority (principal set, validity window) is operator-signed and narrow; can refresh certs freely within bounds, cannot create new principals. Two deployment tiers expected: managed (we host) and BYO on-prem (security-conscious customers run their own). Per-principal-class policy lets high-risk principals stay on long-lived offline-issued certs while low-risk workloads rotate frequently. Adds SPIFFE Workload-API conformance as a natural by-product. See [reasoning](reasoning#why-cert-rotation-stays-manual-in-c0-c1-and-the-b1-shape).
 - **Authoring UI surface (B1+).** Cloud-hosted UI is fine for read-only views (status, audit, metrics), but signing operations must stay local on operator hardware to avoid UI-substitution attacks. Authoring goes in `florctl` and (later) a local desktop GUI; cloud dashboards are read-only or use a "draft in cloud, sign locally" handoff. See [reasoning](reasoning#why-authoring-ui-must-be-local).
+- **Per-cluster local-port offset scheme** — deterministic port offset derived from cluster CA fingerprint (or operator-chosen at `flor enroll` time) so multi-cluster installs get predictable port separation without manual config (e.g. cluster A at `:1080`, cluster B at `:1180`). Ergonomic nicety; single-cluster users always see the default.
+- **Port-query on agent control socket** — extend `flor agent status` (or a dedicated subcommand) so apps can ask "what's the current SOCKS5 port for principal X?" instead of hard-coding the preferred port. Required for apps that must work correctly on multi-cluster hosts; optional for single-cluster users where the preferred port always wins.
+- **B1+ node-side capability advertisement** — node declares which external `IP:port` pairs it has available; cluster mgmt-plane consults that at compile time rather than having the cluster operator guess external UDP ports. Eliminates the remaining admin-coordination requirement for server nodes in multi-cluster setups.
 - Transparent outbound for non-SOCKS5 apps (iptables / SO_PEERCRED / libc shim).
 - `flor doctor` diagnostics (ping peers, check access matrix, confirm config-server reachability).
 - Backend-hosted enrollment forms, Slack/Discord approval bots.

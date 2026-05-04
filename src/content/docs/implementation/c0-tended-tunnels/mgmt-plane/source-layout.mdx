@@ -59,33 +59,45 @@ The cluster `name` doubles as the SPIFFE trust domain: every principal in this c
 
 ### nodes.yaml
 
+Every node declares its **vertex graph** — the flor vertices that run on that node and how they reference each other via `uses:`. C0 nodes have a single layer: one **link-vertex** (`kind: link`) per node, of type `quic`, terminating QUIC directly at the workload boundary. Principals' cert+keys live on this vertex; mTLS terminates here. C1 adds a **cluster-vertex** (`kind: mesh`, playing the cluster role) on top of the link layer, at which point principals migrate up and link-vertices carry only hop-by-hop transit — but that's a C1 concern.
+
+Two vertex kinds exist in the design (only `link` is used in C0):
+
+- `link` — terminates a transport on **external medium** (IP — QUIC or direct UDP today; in-kernel `wg`, third-party `vless`, … later). One per underlay surface. No hop-by-hop forwarding.
+- `mesh` — operates entirely **inside Florete** (its medium is other vertices). Does hop-by-hop label-forwarding. The cluster-vertex (C1) and the future interrete-vertex are both `kind: mesh` — what differs is the role configuration each is given, not the kind. Same code, same recursion property.
+
 ```yaml
 nodes:
   # management node — hosts config-server and metrics
   mgmt01:
-    addresses:
-      - { name: public, udp: 9.10.11.12:4433 }
+    vertices:
+      - { name: public, kind: link, type: quic, address: 9.10.11.12:4433 }
 
   # server nodes — Internet-facing, host services
   alpha:
-    addresses:
-      - name: public
-        udp: 1.2.3.4:4433
-      - name: internal
-        udp: 10.0.0.5:4433
+    vertices:
+      - { name: public, kind: link, type: quic, address: 1.2.3.4:4433 }
   beta:
-    addresses:
-      - { name: public,   udp: 5.6.7.8:4433 }
-      - { name: internal, udp: 10.0.0.6:4433 }
+    vertices:
+      - { name: public, kind: link, type: quic, address: 5.6.7.8:4433 }
 
   # user nodes — dynamic IPs, behind NAT, initiate connections only
-  alice-laptop: {}
-  bob-workstation: {}
+  alice-laptop:
+    vertices:
+      - { name: quic, kind: link, type: quic }   # no address — initiator-only
+  bob-workstation:
+    vertices:
+      - { name: quic, kind: link, type: quic }
 ```
 
-In C0 every node that hosts a publicly-reachable service must be Internet-facing (see [scope](../../scope)) — service/user endpoints establish QUIC directly to the service's host node, with no relaying.
+Each vertex entry has:
 
-Nodes that only initiate connections (user laptops, phones) don't need `addresses` — they connect outbound from whatever ephemeral UDP port they get. Address names on server nodes are a forward-compat hook (C1 uses them for link selection).
+- `name` — local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields). Defaults to `type` when there's exactly one vertex of that type on the node. For mesh-vertices in C1 the name carries semantic meaning — `cluster` is the conventional name for the cluster mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
+- `kind` — `link` or `mesh` (see above). C0 uses only `link`.
+- `type` — the interface this vertex exposes upwards (`quic` in C0; `udp`, in-kernel `wg`, third-party `vless`, … become available in C1+). The mesh-vertex can consume any supported link interface (via Connection Manager adapter), currently it exposes only `quic` interface (via FlorIO). The recursion property: an upper-layer mesh-vertex of `type: quic` consumes a lower mesh-vertex of `type: quic` indistinguishably from a wire-terminating link-vertex of `type: quic`.
+- `address` — listen `host:port` for link vertices that bind a socket. Omit for initiator-only nodes (user laptops, phones); they connect outbound from whatever ephemeral port they get.
+
+In C0 every node that hosts a publicly-reachable service must be Internet-facing (see [scope](../../scope)) — service/user endpoints establish QUIC directly to the service's host node, with no relaying.
 
 Node-naming convention for pilots: short DNS-like names for servers (`alpha`, `web01`), and `<user>-<device>` for user devices (`alice-laptop`, `bob-phone`). Names must be unique within a cluster.
 
@@ -110,6 +122,7 @@ services:
   # Workload services
   api:
     at: alpha
+    # via: public                     # omittable in C0: mgmt01 has one vertex
     addr: 127.0.0.1:8000             # flor forwards here; service binds localhost
     socks5_proxy: 127.0.0.1:18000    # SOCKS5 port flor exposes to this service
     groups: [api]                        # what group api belongs to (ingress ACL side)
@@ -174,18 +187,21 @@ roles:
 users:
   fyodor:
     roles: [operator]
-    nodes: [fyodor-laptop]
+    nodes:
+      - { at: fyodor-laptop }          # via: omittable in C0 — one vertex per node
   alice:
     roles: [developer]
-    nodes: [alice-laptop]            # nodes where alice's flor runs
+    nodes:
+      - { at: alice-laptop }           # nodes where alice's flor runs
   bob:
     roles: [devops]
-    nodes: [bob-workstation]
+    nodes:
+      - { at: bob-workstation }
 ```
 
-`nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice.
+`nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice. Each entry is `{at: <node>, via: <vertex>}` naming the host node and the vertex that holds the user's identity. In C0 every node has exactly one vertex, so `via:` may be omitted and the compiler picks that vertex automatically. In C1 `via:` is required (multiple vertices per node).
 
-**Multi-device users**: list all the user's devices, e.g. `nodes: [alice-laptop, alice-phone]`. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
+**Multi-device users**: list all the user's devices. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
 
 If per-device revocation matters (lost phone without wanting to re-issue laptop), model each device as its own user with a shared role:
 
@@ -193,10 +209,12 @@ If per-device revocation matters (lost phone without wanting to re-issue laptop)
 users:
   alice-laptop:
     roles: [developer]
-    nodes: [alice-laptop]
+    nodes:
+      - { at: alice-laptop }
   alice-phone:
     roles: [developer]
-    nodes: [alice-phone]
+    nodes:
+      - { at: alice-phone }
 ```
 
 No special mechanism is needed for this pattern — it falls out of the principal model.
