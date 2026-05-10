@@ -9,7 +9,7 @@ description: Validator rules and compile step for producing per-node artifacts i
 
 1. **Schema** — every file matches its JSON Schema.
 2. **Cross-references** — every node/service/group/role name referenced exists and is unique across the whole cluster.
-3. **Principal registry** — every principal name (users, services, nodes) is unique across all principal kinds; no name collision across YAML files.
+3. **Principal registry** — every principal name (users, services, nodes; vertices in C1+) is unique across all principal kinds; no name collision across YAML files. Cross-kind disjointness also keeps the `.rete` DNS namespace unambiguous (see [ADR-0006](../../../../contributing/adr/0006-impl-mtls-in-quic-endpoint) for the `dns::format` mapping): without it, e.g. a service and a vertex sharing a short name on the same node would both render to `<name>.<node>.<cluster>.rete`.
 4. **Enrollment log consistency** — every principal in `users.yaml`, `services.yaml`, and every entry in `nodes.yaml` has a matching sign-event in `enrollment.log` that hasn't been superseded by a revoke-event.
 5. **Service placement** — every service's `at` field names a known node in `nodes.yaml`.
 6. **Management-node integrity** — services named `config-server` and `config-publisher` must exist in groups `config-read` and `config-write` respectively, both hosted on the same node (the management node) with a publicly-reachable link-vertex (a `kind: link, type: quic` entry with an `address`). If missing or malformed, validator fails with a clear message rather than silently producing artifacts that can't sync.

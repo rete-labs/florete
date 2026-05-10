@@ -1,0 +1,270 @@
+---
+title: "0006: Implement mTLS in QuicEndpoint"
+---
+
+## Status
+
+Accepted
+
+## Context
+
+The `flor` crate's QUIC endpoint currently runs with a self-signed cert and a trust-all client verifier — a placeholder that lets the demo handshake without any real authentication. The pieces around it have landed:
+
+- **Identity primitives** under `src/core/identity/` per [ADR-0005](/docs/contributing/adr/0005-use-spiffe-identities) — re-exports `spiffe::SpiffeId` / `spiffe::TrustDomain`, projects `Kind` / `Scope`, provides `Ca` and `keygen_csr`.
+- **Transport bundle** in `src/core/transport.rs` — `TransportDeps` + `TransportBundle` via `fundle`, exposing `QuicConnector`, `QuicPublisher`, `QuicHandle`.
+- **SOCKS5 inbound** in `src/northbound/inbound/socks5.rs` — already bound to a `QuicConnector` and calling `connector.connect(target)` with the SOCKS5 host string. No identity wiring yet.
+
+This ADR settles how mTLS gets wired through these. With it, `QuicEndpoint` will:
+
+- present a client certificate during outbound connections (mTLS),
+- require client certificates for inbound connections (mTLS),
+- validate both directions against the cluster's `X509Bundle`,
+- expose the *peer's* `SpiffeId` to the application after a successful handshake,
+- support a vertex hosting multiple local principals on one endpoint, with each inbound/outbound owning the identity it operates as.
+
+## Decision
+
+### SAN is the authoritative identity gate; SNI is a routing hint
+
+Both directions of the mTLS handshake authenticate via the leaf cert's URI SAN, not via SNI. The server validates the client cert's SAN equals the *caller* identity advertised by the peer. The client validates the server cert's SAN equals the *expected target* identity it passed to `connect`. SNI carries a non-authoritative routing label whose only job is to let the server's `ResolvesServerCert` pick which of its multiple published SVIDs to present.
+
+This is the same role SNI plays in service-mesh sidecars (Istio, Linkerd-with-SPIRE): SNI for routing, SAN for identity. SNI is a hint that the verifier promptly ignores once the cert SAN says something concrete.
+
+### SNI carries the Florete convenience DNS name
+
+The SNI string is the **`.rete` convenience DNS name** derived from the target's SPIFFE ID:
+
+- `spiffe://<cluster>/service/<svc>` → `<svc>.<cluster>.rete`
+- `spiffe://<cluster>/service/<node>/<svc>` → `<svc>.<node>.<cluster>.rete`
+- `spiffe://<cluster>/vertex/<node>/<name>` → `<name>.<node>.<cluster>.rete` (C1)
+
+This matches Istio's pattern of using the K8s service DNS name in SNI (`productpage.default.svc.cluster.local`) — a DNS-valid string, derived from the structural identifier, with the cryptographic identity in SAN. For Florete the same shape is already user-facing: `.rete` names are how operators type service addresses in `curl` / `psql` / shell commands.
+
+The synthesis is a `dns::format(&SpiffeId) -> Result<String>` helper in `src/core/identity/dns.rs`, paired with the existing-by-then `dns::parse`. Only `Kind::Service` and `Kind::Vertex` are dialable; `dns::format` returns an error for other kinds. Callers never see the SNI string — they pass a `SpiffeId` to `connect`, and the connector synthesises SNI internally for the rustls/quinn call.
+
+**Service and vertex share the same DNS namespace.** A vertex on node `alpha` named `cluster` produces `cluster.alpha.<cluster>.rete`; a service on node `alpha` named `cluster` would produce the same string. The cluster compiler/validator enforces that service and vertex names on the same node don't collide (extending the existing identity.mdx rule that already forbids node↔service name collisions). Keeping the namespace bare — no `svc` / `vrt` infix — is justified by:
+
+- A vertex *is* a service from the dial-it-by-name perspective: both terminate mTLS on a node, both have URI SAN, both are reached by name. Forcing a kind discriminator into DNS conflates with the SPIFFE URI which already encodes the kind.
+- Users dial services, not vertices; there's no second user-facing DNS namespace to maintain.
+- K8s-style `<svc>.<ns>.svc.cluster.local` is a frequent grumble; we don't need to inherit it.
+
+If Florete eventually grows namespaces (à la K8s) or operators want explicit kind discriminators, `dns::format`/`dns::parse` is the localised change. SNI and user-facing DNS stay aligned through that helper.
+
+### No addresses in the transport API
+
+Florete is post-IP: callers talk to identities, not endpoints. The connector takes only identities; address resolution is internal:
+
+```rust
+QuicConnector::connect(&self, caller: &X509Svid, target: &SpiffeId)
+    -> Result<QuicConnection, Report<Error>>;
+```
+
+Internally, `connect` calls `Resolver::resolve(target) -> SocketAddr` to find where to dial, derives the SNI via `dns::format(target)`, builds a per-call rustls `ClientConfig` with the caller SVID and a `SpiffeServerVerifier` parameterised by the expected target, and dials.
+
+### Each consumer owns its own SVID
+
+The transport does *not* maintain a centralised map of local SPIFFE IDs to SVIDs. Local SVIDs flow into the transport from the inbound/outbound components that operate as those principals:
+
+- **SOCKS5 inbound** holds the **caller SVID** — the user or service principal whose port this is. Each user/service has its own SOCKS5 port, bound to its identity at startup. On every `handle_socks5` call, the inbound passes `&self.caller_svid` to `QuicConnector::connect`.
+- **TCP outbound** (the future "egress from the mesh" component that terminates inbound mesh connections at local services' `127.0.0.1:port`s) holds the **service SVIDs** for every service it serves on this node. It registers them in one call via `QuicPublisher::publish(svids)` at startup and receives back a `QuicAcceptor` for incoming connections targeted at any of those SPIFFE IDs.
+
+Per-call (or per-publish) ownership makes dynamic add/remove of inbounds/outbounds work without rewiring shared state — important once C0 grows beyond static startup configuration. It also matches the operational reality: each port is one principal's port.
+
+### Publish / accept
+
+`QuicPublisher` is the inbound-registration handle. `QuicAcceptor` is the inbound stream for the set of services published in one call:
+
+```rust
+QuicPublisher::publish(&self, svids: Vec<X509Svid>) -> Result<QuicAcceptor, Report<Error>>;
+
+QuicAcceptor::accept(&mut self)
+    -> Option<(SpiffeId /* target */, QuicConnection)>;
+```
+
+`publish` registers all the supplied SVIDs in the endpoint's published-services table (used by `SpiffeResolvesServerCert` to pick which cert to present on the handshake). The returned `QuicAcceptor` yields authenticated incoming connections destined for any of those SVIDs; for each connection it returns the `target` — which of the published SVIDs this connection was dialed against (derived from the SNI we routed on, equivalent to the local cert we presented).
+
+The peer's authenticated SPIFFE ID is *not* in the return tuple; it's available on the `QuicConnection` itself via `peer_id()` (see below). The two values play different roles for the application: `target` is a dispatch input (the TCP outbound must know which of its published SVIDs was hit to forward to the right local upstream), while `peer` is a security/audit input (needed for the ACL gate). Putting `target` in the tuple and `peer` on the connection matches those roles, keeps the tuple to a single readable pair, and makes the inbound/outbound APIs symmetric — outbound `connect` already returns just `QuicConnection`, and its peer is queryable the same way.
+
+Dropping the `QuicAcceptor` un-publishes all SVIDs registered through it.
+
+`publish` takes a `Vec<X509Svid>` — plural — because a single outbound component typically serves multiple services on its node (e.g., one TCP outbound for all of a host's services, each forwarding to a different local `127.0.0.1:port`). The component holds its own `HashMap<SpiffeId, SocketAddr>` (service SPIFFE → local upstream) and uses `target` from `accept` to dispatch. Calling `publish` multiple times to get multiple acceptors is allowed too; the choice is the consumer's.
+
+### Peer identity on the connection — type-state split
+
+`peer_id()` must be infallible to be ergonomic, but it must also be *impossible to call before the verifier has populated the auth data*. Panicking on bad call order is unacceptable — it's exactly the kind of latent footgun the type system can prevent.
+
+We split the connection wrapper into two types living in `src/core/transport/endpoint/connection.rs`:
+
+- **`UnauthenticatedConnection`** (internal to the endpoint module) — wraps a just-handshake-completed `quinn::Connection`. Exposes `Inspect` (`handshake_data` for SNI extraction during accept-plumbing) and a method like `peer_certs() -> Vec<CertificateDer>` to retrieve the peer chain for SAN extraction. **No `peer_id()`.** This is what internal accept-plumbing holds.
+- **`QuicConnection`** (public) — wraps the same `quinn::Connection` *plus* a `SpiffeId` set at construction. Exposes `peer_id(&self) -> &SpiffeId` (infallible — the field is always populated), plus `Open` / `Close` / `Accept` for app-level stream work. **Does not expose `Inspect`** — by the time the app holds this, authentication is done; raw handshake bytes aren't part of the public contract.
+
+The bridge is a private function inside the endpoint module:
+
+```rust
+fn authenticate(unauth: UnauthenticatedConnection, peer_id: SpiffeId) -> QuicConnection;
+```
+
+`authenticate` is the *only* constructor for `QuicConnection`. Accept-plumbing produces an `UnauthenticatedConnection`, runs SNI extraction via `Inspect`, parses the peer SAN via `peer_certs()`, and calls `authenticate(unauth, peer_id)` to produce the public type. The outbound `connect` path uses the same `authenticate` — it just skips the SNI step because the target is already known.
+
+The internal type is mockable via mockall like today; the public type is also mockable but doesn't need `Inspect` mocks. Tests that need raw-handshake mocks work against `UnauthenticatedConnection`; tests of application code work against `QuicConnection` with a pre-supplied `SpiffeId`.
+
+### Custom rustls verifiers
+
+- `SpiffeResolvesServerCert` — `rustls::server::ResolvesServerCert` impl. Reads the SNI as a `.rete` convenience name, parses it back to a `SpiffeId` via `dns::parse`, returns the matching SVID from the endpoint's published-services table (populated by `QuicPublisher::publish`). A miss (unknown SNI, unknown SPIFFE ID, nothing published for it) means no cert is presented and the handshake fails — that's the right outcome.
+- `SpiffeClientCertVerifier` — validates the inbound peer cert chain against the cluster's `X509Bundle` (using `webpki` directly or `WebPkiClientVerifier` if it composes cleanly). The leaf's URI SAN is what authenticates the peer; surfaced to the acceptor via `peer_identity()` and returned as the `SpiffeId` in `accept`.
+- `SpiffeServerVerifier` — validates the outbound peer cert chain against the bundle, then verifies the leaf's URI SAN equals the *expected target* `SpiffeId` passed to `connect`. SAN match is the gate; SNI is not consulted.
+
+### Resolver maps identity to address
+
+`Resolver::resolve(&self, target: &SpiffeId) -> Result<SocketAddr>`. Pure identity-to-address discovery; no name strings. The existing `UdpResolver` is rekeyed from `String` to `SpiffeId`. `AddrMap` (which feeds `UdpResolver` through `TransportDeps`) gains the type change accordingly.
+
+### The trust bundle flows through `TransportDeps`
+
+`TransportDeps` gains a `trust_bundle: Arc<X509Bundle>` field. That's the only shared trust material the transport needs — both verifiers reference it. `TransportBundle::try_new` passes it into `QuicEndpointActor::spawn_new`, where the connector, publisher, handle each get a clone of the `Arc`.
+
+There is no `WorkloadCredentials` struct. The earlier draft of ADR-0005 introduced one to bundle the trust set with a local SVID map; the local SVID map went away when we shifted SVID ownership to the consumers, leaving only the trust bundle. A struct wrapping a single field is dead weight — we just inject `Arc<X509Bundle>`.
+
+### SOCKS5 inbound becomes identity-aware
+
+The landed `Socks5Inbound` (in `src/northbound/inbound/socks5.rs`) is the C0 inbound. To wire identity:
+
+- `Socks5Inbound::new(listen_addr, connector, caller: X509Svid)` — adds the caller SVID. The SOCKS5 port serves exactly one principal (matches Florete's "per-service SOCKS5 proxy" design from identity.mdx).
+- `handle_socks5` parses the SOCKS5 target host (e.g. `api.alpha.cluster.rete`) via `dns::parse(host) -> SpiffeId` instead of forwarding it as a raw string, then calls `connector.connect(&self.caller_svid, &target_spiffe).await`.
+- IP-form SOCKS5 targets stay rejected (today already returns `AddressTypeNotSupported`); only `.rete` domain targets are translated.
+
+The `QuicBackend` test trait in `socks5.rs` is updated in lockstep: `open_stream(target: &SpiffeId)` instead of `&str`, and test backends construct fixture SpiffeIds with `build_id_*` from `core::identity`.
+
+## Rationale
+
+### Why SAN is authoritative and SNI is just a hint
+
+In TLS 1.3 the server picks its certificate the moment it sends `Certificate` (immediately after `ServerHello`), *before* it sees the client's cert. The only signal the server has at that point about *which* of its published SVIDs to present is the `ClientHello` extensions — chiefly SNI. When one endpoint publishes many SVIDs, SNI is the unavoidable routing input.
+
+But SNI, as a routing input, **is not authenticated**. An attacker can put any string they like in `ClientHello`; what they actually receive is a cert the server already controls. So SNI as routing-only is fine — the server presents *some* SVID, and the *cert SAN* determines whether the client accepts it. If the SNI says "X" but the server presents an SVID for "Y", the client's `SpiffeServerVerifier` rejects the handshake (SAN ≠ expected target). Either side can lie via SNI; neither side is trusted via SNI. Trust comes from cert chain validation + SAN equality with the application-supplied expected identity.
+
+### Why `.rete` convenience name in SNI (Istio's pattern)
+
+Three options for what string the connector puts in SNI:
+
+1. **Raw SPIFFE URI** (`spiffe://demo.flor/service/api`). Cleanest semantically. rustls's `pki_types::ServerName` enforces DNS-name validity by default in 0.23, which likely rejects this. Workarounds (custom `ServerName` variant, lower-level quinn integration) are fragile.
+
+2. **Opaque DNS-shaped encoding** (e.g. base32 of the URI + `.flor.local`). Always accepted by rustls. Ugly, opaque to humans, requires an encode/decode pair invented just for us.
+
+3. **DNS-form convenience name** (`api.demo.flor.rete`). Always accepted by rustls (DNS-valid label structure). Human-readable. Reuses the `.rete` namespace already defined by Florete identity ([identity.mdx > Convenience Hostname](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity)). **Accepted.**
+
+Option 3 matches **Istio's observed practice** — Istio sidecars put DNS-form hostnames (K8s service DNS names) in SNI, with SPIFFE URIs in cert SAN[^istio-sni]. The DNS form is *the* routing label in service-mesh practice; we just use Florete's DNS namespace (`.rete`) instead of Kubernetes'.
+
+### Why share the namespace between service and vertex
+
+We considered three approaches to disambiguating `service` and `vertex` in DNS:
+
+1. **K8s-style infix** (`api.alpha.svc.cluster.rete` vs `api.alpha.vrt.cluster.rete`). Unambiguous. Adds boilerplate to every user-typed `.rete` name; people grumble about this in K8s already.
+2. **Different TLDs** (`.rete` for service, `.vrt.rete` for vertex). Even uglier; introduces two namespaces.
+3. **Shared namespace + validator** — compiler/validator enforces non-collision between service and vertex names on the same node. **Accepted.**
+
+The argument for shared namespace: a vertex *is* a service from the dial-by-name perspective — same mTLS endpoint shape, same routing role. SPIFFE URIs already encode the kind; we don't need to repeat it in DNS. Users only ever dial services in practice (vertices are infrastructure-internal, not user-facing). identity.mdx already forbids node↔service name collisions; extending that to forbid service↔vertex collisions per-node is a one-line validator rule.
+
+The disambiguation when both forms exist is via the SPIFFE URI in cert SAN, not via DNS. If you dial `api.alpha.cluster.rete` and the validator allowed both a service `api` and a vertex `api` on alpha, both would resolve to the same SPIFFE-URI ambiguity — that's the validator's job to prevent. We don't paper over a config error with a DNS infix.
+
+Forward-compat for namespaces (à la K8s `default`): `dns::format` and `dns::parse` are the localised change. If Florete grows namespaces, both helpers update together; SNI and user-facing DNS stay aligned.
+
+### Why `connect` takes no address
+
+Florete is post-IP: workloads address each other by identity, never by IP/port. Surfacing `SocketAddr` in the transport API would push that abstraction break to every caller. SOCKS5 inbound takes an identity and asks the connector for a connection — it doesn't know nor care which IP or port the cluster currently puts that identity on. The address comes from the `Resolver`, called *inside* `connect`.
+
+### Why each consumer owns its SVID (no shared local-SVID map)
+
+An earlier draft of [ADR-0005](/docs/contributing/adr/0005-use-spiffe-identities) introduced a `WorkloadCredentials { trust_bundle, local: HashMap<SpiffeId, X509Svid> }` struct as the single carrier of identity material into the transport. That design had each component (SOCKS5 inbound, TCP outbound) look up its SVID by SPIFFE-ID-key from the shared map.
+
+The shape is wrong for a few reasons:
+
+- **The map duplicates ownership.** Each SOCKS5 port is bound to *one* principal at creation; that principal's SVID is intrinsically part of the inbound's configuration. Storing it centrally in a map keyed by SPIFFE ID is indirect — the inbound looks it up just to find what it already knows it is.
+- **Dynamic lifecycle gets awkward.** When inbounds/outbounds come and go (the C0 demo is static, but post-C0 we'll want to add/remove identities at runtime), the shared map has to be mutable, with locking, with broadcast for invalidation. Per-consumer ownership has no such problem.
+- **Publish is the right primitive anyway.** The server-cert resolver needs to know which SVIDs are currently published. A `publish(svids)` call doing that registration is more honest than the resolver fishing into a shared map.
+
+So the local-SVID map disappears; consumers own their SVIDs; the transport's registry of published SVIDs is built up dynamically by `publish` calls. Only the *trust bundle* is shared infrastructure (every verifier consumes it), and it flows through `TransportDeps` as `Arc<X509Bundle>`.
+
+### Why `QuicPublisher::publish` returns a `QuicAcceptor`, not the publisher being the acceptor
+
+Two roles, two types. `QuicPublisher` is the *registration* handle — shared, cloneable, lives in the transport bundle, holds the registry. `QuicAcceptor` is the *consumption* handle — exclusive (one per `publish` call), borrowed mutably to `accept`. Splitting them means:
+
+- Multiple outbounds can each call `publisher.publish(their_svids)` and get back their own acceptor.
+- Dropping an acceptor signals "stop accepting for these SVIDs" — the registration is removed.
+- The publisher itself doesn't expose `accept` (which would be ambiguous when distinct consumers each published their own SVID sets).
+
+This is the same shape as `tokio::sync::broadcast` (sender + receiver) or `mpsc::channel` (sender + receiver) — the publisher/subscriber split is a Rust async idiom.
+
+### Why caller is passed per call
+
+[ADR-0003](/docs/contributing/adr/0003-use-di-framework) commits us to a DI framework where there's one `QuicEndpoint` per vertex (singleton). A vertex hosts multiple local principals; each principal has its own SOCKS5 inbound, but they all share *one* `QuicConnector` handle from `TransportBundle`. Per-caller connectors would force multiple endpoints per vertex (rejected by DI) or dynamic connector creation (awkward lifecycle).
+
+Caller-per-call is the right primitive. `QuicConnector::connect(caller_svid, target)` keeps one DI-managed handle; each inbound passes its own caller SVID. The cost is a per-call rustls `ClientConfig` build — already per-call because the expected target changes per call (the server-cert verifier needs to know it). Acceptable for the connection-per-flow rates expected per vertex.
+
+We also considered rustls's `ResolvesClientCert` with caller selection inside the resolver. Rejected: `ResolvesClientCert::resolve` only sees server-side hints (root CA names from the server's `CertificateRequest`), not application-supplied caller hints.
+
+### Why `accept` returns `target`, not `peer`, in the tuple
+
+The current `(String, QuicConnection)` form returned the SNI service name as a temporary stand-in — essentially a hint about which target the peer was asking for. The new `(SpiffeId /* target */, QuicConnection)` keeps the same dispatch-oriented role: it tells the application *which of its published services* the connection was opened against, so the TCP outbound can look up the local upstream addr and forward.
+
+We considered three shapes for `accept`'s return:
+
+1. **Tuple `(peer, target, connection)`** — return both authentication outputs together. Risk: positional triples are easy to misread; future readers may swap them. A named struct would mitigate.
+2. **Named struct `Accepted { peer, target, connection }`** — eliminates positional ambiguity. Costs one type definition.
+3. **Tuple `(target, connection)`, `peer` queryable via `connection.peer_id()`** — `target` for dispatch (required to act on the connection), `peer` available on demand. **Accepted.**
+
+Option 3 maps to the actual roles each value plays:
+
+- `target` is a *dispatch input*: the TCP outbound must consult it to forward to the right local upstream. Required at the accept site, every connection.
+- `peer` is a *security/audit input*: needed by the ACL gate and access logs, but it's a property of the connection (the verifier already validated it), not a return value of accept-the-action.
+
+Tying `peer` to the connection rather than the accept tuple also gives inbound/outbound API symmetry: outbound `connect` already returns just `QuicConnection`, with the caller knowing themselves (they passed the SVID) and the peer queryable via `peer_id()`. Same mental model both sides.
+
+If `peer_id()` callsites turn out ergonomically clumsy during impl, the impl can promote the API to a named struct — but for now the simpler tuple wins.
+
+### Why custom rustls verifiers, not the built-ins
+
+rustls 0.23 ships `WebPkiClientVerifier::builder` for chain validation against trust anchors. That handles half of what we need:
+
+- chain-validating against the cluster's bundle — yes,
+- extracting and surfacing URI SAN — no.
+
+Two paths:
+
+1. **Wrap `WebPkiClientVerifier`**: build it for chain validation, run it inside our `SpiffeClientCertVerifier`, and on success additionally extract the URI SAN from the leaf to expose via `peer_identity()`. **Preferred if the API composes.**
+2. **Implement from scratch** on top of `webpki` directly. ~100 lines including SAN extraction.
+
+The choice depends on whether `WebPkiClientVerifier`'s API surfaces the validated leaf cert. Settled at code-review time during impl.
+
+For the server side (`SpiffeServerVerifier` for outbound mTLS), the equivalent path applies — but with the additional check that the leaf's URI SAN equals the *expected* `SpiffeId` passed to `connect`. This is per-call state that doesn't fit cleanly into rustls's reusable verifier shape, which is why we accept per-call `ClientConfig` construction.
+
+`SpiffeResolvesServerCert` (`ResolvesServerCert`) has no built-in equivalent — rustls expects you to write your own when the resolution needs custom logic. We do.
+
+## Consequences
+
+### Benefits
+
+- `SpiffeId` is the one canonical name flowing through transport, ACL, compiled artifacts, and the wire — same vocabulary the SPIFFE/SPIRE ecosystem uses.
+- Transport API matches the security model: peer authentication produces a `SpiffeId` (extracted from cert SAN), not a hint.
+- No addresses surface in the transport API; callers stay post-IP.
+- Each consumer owns its identity; no shared local-SVID map; dynamic add/remove of inbounds/outbounds falls out naturally via `publish` / `QuicAcceptor` drop.
+- SNI encoding pinned to Istio-style DNS-form convenience name: human-readable, rustls-accepted, reuses Florete's existing `.rete` namespace.
+- Service and vertex share the DNS namespace, kept bare; collision check is a one-line compile-time validator rule.
+
+### Trade-offs
+
+- Per-call rustls `ClientConfig` build on each `connect()`. Moderate cost; acceptable for current scales.
+- `dns::format` is a synthesis step inside `connect`. Adds a small allocation per call (DNS string), no security impact.
+- Service↔vertex namespace sharing requires a validator rule (one extra check at compile-time). Worth it for the DNS conciseness.
+- Existing transport tests in `endpoint.rs` that assert on SNI string matching become obsolete; replaced by integration tests over the full mTLS flow against cert SAN.
+
+### Evolution
+
+- `dns::format` / `dns::parse` are the only places that know the `.rete` shape. If Florete grows namespaces or operators want explicit kind discriminators, both helpers update together; user-facing DNS and SNI stay aligned.
+- When B1+ introduces an intermediate CA (per [ADR-0005](/docs/contributing/adr/0005-use-spiffe-identities)), the trust bundle already supports multi-authority sets; webpki already validates multi-element chains. No verifier-API rework needed.
+- Dynamic identity lifecycle (adding/removing inbounds/outbounds at runtime) works without code changes: `publish` adds, `QuicAcceptor` drop removes, `connect` only needs whatever caller SVID the inbound holds in this moment.
+- ACL enforcement (the `ingress.allow` / `egress.allow` gate) is a follow-up that consumes the peer identity (via `connection.peer_id()`) at accept time and the caller passed to `connect`. The shape of those values is stable; the ACL layer plugs in cleanly.
+
+[^rustls]: [rustls on crates.io](https://crates.io/crates/rustls)
+[^quinn]: [quinn on crates.io](https://crates.io/crates/quinn)
+[^webpki]: [webpki on crates.io](https://crates.io/crates/webpki)
+[^istio-sni]: [Istio: Auto mTLS — SNI-based routing](https://istio.io/latest/docs/concepts/security/#mutual-tls-authentication)

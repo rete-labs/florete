@@ -82,22 +82,18 @@ All six kinds are recognised from day one even though `Vertex`, `ControlPlane`, 
 
 Rust variants, CLI `--kind` values, and SPIFFE URI path segments all match: `Kind::Service` ↔ `--kind service` ↔ `spiffe://trust-domain/service/alice`. No mapping function. Earlier florete docs use plural URI segments and CLI flags; those are revised as a side-deliverable of the C0 implementation.
 
-### Workload credentials struct
+### Local SVIDs are owned by their consumers; transport owns only the trust set
 
-Transport, ACL, and CLI all need a single value to carry the local principal's credentials and the trust set used to verify peers:
+The trust material splits naturally along ownership lines:
 
-```rust
-pub struct WorkloadCredentials {
-    pub trust_bundle: Arc<X509Bundle>,
-    pub local: HashMap<SpiffeId, X509Svid>,
-}
-```
+- **Trust bundle** (`X509Bundle`) — cluster-wide, shared. Both the inbound client-cert verifier and the outbound server-cert verifier consume it to chain-validate peers. Injected as `Arc<X509Bundle>` via the transport DI bundle's deps.
+- **Local SVIDs** (`X509Svid`) — owned by the inbound/outbound component that *operates as* that principal:
+  - SOCKS5 inbound (data flow into the mesh, "egress from the workload's PoV") holds the **caller SVID** — the principal whose SOCKS5 port this is. Each user/service has its own SOCKS5 port, bound to its identity at startup. The inbound passes the caller SVID on every outbound `connect`.
+  - TCP outbound (data flow out of the mesh to the local service) holds the **service SVIDs** — the principals it publishes. Constructed with the SVIDs, registers them with the transport via `publish`, then accepts incoming connections targeted at them.
 
-`trust_bundle` is shared across all consumers in the process (inbound verifier, outbound verifier). `local` maps each local principal's SPIFFE ID to its full credential. A vertex hosting multiple principals — `node/alpha` plus a couple of services plus user identities — has multiple entries; each outbound `connect` call looks up the *caller's* credential here, and the inbound server-cert resolver picks based on SNI.
+This shape mirrors the operational reality (each port is one principal's port), keeps wiring simple (no name-keyed lookup in a shared blob), and enables dynamic add/remove of inbounds/outbounds without rewiring shared state — important once we move past static C0 configuration.
 
-The struct lives in `src/core/identity/credentials.rs`. SPIFFE-native naming ("workload credentials" is the SPIFFE term for "what a workload owns"); short to type; doesn't pretend to be a generic abstraction.
-
-**`WorkloadCredentials` is mTLS-only.** Envelope verification (mgmt and ctrl) needs a separate kind of trust storage — pinned signer pubkeys, not chain-validation authorities — and a separate set of consumers (the artifact loader, not the transport). When the envelope-verification follow-up lands, it introduces its own type (something like `EnvelopeTrust`); we deliberately do *not* extend `WorkloadCredentials` with envelope-verification fields. The CA happens to be the issuer for both mTLS leaves and envelope-signer certs, but the runtime types those certs feed into are distinct because the verifier flows are distinct (`webpki::verify_for_usage` for one, ed25519 against an expected/pinned pubkey for the other).
+**Envelope-verification trust storage remains separate.** When envelope verification (mgmt, ctrl) lands, it introduces its own trust storage type — not a sibling of any transport struct, because the verifier flows are distinct (`webpki::verify_for_usage` against the CA chain for mTLS; ed25519 against a kind-or-pinned signer pubkey for envelopes). The CA happens to be the issuer for both mTLS leaves and envelope-signer certs, but the runtime types those certs feed into are distinct.
 
 ### Single CA, no intermediate, in C0/C1
 
@@ -105,7 +101,7 @@ A `Ca` value represents a self-signed cluster root. All six kinds are issued thr
 
 The C0 design includes mgmt-envelope verification (operator-signed via `management-plane/<name>`); C1 adds ctrl envelopes. Existing florete docs settle on pinning for both: the operator pubkey is delivered with `ca.crt` at enrollment, and CP pubkeys are listed dynamically in mgmt's `authorized_control_planes`. Whether to revisit that to kind-based-with-CA-chain is a design call worth making when envelope-verification code is actually being written, with HPKP-style lockout, multi-signer support, and revocation cadence as the live tradeoffs. **This ADR doesn't re-decide the verification scheme.** It does, however, settle the cert shapes those signers need (`Kind::ManagementPlane`, `Kind::ControlPlane`, sign-only ext policy) so the issuance path supports them today.
 
-This ADR's runtime scope is mTLS — the cert chain authorities (in `WorkloadCredentials.trust_bundle`) and local workload SVIDs (in `WorkloadCredentials.local`). Envelope verification implementation lands in a follow-up alongside mgmt/ctrl artifact loading.
+This ADR's runtime scope is mTLS — the cert chain authorities (the cluster `X509Bundle`, shared via DI) and local workload SVIDs (owned by each inbound/outbound consumer). Envelope verification implementation lands in a follow-up alongside mgmt/ctrl artifact loading.
 
 ### Cert-level signing-vs-TLS separation via X.509 extensions
 
