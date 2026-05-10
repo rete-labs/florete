@@ -3,6 +3,7 @@
         "0001-record-adrs",
         "0002-use-single-crate",
         "0003-use-di-framework",
-        "0004-use-single-runtime"
+        "0004-use-single-runtime",
+        "0005-use-spiffe-identities"
     ]
 }
