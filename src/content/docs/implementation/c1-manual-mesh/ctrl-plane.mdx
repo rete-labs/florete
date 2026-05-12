@@ -60,7 +60,7 @@ The C1 ctrl artifact for cluster-flor:
 Field semantics:
 
 - **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)) with two additions: `plane: "ctrl"` and `obeys_mgmt_version`. The latter pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
-- **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against the pubkey listed in mgmt's `authorized_control_planes`; ctrl signed by an unauthorized key is rejected.
+- **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against the pubkey listed in mgmt's `authorized_ctrl_signers`; ctrl signed by an unauthorized key is rejected.
 - **`active_peers`** — the subset of mgmt's `allowed_peers` that this cluster-flor should currently dial / accept inbound from. In C1 this equals the full set produced by `allowed_peers`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the cluster-wide topology information a per-node agent ever sees — it knows its own peers, nothing else.
 - **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries. In-label uniqueness is enforced by the producer; the agent verifies that each `out_peer` is in `active_peers`.
 - **`label_bindings`** — binds each accepted (initiator, target) pair from the mgmt allow lists to a local label. Each binding's (scope, target_spiffe_id, principal) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
@@ -107,7 +107,7 @@ The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl art
 - Mgmt artifacts go to `POST /publish/mgmt` on the config-server.
 - Ctrl artifacts go to `POST /publish/ctrl`.
 
-Authentication for the publish side is via the existing `control-plane-write` group (operator role). Internally the config-server stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`).
+Authentication for the publish side is via the existing `config-write` group (operator role). Internally the config-server stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`), both gated by `config-read`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `florctl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
 
 ## Label allocation
 
@@ -128,7 +128,7 @@ Each agent fetches both streams and verifies them locally before applying. The f
 1. **Fetch mgmt** for this node from `/artifact/mgmt/<node>`.
 2. **Verify mgmt signature** against the pinned operator pubkey (delivered with `ca.crt` at enrollment).
 3. **Fetch ctrl** for this node from `/artifact/ctrl/<node>`.
-4. **Verify ctrl signature** against one of the pubkeys listed in mgmt's `authorized_control_planes`. Reject if signed by a key not in the authorized list, or if the mgmt artifact lists no authorized CP at all.
+4. **Verify ctrl signature** against one of the pubkeys listed in mgmt's `authorized_ctrl_signers`. Reject if signed by a key not in the authorized list, or if the mgmt artifact lists no authorized CP at all.
 5. **Verify `obeys_mgmt_version`** ≥ the version of the mgmt artifact just verified. Reject if ctrl is older than mgmt (the CP hasn't caught up yet — wait for the next ctrl push).
 6. **Verify ctrl-vs-mgmt structural rules**:
    - Every entry in `active_peers` is in the set produced by mgmt's `allowed_peers` (dispatch on each rule's `type`; for `enum` that's literal list membership).
@@ -147,7 +147,7 @@ This deserves to be named explicitly because it's a real and inherent tradeoff o
 
 - **Grant access** — the workload-layer mTLS is end-to-end against signed mgmt; a hijacked CP can't make `kafka` accept a connection from someone whose SPIFFE ID isn't in `kafka`'s mgmt-signed `ingress.allow`.
 - **Add new principals or links** — those require an operator signature; the CP can only act inside what mgmt declared.
-- **Persist beyond a policy refresh** — once the operator updates `authorized_control_planes` to remove the breached CP key, agents stop accepting its ctrl artifacts.
+- **Persist beyond a policy refresh** — once the operator updates `authorized_ctrl_signers` to remove the breached CP key, agents stop accepting its ctrl artifacts.
 
 **Can:**
 
@@ -162,7 +162,7 @@ This tradeoff is intrinsic to "global path coherence is a non-local property and
 ## Explicitly deferred
 
 - Autonomous CP service. C1's ctrl producer is `florctl compile`; B1+ replaces it with a CP service.
-- Multi-CP coexistence (multiple `authorized_control_planes` entries, regional CP, A/B rollouts). Schema permits it from day one; orchestration is post-C1.
+- Multi-CP coexistence (multiple `authorized_ctrl_signers` entries, regional CP, A/B rollouts). Schema permits it from day one; orchestration is post-C1.
 - CP key rotation tooling and policy refresh on schedule.
 - Hot reload of ctrl-only changes (path failover with no mgmt change). Today every ctrl change still goes through `flor agent sync`'s restart-with-commit-timeout path, like mgmt.
 - Path-coherence enforcement beyond local rules — see "What hijacked CP can do" above.
@@ -184,7 +184,7 @@ By landing the stream in C1 with a degenerate producer (`florctl compile`) we ex
 - the dual-stream fetch and verification logic in agents,
 - the `obeys_mgmt_version` cross-reference,
 - the typed-rule bounds dispatch,
-- the `authorized_control_planes` issuance and rotation surface,
+- the `authorized_ctrl_signers` issuance and rotation surface,
 - the `mgmt/` + `ctrl/` directory layout in operator workflows.
 
 All of these are forward-compatible with B1+, where only the *producer* changes (operator-machine `florctl` → CP service). No schema migration. No flag-day. The cost is moderate (extra plumbing in compile, publish, fetch, verify), but it's strictly less than the cost of changing the schema later.
@@ -208,7 +208,7 @@ A bounded ctrl stream could in principle be unsigned — agents already verify e
 Three reasons make it worth it:
 
 - **Authenticity of the producer.** Bounds-checking only verifies that decisions are *permissible*; it doesn't verify *who* made them. A signature on ctrl tells the agent "this came from a CP the operator authorized," not just "this happens to satisfy mgmt." Distribution-path attacks (compromised config-server, MITM on a fetch) can substitute a permissible-but-unintended ctrl decision; signing catches that.
-- **Clean revocation primitive.** Operator removes a CP's pubkey from `authorized_control_planes` → agents stop accepting that CP's ctrl artifacts. No code change, no data flush, no out-of-band coordination. This is the same revocation pattern as identity revocation (remove from mgmt, propagate on next sync).
+- **Clean revocation primitive.** Operator removes a CP's pubkey from `authorized_ctrl_signers` → agents stop accepting that CP's ctrl artifacts. No code change, no data flush, no out-of-band coordination. This is the same revocation pattern as identity revocation (remove from mgmt, propagate on next sync).
 - **Multi-CP coexistence.** As soon as B1+ wants regional CPs, A/B-tested CPs, or quorum CPs, each needs its own identity and its own pubkey in mgmt's authorized list. Without per-CP signatures the agent has no way to tell which CP made which decision.
 
 The cost is ~zero — one signature verification per fetched ctrl, against a key the agent already pinned via mgmt. The security benefit is real even when the signing key is hot in B1+: forging ctrl still requires either the CP key itself or operator-policy authorization, both of which the bounded-autonomy model already accounts for.

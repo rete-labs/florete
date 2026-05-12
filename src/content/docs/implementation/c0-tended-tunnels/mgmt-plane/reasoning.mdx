@@ -119,7 +119,7 @@ Transparent outbound for non-SOCKS5 apps (iptables redirect, libc shim) is a lat
 
 In C0, QUIC connections are established **directly between service/user endpoints over UDP** — there's no mesh-of-vertices in between. The single flor vertex at each node hosts QUIC endpoints for its local principals and services; there are no node-to-node mTLS links.
 
-This means C0 has **no cluster-vertex identity layer**, no `links.yaml`, no `paths.yaml` — the hop-by-hop mesh crypto layer simply doesn't exist. Workload access is fully derivable from users + services + roles + groups without any routing configuration. The agent at each node carries its own principal identity (for control-plane communication with the config-server and metrics services), but that's orthogonal to the workload data plane and to mesh transit.
+This means C0 has **no cluster-vertex identity layer**, no `links.yaml`, no `paths.yaml` — the hop-by-hop mesh crypto layer simply doesn't exist. Workload access is fully derivable from users + services + roles + groups without any routing configuration. The agent at each node carries its own principal identity (for mgmt-plane communication with the config-server and metrics services), but that's orthogonal to the workload data plane and to mesh transit.
 
 Inter-node links appear only in C1, when cluster-flor is introduced on top and pairs of cluster-vertices need authenticated channels over which multiple service-to-service connections can multiplex. That's when cluster-vertex identity, `links.yaml`, and `paths.yaml` become necessary.
 
@@ -196,7 +196,7 @@ The practical consequence: treat the compiled-artifact JSON Schema as public API
 
 ## Why signed mgmt artifacts and policy-bounded autonomy
 
-The cluster's coordination point — config-server today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the cluster. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware; agents verify locally against a pinned operator public key (delivered with `ca.crt` at enrollment). The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
+The cluster's coordination point — config-server today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the cluster. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware with a dedicated `management-plane/<name>` signing principal (a sign-only identity issued separately from any user, distinct from the operator's `user/<op>` TLS principal — see [ADR-0005](../../../contributing/adr/0005-use-spiffe-identities)); agents verify locally against the corresponding public cert, delivered with `ca.crt` at enrollment. The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
 
 This is the same posture as TUF / Sigstore / Tailscale's Tailnet Lock: sensitive state has a signed root of authority that lives outside the distribution path. We adopt it from C0 — even though C0 has no cloud component yet — because (a) verification logic is cheap to write once and grows with the system, (b) the operational story we sell to security-conscious buyers in B1+ ("you don't need to trust our cloud") is only credible if the property held from day one, and (c) retrofitting signature-checking into a deployed agent base is far harder than shipping it now.
 
@@ -215,7 +215,7 @@ Why this beats the obvious alternatives:
 
 What we do **now** in C0/C1 (cheap, hard to retrofit):
 
-1. Sign every mgmt artifact. Single operator key, file-backed, ed25519. Agents verify on every fetch.
+1. Sign every mgmt artifact. Single `management-plane/<name>` signing principal (issued separately from any user; `primary` by convention), file-backed, ed25519. Its cert is sign-only (no TLS `extKeyUsage`) so a leak can't be re-used to impersonate any operator's or workload's TLS identity. Agents verify on every fetch.
 2. Add a `plane` discriminator to the envelope (`"mgmt"` today; `"ctrl"` reserved). The two artifact streams will be parallel files with separate envelopes — not one envelope with mixed signed/unsigned regions, which would make signature scope ambiguous and partial verification fragile.
 3. Keep the monotonic `version` already in the envelope; in B1+ ctrl artifacts will reference the mgmt `version` they obey, and agents will reject ctrl referencing a stale mgmt — same rollback-attack defense applied to CP.
 

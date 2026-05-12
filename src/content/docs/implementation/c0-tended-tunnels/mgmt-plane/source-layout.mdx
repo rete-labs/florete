@@ -7,8 +7,11 @@ description: Git repo structure and YAML source files for C0
 
 ```
 my-cluster/
-├── cluster.yaml          # name, version, crypto params
-├── ca.crt                # cluster root CA certificate (public)
+├── cluster.yaml          # name, per-category crypto policy, signer-cert references
+├── certs/                # public certs that live in the repo
+│   ├── ca.crt            # cluster root CA cert (singleton)
+│   └── management-planes/
+│       └── primary.crt   # mgmt-envelope signer cert (one or more during rotation)
 ├── nodes.yaml            # nodes: UDP reachability
 ├── services.yaml         # published services + their principal roles (incl. infra)
 ├── groups.yaml           # service groups
@@ -35,10 +38,22 @@ my-cluster/
 What's **not** in the repo:
 
 - **CA private key** — lives on the operator's workstation (password-protected file).
-- **Individual signed certs** (`alice.crt`, `api.crt`, ...) — delivered to their holders via enrollment bundles; stored locally next to each holder's private key. They're public material, but there's no reason to duplicate them in the repo.
-- **Individual private keys** — generated on the holder's machine (security-purist flow) or on the operator's machine for bundle issuance (convenience flow). Never committed.
+- **Mgmt-signer private keys** (`certs/management-planes/primary.key`, etc.) — also operator-only, never committed. Only the `.crt` siblings live in the repo.
+- **TLS principal certs** (`alice.crt`, `api.crt`, ...) — delivered to their holders via enrollment bundles; stored locally next to each holder's private key. They're public material, but there's no reason to duplicate them in the repo.
+- **TLS principal private keys** — generated on the holder's machine (security-purist flow) or on the operator's machine for bundle issuance (convenience flow). Never committed.
 
-The repo holds **names + ACLs + topology + CA cert**. That's what's needed to compile per-node artifacts and to audit who has access.
+The repo holds **names + ACLs + topology + CA cert + signer pubkeys**. That's what's needed to compile per-node artifacts and to audit who has access (and who is allowed to sign).
+
+### Filesystem naming rule
+
+Two parallel namespaces, two conventions:
+
+| Namespace | Form | Examples |
+|---|---|---|
+| SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/primary`, `--kind management-plane`, `Kind::ManagementPlane` |
+| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `<node>/mgmt/vertices/flor.json`, `~/.flor/clusters/<scope>/` |
+
+The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
 
 Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `vertices/flor.json` (read by the single `flor vertex run` instance the agent supervises in C0). C1 adds a second vertex artifact under `vertices/`; the agent.json shape is stable across both.
 
@@ -48,14 +63,35 @@ The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it kee
 
 ```yaml
 cluster:
-  name: rete-lovers               # also the SPIFFE trust domain
-  crypto:
-    ca_cert: ca.crt
-    signature_algorithm: ed25519
-    cert_validity_days: 90
+  name: rete-lovers                                      # also the SPIFFE trust domain
+
+  ca:
+    cert: certs/ca.crt
+    algorithm: ed25519                                   # optional; compiler default: ed25519
+    validity_days: 3650                                  # optional; compiler default: 3650
+
+  signers:
+    mgmt:
+      algorithm: ed25519                                 # optional; default: ed25519
+      validity_days: 365                                 # optional; default: 365
+      keys:
+        - { name: primary, cert: certs/management-planes/primary.crt }
+    # ctrl (introduced in C1):
+    #   keys:
+    #     - { name: primary, cert: certs/control-planes/primary.crt }
+
+  tls_principals:
+    algorithm: ed25519                                   # optional; default: ed25519
+    validity_days: 90                                    # optional; default: 90
+    # TLS principal certs (user/service/node/vertex) aren't listed here —
+    # they aren't committed; this block only sets policy.
 ```
 
 The cluster `name` doubles as the SPIFFE trust domain: every principal in this cluster has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
+
+**Per-category crypto.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (cluster lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `algorithm` + `validity_days` slot; all fields are optional and fall back to compiler defaults if omitted. Smaller clusters can leave the policy fields out entirely and just declare cert paths.
+
+**Signer cert references.** `signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<cluster>/management-plane/<name>`); `signers.mgmt.keys[].cert` is the repo-relative path to the public cert. The compiler reads these certs and embeds their pubkeys into every mgmt artifact's `authorized_mgmt_signers` field, so agents always know the currently-accepted signer set — rotation is a YAML list edit, not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
 
 ### nodes.yaml
 
@@ -109,15 +145,15 @@ services:
   config-server:                      # read side — nodes poll for compiled artifacts
     at: mgmt01
     addr: 127.0.0.1:9000
-    groups: [control-plane]
+    groups: [config-read]
   config-publisher:                   # write side — operators push new state
     at: mgmt01
     addr: 127.0.0.1:9001              # same process as config-server, different endpoint
-    groups: [control-plane-write]
+    groups: [config-write]
   metrics:
     at: mgmt01
     addr: 127.0.0.1:9090
-    groups: [control-plane]
+    groups: [config-read]
 
   # Workload services
   api:
@@ -158,8 +194,8 @@ A service is simultaneously a **target** (its `groups` govern who may reach it) 
 # groups.yaml — applies to any target (service)
 groups:
   # reserved (must be present; validator enforces):
-  control-plane:       # read side — nodes poll for artifacts
-  control-plane-write: # write side — operators push new state
+  config-read:  # read side — nodes poll for artifacts
+  config-write: # write side — operators push new state
 
   # user-defined:
   api:
@@ -171,8 +207,8 @@ groups:
 # roles.yaml — applies to any principal (user OR service)
 roles:
   # reserved (must be present, must have exactly these `allow` sets):
-  node:     { allow: [control-plane]       }   # auto-assigned by compiler to every node
-  operator: { allow: [control-plane-write] }   # manually assigned via `role: operator` in users.yaml
+  node:     { allow: [config-read]  }   # auto-assigned by compiler to every node
+  operator: { allow: [config-write] }   # manually assigned via `role: operator` in users.yaml
 
   # user-defined:
   devops:      { allow: [api, db, brokers, admin] }
@@ -200,6 +236,10 @@ users:
 ```
 
 `nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice. Each entry is `{at: <node>, via: <vertex>}` naming the host node and the vertex that holds the user's identity. In C0 every node has exactly one vertex, so `via:` may be omitted and the compiler picks that vertex automatically. In C1 `via:` is required (multiple vertices per node).
+
+**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `florctl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
+
+The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `florctl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *cluster*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
 
 **Multi-device users**: list all the user's devices. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
 
