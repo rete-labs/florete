@@ -26,24 +26,24 @@ The C1 ctrl artifact for cluster-flor:
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "active_peers": [
-      "spiffe://rete-lovers/vertices/beta/cluster",
-      "spiffe://rete-lovers/vertices/gamma/cluster"
+      "spiffe://rete-lovers/vertex/beta/cluster",
+      "spiffe://rete-lovers/vertex/gamma/cluster"
     ],
     "forwarding_table": [
-      { "in_label": 17, "out_peer": "spiffe://rete-lovers/vertices/beta/cluster",  "out_label": 42 },
-      { "in_label": 23, "out_peer": "spiffe://rete-lovers/vertices/gamma/cluster", "out_label": 71 }
+      { "in_label": 17, "out_peer": "spiffe://rete-lovers/vertex/beta/cluster",  "out_label": 42 },
+      { "in_label": 23, "out_peer": "spiffe://rete-lovers/vertex/gamma/cluster", "out_label": 71 }
     ],
     "label_bindings": [
       {
         "scope": "ingress",
-        "target_spiffe_id": "spiffe://rete-lovers/services/api",
-        "principal": "spiffe://rete-lovers/users/alice",
+        "target_spiffe_id": "spiffe://rete-lovers/service/api",
+        "principal": "spiffe://rete-lovers/user/alice",
         "local_label": 9
       },
       {
         "scope": "egress",
-        "target_spiffe_id": "spiffe://rete-lovers/services/mongodb",
-        "principal": "spiffe://rete-lovers/services/api",
+        "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
+        "principal": "spiffe://rete-lovers/service/api",
         "local_label": 11,
         "out_label": 11
       }
@@ -51,7 +51,7 @@ The C1 ctrl artifact for cluster-flor:
   },
   "signature": {
     "alg": "ed25519",
-    "key_id": "spiffe://rete-lovers/control-planes/primary",
+    "key_id": "spiffe://rete-lovers/control-plane/primary",
     "value": "<base64>"
   }
 }
@@ -60,7 +60,7 @@ The C1 ctrl artifact for cluster-flor:
 Field semantics:
 
 - **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)) with two additions: `plane: "ctrl"` and `obeys_mgmt_version`. The latter pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
-- **`signature`** — produced by a `control-planes/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against the pubkey listed in mgmt's `authorized_control_planes`; ctrl signed by an unauthorized key is rejected.
+- **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against the pubkey listed in mgmt's `authorized_control_planes`; ctrl signed by an unauthorized key is rejected.
 - **`active_peers`** — the subset of mgmt's `allowed_peers` that this cluster-flor should currently dial / accept inbound from. In C1 this equals the full set produced by `allowed_peers`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the cluster-wide topology information a per-node agent ever sees — it knows its own peers, nothing else.
 - **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries. In-label uniqueness is enforced by the producer; the agent verifies that each `out_peer` is in `active_peers`.
 - **`label_bindings`** — binds each accepted (initiator, target) pair from the mgmt allow lists to a local label. Each binding's (scope, target_spiffe_id, principal) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
@@ -193,9 +193,9 @@ All of these are forward-compatible with B1+, where only the *producer* changes 
 
 Three identities show up around the cluster's coordination point, and they have different roles, lifecycles, and compromise blast radii:
 
-- **`services/config-server`** — service identity, authenticates the *coordination service* to its clients. Compromise = clients dial an imposter; mTLS catches it.
-- **`nodes/<node>`** — service-class identity for control-plane *clients* (the agent), authenticates them to config-server. Compromise = imposter agent reads its own per-node artifacts.
-- **`control-planes/<name>`** — signing authority for ctrl artifacts. Compromise = forged ctrl decisions within mgmt bounds.
+- **`service/config-server`** — service identity, authenticates the *coordination service* to its clients. Compromise = clients dial an imposter; mTLS catches it.
+- **`node/<node>`** — service-class identity for control-plane *clients* (the agent), authenticates them to config-server. Compromise = imposter agent reads its own per-node artifacts.
+- **`control-plane/<name>`** — signing authority for ctrl artifacts. Compromise = forged ctrl decisions within mgmt bounds.
 
 Conflating the CP signing identity with config-server's service identity would couple two different blast radii (a config-server breach would also forge ctrl artifacts) and two different rotation cadences (CP key rotates with operator policy; service identity rotates with regular cert hygiene). Keeping them as separate SPIFFE kinds keeps the failure modes independent.
 

@@ -52,7 +52,7 @@ All cert and socket paths in compiled artifacts are **scope-relative** (e.g. `ca
 
 ### Node identity in multiple clusters
 
-A computing host that joins N clusters has N separate `nodes/<name>` principals — one in each cluster's trust domain. The names may differ across clusters (each cluster's operator chooses them independently). Each principal is acted on by a dedicated flor-agent process and held by that cluster's flor vertex. There is no shared node identity across clusters; the trust domains are fully independent.
+A computing host that joins N clusters has N separate `node/<name>` principals — one in each cluster's trust domain. The names may differ across clusters (each cluster's operator chooses them independently). Each principal is acted on by a dedicated flor-agent process and held by that cluster's flor vertex. There is no shared node identity across clusters; the trust domains are fully independent.
 
 ### Local listen addresses
 

@@ -16,10 +16,10 @@ This matches the author-vs-participant split used by `kubectl`/`kubelet`, `terra
 
 ```
 florctl ca init --out <dir>                 # once per cluster: generate CA keypair + ca.crt
-florctl ca sign <csr> --name <name> --kind <users|services|nodes>
+florctl ca sign <csr> --name <name> --kind <user|service|node>
                       [--scope cluster|node]
                                             # sign a CSR; append to enrollment.log
-                                            # (C1 adds `vertices` as a kind)
+                                            # (C1 adds `vertex` as a kind)
 florctl issue-bundle --node <node-name> --cluster <config-server-url>
                      [--csr <csr-bundle>] [--validity <duration>] [--out <bundle>]
                                             # per-node enrollment bundle: CA cert, node
@@ -41,7 +41,7 @@ Notes:
 
 - `florctl ca init` runs **once per cluster**. CA private key never leaves operator's secure storage.
 - `florctl ca sign` is the low-level primitive; `florctl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and config-server bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
-- `--kind` on `ca sign` selects the SPIFFE path namespace (`users`, `services`, `nodes` in C0; C1 adds `vertices`).
+- `--kind` on `ca sign` selects the SPIFFE path namespace (`user`, `service`, `node` in C0; C1 adds `vertex`).
 - `florctl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (with `agent.json` and `vertices/flor.json` per node). Artifacts contain only **scope-relative** path references (bare filenames like `ca.crt`, `alpha.crt`) — the agent resolves them against the cluster install root at startup. No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
 - `florctl publish` uploads the current `.flor/compiled/` tree to the cluster's config-server; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
 - Nothing in `florctl` affects running agents directly. It reads and writes the cluster repo plus operator-local CA material, and talks to the config-server over the cluster's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.
@@ -77,7 +77,7 @@ Notes:
 
 - `flor id create` runs on the target machine for **Flow B** (security-purist) enrollment; generates keypairs for the named node + any principals hosted on it, emitting a CSR bundle for the operator to sign. The operator tells the user which principal names to include (out-of-band), so the bundle matches what `users.yaml` + `services.yaml` declare for that node.
 - `flor enroll <bundle>` is a **two-step bootstrap**. **Step 1**: unpack the bundle (CA cert + node cert + key + workload certs + keys + config-server URL + expected config-server SPIFFE ID + a current `agent.json` and `vertices/flor.json`) and write everything to `~/.flor/clusters/<scope>/`, where `<scope>` is the cluster name embedded in the bundle (override with `--as <scope>` if it collides with an already-enrolled cluster). This gives the node enough material to start running immediately. **Step 2**: start `flor agent run`, which brings up the vertex and then runs `flor agent sync` once to refresh against whatever the cluster currently runs. Re-keying (or adding a new workload on this node) re-runs the same command with a freshly-issued bundle.
-- `flor agent sync` fetches `<this-node>/{agent.json, vertices/flor.json}` from the cluster's config-server over Florete (acting as the `nodes/<node>` principal via the local vertex's SOCKS5), installs the new artifacts, and restarts the supervised vertex with a commit-timeout guard. No compilation on the node — artifacts were pre-compiled by the operator and published to the config-server.
+- `flor agent sync` fetches `<this-node>/{agent.json, vertices/flor.json}` from the cluster's config-server over Florete (acting as the `node/<node>` principal via the local vertex's SOCKS5), installs the new artifacts, and restarts the supervised vertex with a commit-timeout guard. No compilation on the node — artifacts were pre-compiled by the operator and published to the config-server.
 - **`--commit-timeout` is on by default** (5 min). New artifacts become active; if `flor agent sync --confirm` isn't run within the timeout, the previous artifacts are restored and the vertex restarts. Cisco IOS `commit confirmed` pattern.
 - `flor agent run` is the long-running supervisor process per node. In C0 it manages one `flor vertex run` child; C1 adds a second vertex for the cluster-flor layer. How exactly the agent launches vertices (direct fork, systemd unit, future local workload-runtime interface) is intentionally not pinned here; the runtime contract is just "a vertex starts when given its config".
 - `flor vertex run` is the data-plane daemon. It reads its own config and runs the workloads/io/transport-endpoint/connection-manager described there — no awareness of the agent, the config-server, or the rest of the cluster.

@@ -80,19 +80,19 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
       { "name": "flor", "config": "vertices/flor.json" }
     ],
     "control_plane": {
-      "principal":     "spiffe://rete-lovers/nodes/alice-laptop",
-      "config_server": "spiffe://rete-lovers/services/config-server"
+      "principal":     "spiffe://rete-lovers/node/alice-laptop",
+      "config_server": "spiffe://rete-lovers/service/config-server"
     }
   },
   "signature": { "alg": "ed25519", "key_id": "operator:<fingerprint>", "value": "<base64>" }
 }
 ```
 
-The agent reads its supervised vertices' configs to find the SOCKS5 port for its own `nodes/alice-laptop` principal — that's how it dials the config-server.
+The agent reads its supervised vertices' configs to find the SOCKS5 port for its own `node/alice-laptop` principal — that's how it dials the config-server.
 
 ### Example: vertex payload (user node)
 
-A user device initiates connections only — no `listen_udp`-served services. The agent's `nodes/alice-laptop` principal appears here as a workload so the agent can dial config-server:
+A user device initiates connections only — no `listen_udp`-served services. The agent's `node/alice-laptop` principal appears here as a workload so the agent can dial config-server:
 
 ```json
 {
@@ -108,14 +108,14 @@ A user device initiates connections only — no `listen_udp`-served services. Th
     "connection_manager": { "adapter": "udp" },
     "workloads": [
       {
-        "spiffe_id": "spiffe://rete-lovers/nodes/alice-laptop",
+        "spiffe_id": "spiffe://rete-lovers/node/alice-laptop",
         "identity":  { "cert_path": "alice-laptop.crt", "priv_path": "alice-laptop.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1081", "direction": "inbound" }
         ]
       },
       {
-        "spiffe_id": "spiffe://rete-lovers/users/alice",
+        "spiffe_id": "spiffe://rete-lovers/user/alice",
         "identity":  { "cert_path": "alice.crt", "priv_path": "alice.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
@@ -124,22 +124,22 @@ A user device initiates connections only — no `listen_udp`-served services. Th
     ],
     "egress": [
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/config-server",
+        "target_spiffe_id": "spiffe://rete-lovers/service/config-server",
         "target_node": "mgmt01",
         "target_udp": "9.10.11.12:4433",
-        "allow": ["spiffe://rete-lovers/nodes/alice-laptop"]
+        "allow": ["spiffe://rete-lovers/node/alice-laptop"]
       },
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/api",
+        "target_spiffe_id": "spiffe://rete-lovers/service/api",
         "target_node": "alpha",
         "target_udp": "1.2.3.4:4433",
-        "allow": ["spiffe://rete-lovers/users/alice"]
+        "allow": ["spiffe://rete-lovers/user/alice"]
       },
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/kafka",
+        "target_spiffe_id": "spiffe://rete-lovers/service/kafka",
         "target_node": "beta",
         "target_udp": "5.6.7.8:4433",
-        "allow": ["spiffe://rete-lovers/users/alice"]
+        "allow": ["spiffe://rete-lovers/user/alice"]
       }
     ]
   },
@@ -165,14 +165,14 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
     "connection_manager": { "adapter": "udp", "listen": "0.0.0.0:4433" },
     "workloads": [
       {
-        "spiffe_id": "spiffe://rete-lovers/nodes/alpha",
+        "spiffe_id": "spiffe://rete-lovers/node/alpha",
         "identity":  { "cert_path": "alpha.crt", "priv_path": "alpha.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
         ]
       },
       {
-        "spiffe_id": "spiffe://rete-lovers/services/api",
+        "spiffe_id": "spiffe://rete-lovers/service/api",
         "identity":  { "cert_path": "api.crt", "priv_path": "api.key" },
         "io": [
           { "kind": "tcp",    "upstream": "127.0.0.1:8000",  "direction": "outbound" },
@@ -180,7 +180,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
         ]
       },
       {
-        "spiffe_id": "spiffe://rete-lovers/services/alpha/ssh",
+        "spiffe_id": "spiffe://rete-lovers/service/alpha/ssh",
         "identity":  { "cert_path": "ssh.crt", "priv_path": "ssh.key" },
         "io": [
           { "kind": "tcp", "upstream": "0.0.0.0:22", "direction": "outbound" }
@@ -189,29 +189,29 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
     ],
     "ingress": [
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/api",
+        "target_spiffe_id": "spiffe://rete-lovers/service/api",
         "allow": [
-          "spiffe://rete-lovers/users/alice",
-          "spiffe://rete-lovers/users/bob"
+          "spiffe://rete-lovers/user/alice",
+          "spiffe://rete-lovers/user/bob"
         ]
       },
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/alpha/ssh",
-        "allow": ["spiffe://rete-lovers/users/bob"]
+        "target_spiffe_id": "spiffe://rete-lovers/service/alpha/ssh",
+        "allow": ["spiffe://rete-lovers/user/bob"]
       }
     ],
     "egress": [
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/config-server",
+        "target_spiffe_id": "spiffe://rete-lovers/service/config-server",
         "target_node": "mgmt01",
         "target_udp": "9.10.11.12:4433",
-        "allow": ["spiffe://rete-lovers/nodes/alpha"]
+        "allow": ["spiffe://rete-lovers/node/alpha"]
       },
       {
-        "target_spiffe_id": "spiffe://rete-lovers/services/mongodb",
+        "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
         "target_node": "beta",
         "target_udp": "5.6.7.8:4433",
-        "allow": ["spiffe://rete-lovers/services/api"]
+        "allow": ["spiffe://rete-lovers/service/api"]
       }
     ]
   },
@@ -222,7 +222,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 ### Key points
 
 - **One workloads list per vertex.** A workload is a **principal** if it has at least one `inbound` io channel, a **target** if it has at least one `outbound` io channel, both if both. The schema doesn't privilege users vs services — they're all just workloads with different SPIFFE-ID kinds and io shapes.
-- **The agent's `nodes/<node>` principal is also a workload.** It lives in the vertex payload like any other principal, with a SOCKS5 inbound that the agent dials when it needs to talk to config-server. No special-casing in the runtime.
+- **The agent's `node/<node>` principal is also a workload.** It lives in the vertex payload like any other principal, with a SOCKS5 inbound that the agent dials when it needs to talk to config-server. No special-casing in the runtime.
 - **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's vertex and the target service's vertex. The compiler pre-resolves only (a) which remote peers may initiate to this node's services (`ingress`) and (b) where this node's principals may initiate to (`egress`).
 - **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's vertex can dial the correct UDP address and fail fast on disallowed SOCKS5 requests. A compromised initiator could ignore its own egress table; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a dialing table with a local convenience filter.
 - **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `florctl compile` + push — no cert reissuance needed, no role-resolution at runtime on the vertex hot path.

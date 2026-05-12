@@ -20,17 +20,17 @@ Each principal's cert+key are *held* by a flor vertex acting on the principal's 
 These terms overlap in everyday speech but are distinct in the Florete model:
 
 - **Node** (computing host) — a physical machine, VM, or device. A hardware/OS concept. May run workloads from multiple Florete clusters simultaneously.
-- **`nodes/<name>` SPIFFE principal** — the node's cluster-scoped identity, one per (host, cluster) pair. Exists within a specific cluster's trust domain; the name is chosen by that cluster's operator and may differ across clusters the same host has joined.
+- **`node/<name>` SPIFFE principal** — the node's cluster-scoped identity, one per (host, cluster) pair. Exists within a specific cluster's trust domain; the name is chosen by that cluster's operator and may differ across clusters the same host has joined.
 - **`flor-agent`** — the workload process that acts on the node-principal's behalf within one cluster. Fetches state, supervises vertices, dials config-server using the node identity. One agent process per joined cluster.
 
-"Per-node" and "for all nodes" in cluster-scoped prose always mean *per `nodes/<name>` principal in this cluster*, not per physical host. The distinction matters when one host joins multiple clusters.
+"Per-node" and "for all nodes" in cluster-scoped prose always mean *per `node/<name>` principal in this cluster*, not per physical host. The distinction matters when one host joins multiple clusters.
 </Callout>
 
 Key points:
 
-- **The node is a first-class principal; `flor-agent` is the workload that acts on its behalf.** The node's identity (`spiffe://<cluster>/nodes/<node>`) is the cluster's view of this computing host — used solely for agent ↔ cluster-infrastructure mTLS (fetching compiled state from the config-server, pushing metrics). The agent does not hold the cert+key; the local flor vertex does, and the agent delegates mTLS to it via a SOCKS5 channel, the same way alice delegates to flor. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals.
+- **The node is a first-class principal; `flor-agent` is the workload that acts on its behalf.** The node's identity (`spiffe://<cluster>/node/<node>`) is the cluster's view of this computing host — used solely for agent ↔ cluster-infrastructure mTLS (fetching compiled state from the config-server, pushing metrics). The agent does not hold the cert+key; the local flor vertex does, and the agent delegates mTLS to it via a SOCKS5 channel, the same way alice delegates to flor. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals.
 - **Services are first-class principals.** A service's identity is both the server side of its inbound mTLS and the client side of its outbound connections. The `role` field in services.yaml governs what the service can call.
-- **Node identity and cluster-vertex identity are distinct principal kinds with distinct holders.** C1 introduces `vertices/<node>/<name>` for hop-by-hop mesh-transit mTLS: the principal is cluster-flor (qua participant in the link layer), and link-flor below it holds the cert+key. The `nodes/<node>` principal is the node itself, with flor-agent as its workload. The two kinds belong to different layers and different holders — there's no question of merging. A computing host can join multiple Florete clusters; each cluster gives it a separate `nodes/<name>` identity in its own trust domain, with a dedicated flor-agent process acting on its behalf.
+- **Node identity and cluster-vertex identity are distinct principal kinds with distinct holders.** C1 introduces `vertex/<node>/<name>` for hop-by-hop mesh-transit mTLS: the principal is cluster-flor (qua participant in the link layer), and link-flor below it holds the cert+key. The `node/<node>` principal is the node itself, with flor-agent as its workload. The two kinds belong to different layers and different holders — there's no question of merging. A computing host can join multiple Florete clusters; each cluster gives it a separate `node/<name>` identity in its own trust domain, with a dedicated flor-agent process acting on its behalf.
 
 ### CA Management
 
@@ -65,25 +65,25 @@ Two forms are used interchangeably: the **canonical SPIFFE URI** (in certs as SA
 ### Canonical SPIFFE URI
 
 ```
-spiffe://<cluster>/users/<user>                         # user principal
-spiffe://<cluster>/services/<service>                   # cluster-scoped service
-spiffe://<cluster>/services/<node>/<service>            # node-scoped service
-spiffe://<cluster>/nodes/<node>                         # node principal (used by flor-agent for control-plane traffic)
-spiffe://<cluster>/control-planes/<name>                # control-plane signing identity (added in C1)
+spiffe://<cluster>/user/<user>                          # user principal
+spiffe://<cluster>/service/<service>                    # cluster-scoped service
+spiffe://<cluster>/service/<node>/<service>             # node-scoped service
+spiffe://<cluster>/node/<node>                          # node principal (used by flor-agent for control-plane traffic)
+spiffe://<cluster>/control-plane/<name>                 # control-plane signing identity (added in C1)
 ```
 
 Examples:
 
-- `spiffe://rete-lovers/users/alice` — user principal.
-- `spiffe://rete-lovers/services/api` — api service (cluster-scoped).
-- `spiffe://rete-lovers/services/alpha/ssh` — SSH on node alpha.
-- `spiffe://rete-lovers/nodes/alpha` — alpha's node principal (used to reach the config-server and metrics services over Florete).
-- `spiffe://rete-lovers/control-planes/primary` — the cluster's primary CP signing identity (operator-held in C0/C1; cloud-held in B1+).
+- `spiffe://rete-lovers/user/alice` — user principal.
+- `spiffe://rete-lovers/service/api` — api service (cluster-scoped).
+- `spiffe://rete-lovers/service/alpha/ssh` — SSH on node alpha.
+- `spiffe://rete-lovers/node/alpha` — alpha's node principal (used to reach the config-server and metrics services over Florete).
+- `spiffe://rete-lovers/control-plane/primary` — the cluster's primary CP signing identity (operator-held in C0/C1; cloud-held in B1+).
 
 C1 extends this with two further kinds:
 
-- `spiffe://<cluster>/vertices/<node>/<name>` — for hop-by-hop mesh-transit mTLS. Node-scoped, mirroring `services/<node>/<service>`: `<node>` is the host node; `<name>` is the vertex's local identifier on that node. By convention the cluster mesh-vertex is named `cluster`, giving e.g. `spiffe://rete-lovers/vertices/alpha/cluster` for alpha's cluster mesh-vertex. The name is an operator choice, not a validator rule. A future interrete-vertex on the same node would be `spiffe://rete-lovers/vertices/alpha/interrete` by convention.
-- `spiffe://<cluster>/control-planes/<name>` — the signing authority for ctrl artifacts. Distinct from `nodes/` (a service-class identity for control-plane *clients*) and from `services/config-server` (a service-class identity for the *coordination service*). The CP-signing authority compromises independently of those services and rotates on its own cadence, which is why it has its own kind. In C0 the kind exists only as a reservation; nothing produces ctrl artifacts there. The mgmt artifact lists authorized CP pubkeys for the cluster (see C1's ctrl-plane doc).
+- `spiffe://<cluster>/vertex/<node>/<name>` — for hop-by-hop mesh-transit mTLS. Node-scoped, mirroring `service/<node>/<service>`: `<node>` is the host node; `<name>` is the vertex's local identifier on that node. By convention the cluster mesh-vertex is named `cluster`, giving e.g. `spiffe://rete-lovers/vertex/alpha/cluster` for alpha's cluster mesh-vertex. The name is an operator choice, not a validator rule. A future interrete-vertex on the same node would be `spiffe://rete-lovers/vertex/alpha/interrete` by convention.
+- `spiffe://<cluster>/control-plane/<name>` — the signing authority for ctrl artifacts. Distinct from `node/` (a service-class identity for control-plane *clients*) and from `service/config-server` (a service-class identity for the *coordination service*). The CP-signing authority compromises independently of those services and rotates on its own cadence, which is why it has its own kind. In C0 the kind exists only as a reservation; nothing produces ctrl artifacts there. The mgmt artifact lists authorized CP pubkeys for the cluster (see C1's ctrl-plane doc).
 
 ### Convenience Hostname (services only)
 
@@ -97,7 +97,7 @@ Examples:
 - `api.rete-lovers.rete`
 - `ssh.alpha.rete-lovers.rete`
 
-The `services/` segment is elided in the hostname because services are the only kind of entity a workload dials by name. Users and (in C1) cluster vertices have SPIFFE IDs but no hostname form.
+The `service/` segment is elided in the hostname because services are the only kind of entity a workload dials by name. Users and (in C1) cluster vertices have SPIFFE IDs but no hostname form.
 
 `.rete` is the Florete TLD. It's **not registered in public DNS**; only flor agents resolve it (via an in-process resolver or a split-horizon stub that intercepts queries for `.rete` and routes them through the mesh). This gives `.rete` hostnames drop-in compatibility with standard tools (`ssh`, `curl`, `psql`, browsers with local resolver) without polluting real DNS.
 
@@ -105,6 +105,6 @@ The `services/` segment is elided in the hostname because services are the only 
 
 To keep URIs unambiguous:
 
-- **Kind segments** used in SPIFFE paths are reserved identifiers and cannot be used as node, user, or service names: `users`, `services`, `nodes`, `vertices`, `control-planes`. Under `vertices/`, the second and third path segments identify the host node and the local vertex name respectively; no sub-labels are reserved (vertex names are operator-chosen, like service names under `services/<node>/`).
+- **Kind segments** used in SPIFFE paths are reserved identifiers and cannot be used as node, user, or service names: `user`, `service`, `node`, `vertex`, `control-plane`. Under `vertex/`, the second and third path segments identify the host node and the local vertex name respectively; no sub-labels are reserved (vertex names are operator-chosen, like service names under `service/<node>/`).
 - **Node and service names** cannot contain `/` and cannot collide with each other (a service named `alpha` when there's a node `alpha` is ambiguous in the node-scoped form).
 - **Labels in hostnames** must be DNS-label-valid (lowercase alphanumeric + hyphen, 1–63 chars).
