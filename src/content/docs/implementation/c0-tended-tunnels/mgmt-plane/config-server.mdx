@@ -12,43 +12,45 @@ It's declared in `services.yaml` as **two separate services** — one for reads 
 ```yaml
 # services.yaml — cluster infrastructure
 services:
-  config-server:                # read-only: serves compiled artifacts to nodes
+  config-server:                  # read-only: serves compiled artifacts to nodes
     at: mgmt01
     addr: 127.0.0.1:9000
-    group: control-plane        # reserved group; read-access for `node` role
-  config-publisher:             # write: accepts new compiled trees from florctl
+    groups: [config-read]         # reserved group; read-access for `node` role
+  config-publisher:               # write: accepts new compiled trees from florctl
     at: mgmt01
-    addr: 127.0.0.1:9001        # same process as config-server, different port+endpoint
-    group: control-plane-write  # reserved group; write-access for `operator` role
+    addr: 127.0.0.1:9001          # same process as config-server, different port+endpoint
+    groups: [config-write]        # reserved group; write-access for `operator` role
   metrics:
     at: mgmt01
     addr: 127.0.0.1:9090
-    group: control-plane
+    groups: [config-read]
   # ... workload services
 
 # groups.yaml — reserved groups
 groups:
-  control-plane:       [config-server, metrics]
-  control-plane-write: [config-publisher]
+  config-read:
+  config-write:
 
 # roles.yaml — reserved role definitions (must be provided; validator enforces)
 roles:
-  node:     { allow: [control-plane]       }   # auto-assigned by compiler to every node
-  operator: { allow: [control-plane-write] }   # manually assigned in users.yaml
+  node:     { allow: [config-read]  }   # auto-assigned by compiler to every node
+  operator: { allow: [config-write] }   # manually assigned in users.yaml
 ```
+
+**Why "config-*" and not "mgmt-plane-*".** The groups gate access to the config-server's HTTP endpoints, not to a plane. The plane (mgmt vs ctrl, when ctrl lands in C1) is an artifact-content distinction encoded in the URL path inside an already-authenticated tunnel — RBAC has no reason to project it. C1's ctrl-fetch endpoint will live in the same `config-read` group; ctrl-publish stays in `config-write` because C1's ctrl artifacts are still operator-produced. A B1+ split where the CP becomes an external writer is a B1+ design call; today there's no second writer, so a second write group would be speculative.
 
 **Reserved-name conventions:**
 
-- `node`, `operator` (roles), `control-plane`, `control-plane-write` (groups), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial cluster template.
+- `node`, `operator` (roles), `config-read`, `config-write` (groups), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial cluster template.
 - **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `node/` principal (so each node's compiled artifact has the right egress row to reach `config-server`). The `operator` role is assigned manually in `users.yaml` (`fyodor: { role: operator }`) — the validator rejects the cluster if no user has it (otherwise nothing can publish).
 
-**Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "config-server" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `control-plane`) and one for writes (gated by `operator` role via `control-plane-write`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
+**Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "config-server" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `config-read`) and one for writes (gated by `operator` role via `config-write`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
 
 This split doesn't give per-node isolation of *reads* — every `node` principal can `GET /artifact/<any-node>` as long as it reaches the read-service. Tightening this (so alpha can only fetch its own directory) requires passing the verified peer SPIFFE ID to the HTTP layer, which flor deliberately does **not** do today — flor is a pure L4/L5 forwarder (QUIC/mTLS + TCP bytes), and reaching into HTTP to inject `X-Florete-Peer-SpiffeID` headers would promote it to an L7 proxy. That's a meaningful architectural shift with knock-on design questions (which component owns L7? is it flor itself, an adjacent sidecar, a side-channel lookup API?), and it needs careful design in C1+ rather than a rushed solution now. Flagged in [Open Follow-ups](../#open-follow-ups) and tied to the broader L7 awareness topic there. For pilots, the exposed ACL-matrix metadata is tolerable.
 
 **Wire protocol (C0).** Both services speak plain HTTP over the Florete mTLS tunnel.
 
-- `config-server: GET /artifact/<node>?version=<n>` — returns the node's compiled directory (an `agent.json` + the vertex configs under `vertices/`) packaged as a single response if the caller passed the `control-plane` ingress gate. (No path/identity cross-check in C0; see note above.)
+- `config-server: GET /artifact/<node>?version=<n>` — returns the node's compiled directory (an `agent.json` + the vertex configs under `vertices/`) packaged as a single response if the caller passed the `config-read` ingress gate. (No path/identity cross-check in C0; see note above.)
 - `config-publisher: POST /tree` — accepts a new compiled tree from `florctl`. Only reachable by callers with `operator` role.
 
 The caller of `GET /artifact/<node>` is the node's `flor-agent`, acting as the `node/<node>` principal via the local vertex's SOCKS5 listener. C0 doesn't need anything more elaborate — no streaming, no deltas, no watch. Agents poll on their own cadence via `flor agent sync`.

@@ -16,10 +16,18 @@ This matches the author-vs-participant split used by `kubectl`/`kubelet`, `terra
 
 ```
 florctl ca init --out <dir>                 # once per cluster: generate CA keypair + ca.crt
-florctl ca sign <csr> --name <name> --kind <user|service|node>
+florctl ca sign <csr> --name <name>
+                      --kind <user|service|node|management-plane|control-plane|vertex>
                       [--scope cluster|node]
-                                            # sign a CSR; append to enrollment.log
-                                            # (C1 adds `vertex` as a kind)
+                                            # sign a CSR; append to enrollment.log.
+                                            # All six kinds are recognised from day one;
+                                            # `vertex` and `control-plane` aren't exercised
+                                            # at runtime in C0 (see ADR-0005).
+                                            # `management-plane` is how the cluster's
+                                            # mgmt-envelope signer is minted in C0 — e.g.
+                                            #   florctl ca sign --kind management-plane \
+                                            #                   --name primary
+                                            # produces the keypair `florctl publish` signs with.
 florctl issue-bundle --node <node-name> --cluster <config-server-url>
                      [--csr <csr-bundle>] [--validity <duration>] [--out <bundle>]
                                             # per-node enrollment bundle: CA cert, node
@@ -41,7 +49,7 @@ Notes:
 
 - `florctl ca init` runs **once per cluster**. CA private key never leaves operator's secure storage.
 - `florctl ca sign` is the low-level primitive; `florctl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and config-server bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
-- `--kind` on `ca sign` selects the SPIFFE path namespace (`user`, `service`, `node` in C0; C1 adds `vertex`).
+- `--kind` on `ca sign` selects the SPIFFE path namespace and the X.509 extension policy applied to the resulting cert. All six kinds are accepted from day one (`user`, `service`, `node`, `management-plane`, `control-plane`, `vertex`); `vertex` and `control-plane` aren't exercised at runtime in C0 but the CLI surface is stable. TLS-capable kinds (`user`, `service`, `node`, `vertex`) get `keyUsage: digitalSignature, keyEncipherment` + `extKeyUsage: serverAuth, clientAuth`; signing-only kinds (`management-plane`, `control-plane`) get `keyUsage: digitalSignature` only, no `extKeyUsage` — see [ADR-0005](../../../../contributing/adr/0005-use-spiffe-identities) for the rationale.
 - `florctl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (with `agent.json` and `vertices/flor.json` per node). Artifacts contain only **scope-relative** path references (bare filenames like `ca.crt`, `alpha.crt`) — the agent resolves them against the cluster install root at startup. No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
 - `florctl publish` uploads the current `.flor/compiled/` tree to the cluster's config-server; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
 - Nothing in `florctl` affects running agents directly. It reads and writes the cluster repo plus operator-local CA material, and talks to the config-server over the cluster's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.

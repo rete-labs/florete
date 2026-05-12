@@ -37,7 +37,7 @@ This is also why publication should always go through cluster-flor in the standa
 - **`links.yaml`** — declares allowed UDP peerings between cluster-vertices (a topology bound).
 - **`paths.yaml`** — declares allowed multi-hop routes at the cluster layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
 - **Three mgmt artifacts per node** — one `agent.json` plus `vertices/<name>.json` per vertex under `<node>/mgmt/`. Standard topology produces `vertices/public.json` (link-vertex) and `vertices/cluster.json` (mesh-vertex). Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/vertices/cluster.json` (see [Ctrl Plane](../ctrl-plane/)).
-- **`authorized_control_planes`** in mgmt — the cluster's mgmt artifact carries one or more authorized CP signing pubkeys; agents accept ctrl artifacts only if signed by one of these. In C1 there's a single CP key, operator-held.
+- **`authorized_ctrl_signers`** in mgmt — the cluster's mgmt artifact carries one or more authorized CP signing pubkeys; agents accept ctrl artifacts only if signed by one of these. In C1 there's a single CP key, operator-held.
 - **Per-vertex FlorIO sockets** — each vertex that exposes FlorIO gets a socket at `/run/flor/<cluster>/vertices/<vertex-name>.sock`. The compiler derives the path from the cluster name and vertex name declared in `nodes.yaml`; no separate `cluster.yaml` config is needed.
 - **Additional validator rules** — link validity, address feasibility, multi-hop path validity, principal-role coherence for services that appear as path initiators. (Label feasibility moves to ctrl-plane.)
 
@@ -67,18 +67,33 @@ my-cluster/
 
 YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is the compiled, signed projection of those bounds. The ctrl subtree alongside it is produced by the same `florctl compile` step in C1 (the ctrl producer becomes a CP service in B1+); it's gitignored because its lifecycle is "runtime state, not authoring artifact." See [Ctrl Plane](../ctrl-plane/) for what's inside `ctrl/`.
 
-### cluster.yaml (additions only)
+### cluster.yaml (additions over C0)
 
-No new fields in C1 — the C0 shape is sufficient.
+C1 adds a `signers.ctrl` block listing the cluster's authorized ctrl-envelope signers, symmetric to `signers.mgmt` from C0:
 
 ```yaml
 cluster:
   name: rete-lovers                 # same as C0
-  crypto:
-    ca_cert: ca.crt
-    signature_algorithm: ed25519
-    cert_validity_days: 90
+
+  ca:
+    cert: certs/ca.crt              # same as C0
+    # algorithm, validity_days — defaults apply
+
+  signers:
+    mgmt:
+      keys:
+        - { name: primary, cert: certs/management-planes/primary.crt }
+    ctrl:                           # NEW in C1
+      algorithm: ed25519            # optional
+      validity_days: 365            # optional
+      keys:
+        - { name: primary, cert: certs/control-planes/primary.crt }
+
+  tls_principals:
+    # algorithm, validity_days — defaults apply
 ```
+
+The compiler embeds the listed ctrl-signer pubkeys into every mgmt artifact's `authorized_ctrl_signers` field (mirror of `authorized_mgmt_signers` from C0). Agents accept ctrl artifacts only if signed by one of these keys; rotation works the same overlap-window way as for mgmt signers.
 
 ### nodes.yaml (additions over C0)
 
@@ -300,7 +315,7 @@ This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelo
   "node": "alpha",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": { ... },
-  "signature": { "alg": "ed25519", "key_id": "operator:<fingerprint>", "value": "<base64>" }
+  "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
 }
 ```
 
@@ -437,7 +452,7 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
       "allow": ["spiffe://rete-lovers/service/api"]
     }
   ],
-  "authorized_control_planes": [
+  "authorized_ctrl_signers": [
     {
       "spiffe_id": "spiffe://rete-lovers/control-plane/primary",
       "pub_key": "<base64-ed25519>"
@@ -458,7 +473,7 @@ In C1 the only rule type is `enum`; the rule body lists peers explicitly. The `v
 
 Per-allow forwarding labels (`local_label`) and the `forwarding_table` itself are **not in this artifact** — they're CP-shaped state and live in the ctrl artifact (see [Ctrl Plane](../ctrl-plane/)). The mgmt artifact carries only what the operator authored: who may reach what, which peers are allowed, and (for egress) what the first hop is.
 
-`authorized_control_planes` lists CP signing identities the operator has approved; agents accept ctrl artifacts only if signed by one of these pubkeys. In C1 there's a single entry — the operator's CP key, held alongside (but separately from) the operator's mgmt signing key. In B1+ this list grows to one or more CP services.
+`authorized_ctrl_signers` lists CP signing identities the operator has approved; agents accept ctrl artifacts only if signed by one of these pubkeys. In C1 there's a single entry — the operator's CP key, held alongside (but separately from) the operator's mgmt signing key. In B1+ this list grows to one or more CP services.
 
 ### `agent.json` payload
 
@@ -508,7 +523,7 @@ Node-identity vs. cluster-vertex-identity aren't merged because they serve diffe
 
 Enrollment flow is unchanged: `florctl issue-bundle --node alpha --cluster <config-server-url>` packages alpha's node identity *and* alpha's cluster-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/cluster` principal for every node in C1 (derived from the cluster mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the cluster trust domain.
 
-CP signing identities are issued separately on the operator's own machine (`florctl ca sign --kind control-plane --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_control_planes` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
+CP signing identities are issued separately on the operator's own machine (`florctl ca sign --kind control-plane --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_ctrl_signers` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
 
 The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the cluster currently runs (which may be richer or simpler than what was bundled).
 
@@ -538,7 +553,7 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 - [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, vertices/*.json}` (vertices/ contains `cluster.json` always; a link-vertex file — named after its `name:` field in `nodes.yaml` — for each `quic`-type link-vertex on the node)
 - [ ] Two new principal kinds wired through issuance, compile, and runtime: `vertex/<node>/<name>` (cluster mesh-vertex, named `cluster` by convention) and `control-plane/<name>`
 - [ ] `via:` and `agent_via:` validation: required in C1 (multiple vertices per node), compiler resolves to target vertex for workload placement
-- [ ] `authorized_control_planes` field in mgmt cluster.json carrying the cluster's CP signing pubkeys
+- [ ] `authorized_ctrl_signers` field in mgmt cluster.json carrying the cluster's CP signing pubkeys
 - [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in cluster-flor) implementations, plus the `allowed_peers` typed-rule bound declaring which peer cluster-vertices are reachable through which adapter
 - [ ] Multi-hop forwarder operates uniformly across mixed adapter types
 - [ ] `florctl compile` emitting the per-node mgmt layout (omitting the link-vertex file when no QUIC-type link-vertices are declared). The ctrl subtree is produced by the same `florctl compile` invocation but documented in [Ctrl Plane](../ctrl-plane/).
