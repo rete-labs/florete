@@ -52,7 +52,7 @@ Bundles are **per node**, not per principal. A bundle enrolls a machine and ever
 **Flow B — principal-generated keypair (security-purist):**
 
 1. Alice (or a server admin) installs `flor` via the generic landing page.
-2. `flor id create --node alice-laptop --principal users/alice --out alice-laptop-csr.bundle` — generates keypairs locally for the node and each named principal, packages the CSRs.
+2. `flor id create --node alice-laptop --principal user/alice --out alice-laptop-csr.bundle` — generates keypairs locally for the node and each named principal, packages the CSRs.
 3. Principal sends `alice-laptop-csr.bundle` to the operator (any channel; CSRs are public).
 4. Operator: `florctl issue-bundle --node alice-laptop --csr alice-laptop-csr.bundle --cluster <config-server-url> --out alice-laptop-signed.bundle`. Every CSR is signed; the resulting bundle contains only signed certs + config-server bootstrap (no private keys).
 5. Operator runs `florctl compile && florctl publish`.
