@@ -77,20 +77,19 @@ cluster:
 
   ca:
     cert: certs/ca.crt              # same as C0
-    # algorithm, validity_days — defaults apply
+    # validity_days — default applies
 
   signers:
     mgmt:
       keys:
         - { name: primary, cert: certs/management-planes/primary.crt }
     ctrl:                           # NEW in C1
-      algorithm: ed25519            # optional
       validity_days: 365            # optional
       keys:
         - { name: primary, cert: certs/control-planes/primary.crt }
 
   tls_principals:
-    # algorithm, validity_days — defaults apply
+    # validity_days — default applies
 ```
 
 The compiler embeds the listed ctrl-signer pubkeys into every mgmt artifact's `authorized_ctrl_signers` field (mirror of `authorized_mgmt_signers` from C0). Agents accept ctrl artifacts only if signed by one of these keys; rotation works the same overlap-window way as for mgmt signers.

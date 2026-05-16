@@ -67,12 +67,10 @@ cluster:
 
   ca:
     cert: certs/ca.crt
-    algorithm: ed25519                                   # optional; compiler default: ed25519
     validity_days: 3650                                  # optional; compiler default: 3650
 
   signers:
     mgmt:
-      algorithm: ed25519                                 # optional; default: ed25519
       validity_days: 365                                 # optional; default: 365
       keys:
         - { name: primary, cert: certs/management-planes/primary.crt }
@@ -81,7 +79,6 @@ cluster:
     #     - { name: primary, cert: certs/control-planes/primary.crt }
 
   tls_principals:
-    algorithm: ed25519                                   # optional; default: ed25519
     validity_days: 90                                    # optional; default: 90
     # TLS principal certs (user/service/node/vertex) aren't listed here —
     # they aren't committed; this block only sets policy.
@@ -89,7 +86,9 @@ cluster:
 
 The cluster `name` doubles as the SPIFFE trust domain: every principal in this cluster has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
 
-**Per-category crypto.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (cluster lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `algorithm` + `validity_days` slot; all fields are optional and fall back to compiler defaults if omitted. Smaller clusters can leave the policy fields out entirely and just declare cert paths.
+**Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (cluster lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validity_days` slot; the field is optional and falls back to the compiler default if omitted. Smaller clusters can leave the policy fields out entirely and just declare cert paths.
+
+**Algorithm is not configurable in C0.** All keys are Ed25519. A per-category `algorithm` slot will appear when a second algorithm is actually supported (B1+, e.g. for hardware tokens or post-quantum schemes); until then, exposing the field would be cosmetic.
 
 **Signer cert references.** `signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<cluster>/management-plane/<name>`); `signers.mgmt.keys[].cert` is the repo-relative path to the public cert. The compiler reads these certs and embeds their pubkeys into every mgmt artifact's `authorized_mgmt_signers` field, so agents always know the currently-accepted signer set — rotation is a YAML list edit, not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
 
