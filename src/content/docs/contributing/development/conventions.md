@@ -29,3 +29,24 @@ We propagate errors with [`error-stack`](https://docs.rs/error-stack), wrapping 
 - **Use `change_context_lazy(|| Error::new(format!("…{x}…")))`** only when the new context is non‑trivial to construct (allocates beyond a string literal, calls a function, captures a heavy value). For simple literals, prefer plain `change_context` — the happy‑path allocation is negligible and `_lazy` adds a closure layer.
 - **Describe what was being attempted**, not what failed underneath — `change_context(Error::new("Failed to sign CSR"))` is more useful at the call site than re‑stating the lower error.
 - **Avoid `map_err` for error wrapping** — it discards the underlying error and breaks the `Report` chain, so debug output loses the original cause. Reach for it only when `change_context` is not available, which is rare: the underlying error must implement `std::error::Error + Send + Sync + 'static`. The usual culprits are errors carrying borrowed data (`&'a str` inside), non-`Send`/`Sync` errors (hold an `Rc`/`RefCell`), or types from a library that aren't wired up as `Error` at all. If you do reach for `map_err`, fold any salient detail from the discarded error into the new message.
+
+### API Design
+
+#### Make impossible states unrepresentable
+
+If an API does not allow some combination of parameters, **there should be no way to pass that combination**. Don't accept it and then runtime-reject: prevent the call from type-checking. The library API should be *total* — every well-typed call is a valid call.
+
+The technique is to introduce a *subset type* for the restricted parameter and a constructor that converts the unrestricted form into it. Example: in `core::identity`, `Kind` has six variants but only `Service` and `Vertex` can be bound to a node. Two functions instead of one:
+
+```rust
+pub fn build_id_in_cluster(td, kind: Kind, name) -> Result<SpiffeId, _>; // any Kind
+pub fn build_id_on_node(  td, kind: NodeScopableKind, node, name) -> Result<SpiffeId, _>; // subset
+```
+
+`NodeScopableKind` is a 2-variant enum and `Kind::into_node_scopable() -> Option<NodeScopableKind>` is the only way to obtain one. Calling `build_id_on_node(_, Kind::User, _, _)` doesn't compile.
+
+**Where the runtime check goes:** at the boundary that turns untyped input into typed values — CLI flag parsing, YAML/JSON deserialization, RPC handlers. Those layers are inherently partial because they consume strings; their job is to convert successfully (and call the typed primitive) or fail loudly. The library trusts what it receives.
+
+If you find yourself writing the same boundary dispatch in two places (e.g. two binaries both translate `(kind, optional_scope) → SpiffeId`), expose a **convenience wrapper next to the typed primitives**, not in `cli`/binary code. The wrapper is partial on input but its implementation must route through the typed primitives — it can't construct a bad combination either; it only translates user input to the typed call.
+
+**Net rule:** the type system enforces what's representable; the parser/CLI layer enforces what was actually typed. The runtime check exists in exactly one place — at the trust boundary — never in the trusted core.
