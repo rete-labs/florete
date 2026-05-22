@@ -40,7 +40,7 @@ The technique is to introduce a *subset type* for the restricted parameter and a
 
 ```rust
 pub fn build_id_in_cluster(td, kind: Kind, name) -> Result<SpiffeId, _>; // any Kind
-pub fn build_id_on_node(  td, kind: NodeScopableKind, node, name) -> Result<SpiffeId, _>; // subset
+pub fn build_id_on_node(td, kind: NodeScopableKind, node, name) -> Result<SpiffeId, _>; // subset
 ```
 
 `NodeScopableKind` is a 2-variant enum and `Kind::into_node_scopable() -> Option<NodeScopableKind>` is the only way to obtain one. Calling `build_id_on_node(_, Kind::User, _, _)` doesn't compile.
