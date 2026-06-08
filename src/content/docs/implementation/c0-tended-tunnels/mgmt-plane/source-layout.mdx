@@ -1,26 +1,51 @@
 ---
 title: Source Layout
-description: Git repo structure and YAML source files for C0
+description: Git repo structure and source manifests for C0
 ---
 
 ## Git Repo Layout
 
+Florete's management-plane source of truth is a **source bundle**: a set of YAML **manifests** committed to the cluster repo, plus public cert material and the append-only enrollment log. A manifest is a Kubernetes-like resource document:
+
+```yaml
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: api
+spec:
+  ...
+```
+
+Every source resource has exactly the same outer shape:
+
+- `apiVersion` - currently `florete.tech/v1alpha1`.
+- `kind` - one of Florete's resource kinds, not a Kubernetes-native kind.
+- `metadata.name` - the resource name. Names are never YAML map keys.
+- `spec` - the operator-authored desired state for that resource.
+
+Florete uses this Kubernetes-like format because it is familiar, explicit, schema-friendly, and easy to diff. It also keeps future Kubernetes CRD/operator integration straightforward: the same authored resource shape can become a CRD shape later. Florete does **not** depend on Kubernetes, and these manifests are not Kubernetes objects. Source manifests are read by Florete management-plane tooling, validated, and compiled into signed runtime artifacts consumed by agents and vertices.
+
+Do not add Kubernetes runtime fields to source manifests. Florete source resources do not carry `status`, `uid`, `resourceVersion`, `managedFields`, or `ownerReferences`.
+
+The source bundle supports multi-document YAML with `---`. Manifests may live in one `.yaml` file or many. Grouping by file is an operator convention, not part of the API.
+
+A recommended repo shape:
+
 ```
 my-cluster/
-├── cluster.yaml          # name, per-category crypto policy, signer-cert references
+├── source/
+│   ├── cluster.yaml      # FloreteCluster
+│   ├── nodes.yaml        # FloreteNode resources
+│   ├── services.yaml     # FloreteService resources
+│   └── access.yaml       # FloretePrincipal, FloreteRole, FloreteGroup resources
 ├── certs/                # public certs that live in the repo
 │   ├── ca.crt            # cluster root CA cert (singleton)
 │   └── management-planes/
 │       └── primary.crt   # mgmt-envelope signer cert (one or more during rotation)
-├── nodes.yaml            # nodes: UDP reachability
-├── services.yaml         # published services + their principal roles (incl. infra)
-├── groups.yaml           # service groups
-├── roles.yaml            # role → allowed groups (applies to any principal)
-├── users.yaml            # user identity names, home-node, role
 ├── enrollment.log        # append-only operator sign events (auditable)
 └── .flor/
     └── compiled/                # committed; operator runs `florctl compile` then commits
-        ├── mgmt01/              # management node — bootstrap-applied manually (see Config-server)
+        ├── mgmt01/              # management node - bootstrap-applied manually (see Config-server)
         │   └── mgmt/
         │       ├── agent.json
         │       └── vertices/flor.json
@@ -35,14 +60,16 @@ my-cluster/
         └── ...
 ```
 
+This `source/` split is only a recommended organization. A valid source bundle could also be one `source/bundle.yaml` containing every resource, or several files grouped by team, environment, or review workflow.
+
 What's **not** in the repo:
 
-- **CA private key** — lives on the operator's workstation (password-protected file).
-- **Mgmt-signer private keys** (`certs/management-planes/primary.key`, etc.) — also operator-only, never committed. Only the `.crt` siblings live in the repo.
-- **TLS principal certs** (`alice.crt`, `api.crt`, ...) — delivered to their holders via enrollment bundles; stored locally next to each holder's private key. They're public material, but there's no reason to duplicate them in the repo.
-- **TLS principal private keys** — generated on the holder's machine (security-purist flow) or on the operator's machine for bundle issuance (convenience flow). Never committed.
+- **CA private key** - lives on the operator's workstation (password-protected file).
+- **Mgmt-signer private keys** (`certs/management-planes/primary.key`, etc.) - also operator-only, never committed. Only the `.crt` siblings live in the repo.
+- **TLS principal certs** (`alice.crt`, `api.crt`, ...) - delivered to their holders via enrollment bundles; stored locally next to each holder's private key. They're public material, but there's no reason to duplicate them in the repo.
+- **TLS principal private keys** - generated on the holder's machine (security-purist flow) or on the operator's machine for bundle issuance (convenience flow). Never committed.
 
-The repo holds **names + ACLs + topology + CA cert + signer pubkeys**. That's what's needed to compile per-node artifacts and to audit who has access (and who is allowed to sign).
+The repo holds **source manifests + CA cert + signer pubkeys + enrollment events**. That's what's needed to compile per-node artifacts and to audit who has access, where resources run, and who is allowed to sign.
 
 ### Filesystem naming rule
 
@@ -53,207 +80,431 @@ Two parallel namespaces, two conventions:
 | SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/primary`, `--kind management-plane`, `Kind::ManagementPlane` |
 | Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `<node>/mgmt/vertices/flor.json`, `~/.flor/clusters/<scope>/` |
 
-The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
+The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory - no collection wrapper needed when there's exactly one and there will only ever be one.
 
 Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `vertices/flor.json` (read by the single `flor vertex run` instance the agent supervises in C0). C1 adds a second vertex artifact under `vertices/`; the agent.json shape is stable across both.
 
-The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `florctl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
+The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `florctl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored - ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
 
-### cluster.yaml
+## Resource Kinds
+
+C0 source bundles use these Florete resource kinds:
+
+- `FloreteCluster` - cluster-wide trust domain, cert policy, and signer references.
+- `FloreteNode` - a node and its local vertex graph.
+- `FloreteService` - a published target service and optional service principal role.
+- `FloretePrincipal` - a human/user principal and its enrolled devices.
+- `FloreteRole` - a role and the groups it may reach.
+- `FloreteGroup` - a target group used by access rules.
+
+These names are intentionally Florete-specific. They do not reuse Kubernetes-native names.
+
+## Full Source Bundle Example
+
+The following is a compact source bundle in one multi-document YAML file. Operators may split the same resources across files however they like.
 
 ```yaml
-cluster:
-  name: rete-lovers                                      # also the SPIFFE trust domain
-
+apiVersion: florete.tech/v1alpha1
+kind: FloreteCluster
+metadata:
+  name: rete-lovers
+spec:
   ca:
     cert: certs/ca.crt
-    validity_days: 3650                                  # optional; compiler default: 3650
+    validityDays: 3650
+  signers:
+    mgmt:
+      validityDays: 365
+      keys:
+        - name: primary
+          cert: certs/management-planes/primary.crt
+  tlsPrincipals:
+    validityDays: 90
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteNode
+metadata:
+  name: mgmt01
+spec:
+  vertices:
+    - name: public
+      vertexClass: link
+      transport: quic
+      address: 9.10.11.12:4433
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: config-server
+spec:
+  at: mgmt01
+  addr: 127.0.0.1:9000
+  groups: [config-read]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloretePrincipal
+metadata:
+  name: alice
+spec:
+  roles: [developer]
+  nodes:
+    - at: alice-laptop
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: api
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: developer
+spec:
+  allow: [api, brokers]
+```
+
+### FloreteCluster
+
+```yaml
+apiVersion: florete.tech/v1alpha1
+kind: FloreteCluster
+metadata:
+  name: rete-lovers                                      # also the SPIFFE trust domain
+spec:
+  ca:
+    cert: certs/ca.crt
+    validityDays: 3650                                  # optional; compiler default: 3650
 
   signers:
     mgmt:
-      validity_days: 365                                 # optional; default: 365
+      validityDays: 365                                 # optional; default: 365
       keys:
-        - { name: primary, cert: certs/management-planes/primary.crt }
+        - name: primary
+          cert: certs/management-planes/primary.crt
     # ctrl (introduced in C1):
     #   keys:
-    #     - { name: primary, cert: certs/control-planes/primary.crt }
+    #     - name: primary
+    #       cert: certs/control-planes/primary.crt
 
-  tls_principals:
-    validity_days: 90                                    # optional; default: 90
-    # TLS principal certs (user/service/node/vertex) aren't listed here —
+  tlsPrincipals:
+    validityDays: 90                                    # optional; default: 90
+    # TLS principal certs (user/service/node/vertex) aren't listed here -
     # they aren't committed; this block only sets policy.
 ```
 
-The cluster `name` doubles as the SPIFFE trust domain: every principal in this cluster has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
+The cluster resource name doubles as the SPIFFE trust domain: every principal in this cluster has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
 
-**Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (cluster lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validity_days` slot; the field is optional and falls back to the compiler default if omitted. Smaller clusters can leave the policy fields out entirely and just declare cert paths.
+**Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles: the CA is long-lived (cluster lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validityDays` slot; the field is optional and falls back to the compiler default if omitted. Smaller clusters can leave the policy fields out entirely and just declare cert paths.
 
 **Algorithm is not configurable in C0.** All keys are Ed25519. A per-category `algorithm` slot will appear when a second algorithm is actually supported (B1+, e.g. for hardware tokens or post-quantum schemes); until then, exposing the field would be cosmetic.
 
-**Signer cert references.** `signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<cluster>/management-plane/<name>`); `signers.mgmt.keys[].cert` is the repo-relative path to the public cert. The compiler reads these certs and embeds their pubkeys into every mgmt artifact's `authorized_mgmt_signers` field, so agents always know the currently-accepted signer set — rotation is a YAML list edit, not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
+**Signer cert references.** `spec.signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<cluster>/management-plane/<name>`); `spec.signers.mgmt.keys[].cert` is the repo-relative path to the public cert. The compiler reads these certs and embeds their pubkeys into every mgmt artifact's `authorized_mgmt_signers` field, so agents always know the currently-accepted signer set. Rotation is a manifest edit, not a re-enrollment event. C1 adds the symmetric `spec.signers.ctrl.keys[]` block.
 
-### nodes.yaml
+### FloreteNode
 
-Every node declares its **vertex graph** — the flor vertices that run on that node and how they reference each other via `uses:`. C0 nodes have a single layer: one **link-vertex** (`kind: link`) per node, of type `quic`, terminating QUIC directly at the workload boundary. Principals' cert+keys live on this vertex; mTLS terminates here. C1 adds a **cluster-vertex** (`kind: mesh`, playing the cluster role) on top of the link layer, at which point principals migrate up and link-vertices carry only hop-by-hop transit — but that's a C1 concern.
+Every node declares its **vertex graph** - the flor vertices that run on that node and how they reference each other via `uses:`. C0 nodes have a single layer: one **link-vertex** (`vertexClass: link`) per node, with `transport: quic`, terminating QUIC directly at the workload boundary. Principals' cert+keys live on this vertex; mTLS terminates here. C1 adds a **cluster-vertex** (`vertexClass: mesh`, playing the cluster role) on top of the link layer, at which point principals migrate up and link-vertices carry only hop-by-hop transit - but that's a C1 concern.
 
-Two vertex kinds exist in the design (only `link` is used in C0):
+Two vertex classes exist in the design (only `link` is used in C0):
 
-- `link` — terminates a transport on **external medium** (IP — QUIC or direct UDP today; in-kernel `wg`, third-party `vless`, … later). One per underlay surface. No hop-by-hop forwarding.
-- `mesh` — operates entirely **inside Florete** (its medium is other vertices). Does hop-by-hop label-forwarding. The cluster-vertex (C1) and the future interrete-vertex are both `kind: mesh` — what differs is the role configuration each is given, not the kind. Same code, same recursion property.
+- `link` - terminates a transport on **external medium** (IP: QUIC or direct UDP today; in-kernel `wg`, third-party `vless`, ... later). One per underlay surface. No hop-by-hop forwarding.
+- `mesh` - operates entirely **inside Florete** (its medium is other vertices). Does hop-by-hop label-forwarding. The cluster-vertex (C1) and the future interrete-vertex are both `vertexClass: mesh` - what differs is the role configuration each is given, not the vertex class. Same code, same recursion property.
 
 ```yaml
-nodes:
-  # management node — hosts config-server and metrics
-  mgmt01:
-    vertices:
-      - { name: public, kind: link, type: quic, address: 9.10.11.12:4433 }
-
-  # server nodes — Internet-facing, host services
-  alpha:
-    vertices:
-      - { name: public, kind: link, type: quic, address: 1.2.3.4:4433 }
-  beta:
-    vertices:
-      - { name: public, kind: link, type: quic, address: 5.6.7.8:4433 }
-
-  # user nodes — dynamic IPs, behind NAT, initiate connections only
-  alice-laptop:
-    vertices:
-      - { name: quic, kind: link, type: quic }   # no address — initiator-only
-  bob-workstation:
-    vertices:
-      - { name: quic, kind: link, type: quic }
+apiVersion: florete.tech/v1alpha1
+kind: FloreteNode
+metadata:
+  name: mgmt01
+spec:
+  # management node - hosts config-server and metrics
+  vertices:
+    - name: public
+      vertexClass: link
+      transport: quic
+      address: 9.10.11.12:4433
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteNode
+metadata:
+  name: alpha
+spec:
+  # server node - Internet-facing, hosts services
+  vertices:
+    - name: public
+      vertexClass: link
+      transport: quic
+      address: 1.2.3.4:4433
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteNode
+metadata:
+  name: beta
+spec:
+  vertices:
+    - name: public
+      vertexClass: link
+      transport: quic
+      address: 5.6.7.8:4433
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteNode
+metadata:
+  name: alice-laptop
+spec:
+  # user node - dynamic IP, behind NAT, initiates connections only
+  vertices:
+    - name: quic
+      vertexClass: link
+      transport: quic
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteNode
+metadata:
+  name: bob-workstation
+spec:
+  vertices:
+    - name: quic
+      vertexClass: link
+      transport: quic
 ```
 
 Each vertex entry has:
 
-- `name` — local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields). Defaults to `type` when there's exactly one vertex of that type on the node. For mesh-vertices in C1 the name carries semantic meaning — `cluster` is the conventional name for the cluster mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
-- `kind` — `link` or `mesh` (see above). C0 uses only `link`.
-- `type` — the interface this vertex exposes upwards (`quic` in C0; `udp`, in-kernel `wg`, third-party `vless`, … become available in C1+). The mesh-vertex can consume any supported link interface (via Connection Manager adapter), currently it exposes only `quic` interface (via FlorIO). The recursion property: an upper-layer mesh-vertex of `type: quic` consumes a lower mesh-vertex of `type: quic` indistinguishably from a wire-terminating link-vertex of `type: quic`.
-- `address` — listen `host:port` for link vertices that bind a socket. Omit for initiator-only nodes (user laptops, phones); they connect outbound from whatever ephemeral port they get.
+- `name` - local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields). Defaults to `transport` when there is exactly one vertex of that transport on the node. For mesh-vertices in C1 the name carries semantic meaning: `cluster` is the conventional name for the cluster mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
+- `vertexClass` - `link` or `mesh` (see above). This field used to be an internal `kind`; it is renamed so `kind` is reserved for the top-level resource kind.
+- `transport` - the interface this vertex exposes upwards (`quic` in C0; `udp`, in-kernel `wg`, third-party `vless`, ... become available in C1+). This field used to be `type`; it is renamed to be explicit and to avoid overloading generic type language. The mesh-vertex can consume any supported link interface (via Connection Manager adapter); currently it exposes only `quic` interface (via FlorIO). The recursion property: an upper-layer mesh-vertex with `transport: quic` consumes a lower mesh-vertex with `transport: quic` indistinguishably from a wire-terminating link-vertex with `transport: quic`.
+- `address` - listen `host:port` for link vertices that bind a socket. Omit for initiator-only nodes (user laptops, phones); they connect outbound from whatever ephemeral port they get.
 
-In C0 every node that hosts a publicly-reachable service must be Internet-facing (see [scope](../../scope)) — service/user endpoints establish QUIC directly to the service's host node, with no relaying.
+In C0 every node that hosts a publicly-reachable service must be Internet-facing (see [scope](../../scope)) - service/user endpoints establish QUIC directly to the service's host node, with no relaying.
 
 Node-naming convention for pilots: short DNS-like names for servers (`alpha`, `web01`), and `<user>-<device>` for user devices (`alice-laptop`, `bob-phone`). Names must be unique within a cluster.
 
-### services.yaml
+### FloreteService
 
 ```yaml
-services:
-  # Cluster infrastructure — on the management node (reserved; validator enforces)
-  config-server:                      # read side — nodes poll for compiled artifacts
-    at: mgmt01
-    addr: 127.0.0.1:9000
-    groups: [config-read]
-  config-publisher:                   # write side — operators push new state
-    at: mgmt01
-    addr: 127.0.0.1:9001              # same process as config-server, different endpoint
-    groups: [config-write]
-  metrics:
-    at: mgmt01
-    addr: 127.0.0.1:9090
-    groups: [config-read]
-
-  # Workload services
-  api:
-    at: alpha
-    # via: public                     # omittable in C0: mgmt01 has one vertex
-    addr: 127.0.0.1:8000             # flor forwards here; service binds localhost
-    socks5_proxy: 127.0.0.1:18000    # SOCKS5 port flor exposes to this service
-    groups: [api]                        # what group api belongs to (ingress ACL side)
-    roles: [api-backend]                 # api's role when acting as a client (egress ACL side)
-  mongodb:
-    at: beta
-    addr: 127.0.0.1:27017
-    groups: [db]
-    # no roles — mongodb doesn't initiate Florete connections
-  kafka:
-    at: beta
-    addr: 127.0.0.1:9092
-    groups: [brokers]
-  ssh:
-    at: alpha                         # node-scoped service (published per-node)
-    scope: node                       # vs. default `scope: cluster`
-    addr: 0.0.0.0:22                  # also reachable directly for emergency admin access
-    groups: [admin]
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: config-server
+spec:
+  # Cluster infrastructure - on the management node (reserved; validator enforces)
+  at: mgmt01
+  addr: 127.0.0.1:9000
+  groups: [config-read]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: config-publisher
+spec:
+  at: mgmt01
+  addr: 127.0.0.1:9001              # same process as config-server, different endpoint
+  groups: [config-write]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: metrics
+spec:
+  at: mgmt01
+  addr: 127.0.0.1:9090
+  groups: [config-read]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: api
+spec:
+  # Workload service
+  at: alpha
+  # via: public                     # omittable in C0: alpha has one vertex
+  addr: 127.0.0.1:8000              # flor forwards here; service binds localhost
+  socks5Proxy: 127.0.0.1:18000      # SOCKS5 port flor exposes to this service
+  groups: [api]                     # what group api belongs to (ingress ACL side)
+  roles: [api-backend]              # api's role when acting as a client (egress ACL side)
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: mongodb
+spec:
+  at: beta
+  addr: 127.0.0.1:27017
+  groups: [db]
+  # no roles - mongodb doesn't initiate Florete connections
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: kafka
+spec:
+  at: beta
+  addr: 127.0.0.1:9092
+  groups: [brokers]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: ssh
+spec:
+  at: alpha                         # node-scoped service (published per-node)
+  scope: node                       # vs. default `scope: cluster`
+  addr: 0.0.0.0:22                  # also reachable directly for emergency admin access
+  groups: [admin]
 ```
 
 Two conventions in this example:
 
-- **`addr` binds 127.0.0.1** for all services reached exclusively through Florete. This is the whole point of publishing them via flor — the service itself must not be Internet-facing. SSH is the standard exception: it binds `0.0.0.0` so that the emergency access path (see [Safety net](../distribution-and-reload#safety-net-server-nodes)) survives a bad Florete rollout.
-- **`socks5_proxy`** is intentionally direction-neutral. From the service's perspective it's an outbound proxy; from flor's perspective it's an inbound interface. Neutral naming sidesteps the PoV flip that would otherwise confuse operators reading this file.
+- **`addr` binds 127.0.0.1** for all services reached exclusively through Florete. This is the whole point of publishing them via flor: the service itself must not be Internet-facing. SSH is the standard exception: it binds `0.0.0.0` so that the emergency access path (see [Safety net](../distribution-and-reload#safety-net-server-nodes)) survives a bad Florete rollout.
+- **`socks5Proxy`** is intentionally direction-neutral. From the service's perspective it's an outbound proxy; from flor's perspective it's an inbound interface. Neutral naming sidesteps the PoV flip that would otherwise confuse operators reading this resource.
 
 There is no `protocol` field in C0/C1: flor is a pure L4 TCP forwarder, so whether the payload is gRPC, HTTP, or plain TCP is opaque to it. L7-aware features are a deliberate future addition; until then, operators can annotate with YAML comments if they want to remember what's running.
 
 A service is simultaneously a **target** (its `groups` govern who may reach it) and, optionally, a **principal** (its `roles` govern what it may call). Services without `roles` only accept connections; they never initiate.
 
-### groups.yaml, roles.yaml
+### FloreteGroup and FloreteRole
 
 ```yaml
-# groups.yaml — applies to any target (service)
-groups:
-  # reserved (must be present; validator enforces):
-  config-read:  # read side — nodes poll for artifacts
-  config-write: # write side — operators push new state
-
-  # user-defined:
-  api:
-  db:
-  brokers:
-  admin:
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: config-read                 # reserved; validator enforces
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: config-write                # reserved; validator enforces
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: api
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: db
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: brokers
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: admin
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: node
+spec:
+  allow: [config-read]              # reserved; auto-assigned by compiler to every node
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: operator
+spec:
+  allow: [config-write]             # reserved; manually assigned in FloretePrincipal resources
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: devops
+spec:
+  allow: [api, db, brokers, admin]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: developer
+spec:
+  allow: [api, brokers]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: sales
+spec:
+  allow: [api]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: api-backend
+spec:
+  allow: [db, brokers]              # api service calls db + brokers
 ```
+
+`FloreteGroup` applies to targets, currently services. `FloreteRole` applies to any principal: user principals, service principals, and the auto-assigned node principals.
+
+### FloretePrincipal
+
 ```yaml
-# roles.yaml — applies to any principal (user OR service)
-roles:
-  # reserved (must be present, must have exactly these `allow` sets):
-  node:     { allow: [config-read]  }   # auto-assigned by compiler to every node
-  operator: { allow: [config-write] }   # manually assigned via `role: operator` in users.yaml
-
-  # user-defined:
-  devops:      { allow: [api, db, brokers, admin] }
-  developer:   { allow: [api, brokers] }
-  sales:       { allow: [api] }
-  api-backend: { allow: [db, brokers] }    # api service calls db + brokers
+apiVersion: florete.tech/v1alpha1
+kind: FloretePrincipal
+metadata:
+  name: fyodor
+spec:
+  roles: [operator]
+  nodes:
+    - at: fyodor-laptop             # via: omittable in C0 - one vertex per node
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloretePrincipal
+metadata:
+  name: alice
+spec:
+  roles: [developer]
+  nodes:
+    - at: alice-laptop              # nodes where alice's flor runs
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloretePrincipal
+metadata:
+  name: bob
+spec:
+  roles: [devops]
+  nodes:
+    - at: bob-workstation
 ```
 
-### users.yaml
+`spec.nodes` is the list of user devices where this user's flor agent runs. The compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice. Each entry is `{at: <node>, via: <vertex>}` naming the host node and the vertex that holds the user's identity. In C0 every node has exactly one vertex, so `via:` may be omitted and the compiler picks that vertex automatically. In C1 `via:` is required (multiple vertices per node).
 
-```yaml
-users:
-  fyodor:
-    roles: [operator]
-    nodes:
-      - { at: fyodor-laptop }          # via: omittable in C0 — one vertex per node
-  alice:
-    roles: [developer]
-    nodes:
-      - { at: alice-laptop }           # nodes where alice's flor runs
-  bob:
-    roles: [devops]
-    nodes:
-      - { at: bob-workstation }
-```
+**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `florctl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `operator` role grant - that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
 
-`nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice. Each entry is `{at: <node>, via: <vertex>}` naming the host node and the vertex that holds the user's identity. In C0 every node has exactly one vertex, so `via:` may be omitted and the compiler picks that vertex automatically. In C1 `via:` is required (multiple vertices per node).
-
-**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `florctl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
-
-The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `florctl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *cluster*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
+The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `florctl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user - the keypair belongs to the *cluster*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from a `FloretePrincipal` resource.
 
 **Multi-device users**: list all the user's devices. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
 
-If per-device revocation matters (lost phone without wanting to re-issue laptop), model each device as its own user with a shared role:
+If per-device revocation matters (lost phone without wanting to re-issue laptop), model each device as its own principal with a shared role:
 
 ```yaml
-users:
-  alice-laptop:
-    roles: [developer]
-    nodes:
-      - { at: alice-laptop }
-  alice-phone:
-    roles: [developer]
-    nodes:
-      - { at: alice-phone }
+apiVersion: florete.tech/v1alpha1
+kind: FloretePrincipal
+metadata:
+  name: alice-laptop
+spec:
+  roles: [developer]
+  nodes:
+    - at: alice-laptop
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloretePrincipal
+metadata:
+  name: alice-phone
+spec:
+  roles: [developer]
+  nodes:
+    - at: alice-phone
 ```
 
-No special mechanism is needed for this pattern — it falls out of the principal model.
+No special mechanism is needed for this pattern - it falls out of the principal model.

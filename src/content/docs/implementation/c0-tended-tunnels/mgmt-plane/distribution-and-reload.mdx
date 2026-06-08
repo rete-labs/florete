@@ -20,7 +20,7 @@ Full restart for every permission change is wasteful at server-node scale — wa
 |---|---|---|
 | `ingress.allow` / `egress.allow` additions or removals (role membership, RBAC edits) | **No** — swap tables in place | Very high |
 | New / removed local service | Yes — new listener / teardown | Medium |
-| `upstream_addr` / `socks5_proxy` change | Yes — reopens sockets | Low |
+| Service `addr` / `socks5Proxy` change | Yes — reopens sockets | Low |
 | Identity rotation (new cert, same SPIFFE ID) | Yes — rebuild mTLS contexts | Low |
 | Peer UDP address change | Possibly — kills active QUIC sessions | Low |
 

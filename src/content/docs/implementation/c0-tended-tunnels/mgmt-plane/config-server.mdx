@@ -7,42 +7,69 @@ description: Management-node config distribution service for C0
 
 The **config-server** is the cluster infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
 
-It's declared in `services.yaml` as **two separate services** — one for reads (nodes) and one for writes (operators) — so Florete's per-service RBAC can gate them cleanly:
+It's declared as **two separate `FloreteService` resources** - one for reads (nodes) and one for writes (operators) - so Florete's per-service RBAC can gate them cleanly:
 
 ```yaml
-# services.yaml — cluster infrastructure
-services:
-  config-server:                  # read-only: serves compiled artifacts to nodes
-    at: mgmt01
-    addr: 127.0.0.1:9000
-    groups: [config-read]         # reserved group; read-access for `node` role
-  config-publisher:               # write: accepts new compiled trees from florctl
-    at: mgmt01
-    addr: 127.0.0.1:9001          # same process as config-server, different port+endpoint
-    groups: [config-write]        # reserved group; write-access for `operator` role
-  metrics:
-    at: mgmt01
-    addr: 127.0.0.1:9090
-    groups: [config-read]
-  # ... workload services
-
-# groups.yaml — reserved groups
-groups:
-  config-read:
-  config-write:
-
-# roles.yaml — reserved role definitions (must be provided; validator enforces)
-roles:
-  node:     { allow: [config-read]  }   # auto-assigned by compiler to every node
-  operator: { allow: [config-write] }   # manually assigned in users.yaml
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: config-server
+spec:
+  at: mgmt01
+  addr: 127.0.0.1:9000
+  groups: [config-read]         # reserved group; read-access for `node` role
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: config-publisher
+spec:
+  at: mgmt01
+  addr: 127.0.0.1:9001          # same process as config-server, different port+endpoint
+  groups: [config-write]        # reserved group; write-access for `operator` role
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteService
+metadata:
+  name: metrics
+spec:
+  at: mgmt01
+  addr: 127.0.0.1:9090
+  groups: [config-read]
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: config-read
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteGroup
+metadata:
+  name: config-write
+spec: {}
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: node
+spec:
+  allow: [config-read]          # auto-assigned by compiler to every node
+---
+apiVersion: florete.tech/v1alpha1
+kind: FloreteRole
+metadata:
+  name: operator
+spec:
+  allow: [config-write]         # manually assigned in FloretePrincipal resources
 ```
 
 **Why "config-*" and not "mgmt-plane-*".** The groups gate access to the config-server's HTTP endpoints, not to a plane. The plane (mgmt vs ctrl, when ctrl lands in C1) is an artifact-content distinction encoded in the URL path inside an already-authenticated tunnel — RBAC has no reason to project it. C1's ctrl-fetch endpoint will live in the same `config-read` group; ctrl-publish stays in `config-write` because C1's ctrl artifacts are still operator-produced. A B1+ split where the CP becomes an external writer is a B1+ design call; today there's no second writer, so a second write group would be speculative.
 
 **Reserved-name conventions:**
 
-- `node`, `operator` (roles), `config-read`, `config-write` (groups), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial cluster template.
-- **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `node/` principal (so each node's compiled artifact has the right egress row to reach `config-server`). The `operator` role is assigned manually in `users.yaml` (`fyodor: { role: operator }`) — the validator rejects the cluster if no user has it (otherwise nothing can publish).
+- `node`, `operator` (`FloreteRole`), `config-read`, `config-write` (`FloreteGroup`), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* source manifests - these live in the repo as part of the initial cluster template.
+- **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `node/` principal (so each node's compiled artifact has the right egress row to reach `config-server`). The `operator` role is assigned manually in a `FloretePrincipal` resource (`spec.roles: [operator]`) - the validator rejects the cluster if no principal has it (otherwise nothing can publish).
 
 **Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "config-server" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `config-read`) and one for writes (gated by `operator` role via `config-write`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
 

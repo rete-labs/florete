@@ -52,7 +52,7 @@ These terms overlap in everyday speech but are distinct in the Florete model:
 Key points:
 
 - **The node is a first-class principal; `flor-agent` is the workload that acts on its behalf.** The node's identity (`spiffe://<cluster>/node/<node>`) is the cluster's view of this computing host — used solely for agent ↔ cluster-infrastructure mTLS (fetching compiled state from the config-server, pushing metrics). The agent does not hold the cert+key; the local flor vertex does, and the agent delegates mTLS to it via a SOCKS5 channel, the same way alice delegates to flor. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals.
-- **Services are first-class principals.** A service's identity is both the server side of its inbound mTLS and the client side of its outbound connections. The `role` field in services.yaml governs what the service can call.
+- **Services are first-class principals.** A service's identity is both the server side of its inbound mTLS and the client side of its outbound connections. The `spec.roles` field in a `FloreteService` manifest governs what the service can call.
 - **Node identity and cluster-vertex identity are distinct principal kinds with distinct holders.** C1 introduces `vertex/<node>/<name>` for hop-by-hop mesh-transit mTLS: the principal is cluster-flor (qua participant in the link layer), and link-flor below it holds the cert+key. The `node/<node>` principal is the node itself, with flor-agent as its workload. The two kinds belong to different layers and different holders — there's no question of merging. A computing host can join multiple Florete clusters; each cluster gives it a separate `node/<name>` identity in its own trust domain, with a dedicated flor-agent process acting on its behalf.
 
 ### CA Management
@@ -63,7 +63,7 @@ Key points:
 - **Private keys**: stay on the machine that generated them (`~/.flor/clusters/<scope>/<name>.key`). Never in the repo.
 - **Signed certs**: delivered to the principal that holds the matching private key; stored locally at `~/.flor/clusters/<scope>/<name>.crt`. Not committed to the repo. CA cert (`ca.crt`) is the only shared cert in git.
 - **Audit**: `enrollment.log` in the repo records every sign event (operator identity, principal name, role, timestamp, cert fingerprint). Append-only, optionally GPG-signed by the operator.
-- **Revocation in C0**: remove the principal's entry from `users.yaml` / `services.yaml` and append a revoke-event to `enrollment.log`. Operator runs `florctl compile` → `florctl publish`. The next `flor agent sync` drops the principal from every affected node's ingress table, so even if the revoked private key is still on a machine somewhere, it can no longer pass any peer's access check. CRL/OCSP is deferred until B1.
+- **Revocation in C0**: remove the principal-bearing source resource (`FloretePrincipal`, or a `FloreteService` when revoking a service principal) and append a revoke-event to `enrollment.log`. Operator runs `florctl compile` → `florctl publish`. The next `flor agent sync` drops the principal from every affected node's ingress table, so even if the revoked private key is still on a machine somewhere, it can no longer pass any peer's access check. CRL/OCSP is deferred until B1.
 
 ### CA Key Protection
 
@@ -75,7 +75,7 @@ Key points:
 Without container namespaces, we distinguish per-service egress by **port binding**:
 
 - **Inbound** (services accepting connections): flor decrypts incoming Florete traffic and forwards to the service's local `addr`. No ambiguity — the target service is carried by the QUIC ALPN / SNI and verified against the service identity.
-- **Outbound** (services initiating connections): flor exposes a **per-service SOCKS5 proxy** on a dedicated local port (the `socks5_proxy` field in services.yaml). The service is configured with `ALL_PROXY=socks5://localhost:<that_port>`. Each SOCKS5 port is bound to exactly one service identity, so flor unambiguously knows which principal is calling.
+- **Outbound** (services initiating connections): flor exposes a **per-service SOCKS5 proxy** on a dedicated local port (the `spec.socks5Proxy` field in a `FloreteService` manifest). The service is configured with `ALL_PROXY=socks5://localhost:<that_port>`. Each SOCKS5 port is bound to exactly one service identity, so flor unambiguously knows which principal is calling.
 
 Most HTTP clients, gRPC clients, and database drivers support SOCKS5 via environment variable. Apps that can't are a later concern (options: transparent iptables redirect, SO_PEERCRED with per-service users, libc shim — none are C0 blockers).
 
