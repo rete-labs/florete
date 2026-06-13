@@ -11,7 +11,7 @@ For the **operator's authoring workspace**, git is the de facto standard (GitOps
 
 An earlier draft also had **nodes pulling directly from git** (via an embedded gitoxide library with a read-only deploy key). Pressure-testing surfaced several problems with that approach:
 
-- **Two access-control systems.** Florete's own cluster CA already authenticates every participant; nodes pulling from GitHub/Gitea/etc. introduces a second auth plane (deploy keys) with its own rotation story. That's one system too many.
+- **Two access-control systems.** Florete's own rete CA already authenticates every participant; nodes pulling from GitHub/Gitea/etc. introduces a second auth plane (deploy keys) with its own rotation story. That's one system too many.
 - **Deploy-key revocation is awkward.** A leaked bundle contains the deploy key; revoking it means rotating on the forge *and* re-issuing bundles to every legitimate node. Doing this at pilot pace is painful.
 - **Binds us to a forge.** Users with no GitHub account, self-hosted-only shops, and airgapped pilots all suffer.
 
@@ -64,7 +64,7 @@ CA private key stays on operator hardware (password-protected file or YubiKey PI
 
 ## Why only the CA cert lives in the repo (not individual signed certs)
 
-Signed identity certs are **public material** (public key + name + CA signature; nothing secret) — but they aren't *semantically required* in the cluster repo. Each principal holds its own cert locally and presents it at mTLS handshake; verifiers only need `ca.crt` and the expected identity name.
+Signed identity certs are **public material** (public key + name + CA signature; nothing secret) — but they aren't *semantically required* in the rete repo. Each principal holds its own cert locally and presents it at mTLS handshake; verifiers only need `ca.crt` and the expected identity name.
 
 Options considered:
 
@@ -79,15 +79,15 @@ Istio (`AuthorizationPolicy` + SPIFFE IDs), Linkerd (`MeshTLSAuthentication`), a
 
 For Florete, modelling both `user` and `service` as principals means a single role mechanism covers both "which users can reach which services" (ingress ACL) and "which services can call which other services" (egress from service perspective). The compiler evaluates the same matrix either way.
 
-This also makes p2p service pairs trivial: two services that call each other just hold two overlapping role grants. No special "p2p" primitive needed. The per-node `flor agent` workload extends the same principle: it owns the `node/<node>` identity and is wired into the vertex's `workloads` list like any other principal, with a SOCKS5 inbound channel for its outbound calls to config-server. C1 extends the principle to cluster-vertices as a fourth kind for hop-by-hop mesh-layer mTLS, so all kinds — users, services, nodes, cluster-vertices — share the same principal mechanism.
+This also makes p2p service pairs trivial: two services that call each other just hold two overlapping role grants. No special "p2p" primitive needed. The per-node `flor agent` workload extends the same principle: it owns the `node/<node>` identity and is wired into the vertex's `workloads` list like any other principal, with a SOCKS5 inbound channel for its outbound calls to config-server. C1 extends the principle to mesh-vertices as a fourth kind for hop-by-hop mesh-layer mTLS, so all kinds — users, services, nodes, mesh-vertices — share the same principal mechanism.
 
 ## Why `flor agent` is a separate principal from `flor vertex`
 
 C0 could plausibly be one process per node (the data-plane vertex doing its own config-server talk on the side, with the node identity baked in). That works for C0's single-vertex case but breaks down the moment there's more than one vertex on a node — *which* of them owns the node identity and the config-server poll loop? With C1's recursive stack right around the corner, picking that answer per release would be churn.
 
-Splitting up front avoids the issue: `flor agent` is a first-class workload that **owns** the node identity (`spiffe://<cluster>/node/<node>`) and is the only thing that talks to the config-server. The flor vertex below it is a pure data-plane component, driven entirely by its compiled config, with no awareness of the cluster control plane. The agent, like any other principal, doesn't *hold* the node cert+key — it delegates the mTLS handshake to the vertex via a SOCKS5 channel, exactly as alice delegates her mTLS to flor. Same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
+Splitting up front avoids the issue: `flor agent` is a first-class workload that **owns** the node identity (`spiffe://<rete>/node/<node>`) and is the only thing that talks to the config-server. The flor vertex below it is a pure data-plane component, driven entirely by its compiled config, with no awareness of the rete control plane. The agent, like any other principal, doesn't *hold* the node cert+key — it delegates the mTLS handshake to the vertex via a SOCKS5 channel, exactly as alice delegates her mTLS to flor. Same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
 
-This also maps cleanly to the HLD's [Execution Plane Agent concept](../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and the vertices it supervises are themselves workloads. Adding more vertex kinds (C1's link+cluster, future interrete layers) is just listing more entries under `vertices` in `agent.json`.
+This also maps cleanly to the HLD's [Execution Plane Agent concept](../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and the vertices it supervises are themselves workloads. Adding more vertex kinds (C1's link+mesh, future interrete layers) is just listing more entries under `vertices` in `agent.json`.
 
 How the agent actually launches a vertex — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C0. The runtime contract is just "a vertex starts when given its config"; the rest is platform detail. The shape resembles kubelet's relationship to its container runtime; that analogy is intentional, but the WRI design is deferred.
 
@@ -95,7 +95,7 @@ How the agent actually launches a vertex — direct fork, systemd unit, future l
 
 An earlier draft of the per-node payload had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated principal-vs-target with workload kind, and started straining as soon as a second flor binary (link-flor in C1) needed to carry an entry that's both principal and target on a single FlorIO channel.
 
-Unifying to `workloads[].io[].direction` resolves the asymmetry: a workload is a principal if it has at least one `inbound` channel, a target if it has at least one `outbound` channel, both if both. Users, services, the agent's `node/<node>` principal, and (in C1) cluster-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
+Unifying to `workloads[].io[].direction` resolves the asymmetry: a workload is a principal if it has at least one `inbound` channel, a target if it has at least one `outbound` channel, both if both. Users, services, the agent's `node/<node>` principal, and (in C1) mesh-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
 
 ## Why per-service SOCKS5 outbound (no container namespaces)
 
@@ -115,13 +115,13 @@ SOCKS5 is supported by virtually all HTTP clients, gRPC clients, and database dr
 
 Transparent outbound for non-SOCKS5 apps (iptables redirect, libc shim) is a later optimization, not a C0 blocker.
 
-## Why C0 has no inter-node links (and no cluster-vertex identity)
+## Why C0 has no inter-node links (and no mesh-vertex identity)
 
 In C0, QUIC connections are established **directly between service/user endpoints over UDP** — there's no mesh-of-vertices in between. The single flor vertex at each node hosts QUIC endpoints for its local principals and services; there are no node-to-node mTLS links.
 
-This means C0 has **no cluster-vertex identity layer**, no `links.yaml`, no `paths.yaml` — the hop-by-hop mesh crypto layer simply doesn't exist. Workload access is fully derivable from users + services + roles + groups without any routing configuration. The agent at each node carries its own principal identity (for mgmt-plane communication with the config-server and metrics services), but that's orthogonal to the workload data plane and to mesh transit.
+This means C0 has **no mesh-vertex identity layer**, no `links.yaml`, no `paths.yaml` — the hop-by-hop mesh crypto layer simply doesn't exist. Workload access is fully derivable from users + services + roles + groups without any routing configuration. The agent at each node carries its own principal identity (for mgmt-plane communication with the config-server and metrics services), but that's orthogonal to the workload data plane and to mesh transit.
 
-Inter-node links appear only in C1, when cluster-flor is introduced on top and pairs of cluster-vertices need authenticated channels over which multiple service-to-service connections can multiplex. That's when cluster-vertex identity, `links.yaml`, and `paths.yaml` become necessary.
+Inter-node links appear only in C1, when mesh-flor is introduced on top and pairs of mesh-vertices need authenticated channels over which multiple service-to-service connections can multiplex. That's when mesh-vertex identity, `links.yaml`, and `paths.yaml` become necessary.
 
 ## Why RBAC (not per-principal ACLs)
 
@@ -135,7 +135,7 @@ An earlier design had users opening PRs with their CSRs. That failed real-pilot 
 
 - Private repo → users need forge accounts + collaborator access, which most pilots can't provide.
 - Non-technical users (sales, ops) shouldn't edit git.
-- Giving users write access (even scoped) to the cluster repo inverts the trust model — they could tamper with state beyond their own enrollment.
+- Giving users write access (even scoped) to the rete repo inverts the trust model — they could tamper with state beyond their own enrollment.
 - Per-user install tokens with write access effectively become signed URLs, so the git-ness adds no value over plain HTTPS delivery.
 
 Replacement: **operator issues a bundle per node** (covering the node's identity and every workload it hosts); delivery is out-of-band (Telegram, email, any channel); user runs `flor enroll`. Bundle contains the signed certs, CA cert, config-server URL, and expected config-server SPIFFE ID — no git credential, no deploy key.
@@ -146,11 +146,11 @@ This is how WireGuard / OpenVPN enterprise deployments work. Users never see git
 
 Every node needs the operator's latest compiled artifact for its own machine. Options considered:
 
-- **Nodes git-pull from the cluster repo.** Requires embedding a git client in `flor` plus a deploy-key credential in every enrollment bundle. Adds a second auth plane on top of Florete mTLS, binds us to a git forge, and makes bundle revocation painful (rotate deploy key + re-issue every legitimate bundle).
+- **Nodes git-pull from the rete repo.** Requires embedding a git client in `flor` plus a deploy-key credential in every enrollment bundle. Adds a second auth plane on top of Florete mTLS, binds us to a git forge, and makes bundle revocation painful (rotate deploy key + re-issue every legitimate bundle).
 - **Operator runs `scp` of the per-node compiled directory to each node.** No audit trail; operator can't do this from a phone; doesn't survive the management use-case of "user wants to sync on demand".
-- **Nodes fetch from a Florete-protected HTTPS service run by the cluster itself.** Reuses the cluster's existing mTLS + SPIFFE identity model. No second auth plane. Bundle revocation = remove principal from YAML and publish. Runs on any provider (or none — self-hosted). Also gives us a natural home for the metrics sink (`POST /metrics/...`) and future features (event streams, CRL distribution).
+- **Nodes fetch from a Florete-protected HTTPS service run by the rete itself.** Reuses the rete's existing mTLS + SPIFFE identity model. No second auth plane. Bundle revocation = remove principal from YAML and publish. Runs on any provider (or none — self-hosted). Also gives us a natural home for the metrics sink (`POST /metrics/...`) and future features (event streams, CRL distribution).
 
-The third option — the config-server — wins on every axis that matters at our scale: fewer moving parts, one access-control system, no forge lock-in, no extra credential to rotate. The cost is that we now have one always-on server per cluster (the management node), but pilots already need that machine for metrics anyway, and the config-server is just another Florete-published service living next to it.
+The third option — the config-server — wins on every axis that matters at our scale: fewer moving parts, one access-control system, no forge lock-in, no extra credential to rotate. The cost is that we now have one always-on server per rete (the management node), but pilots already need that machine for metrics anyway, and the config-server is just another Florete-published service living next to it.
 
 **Why HTTP inside Florete instead of a bespoke RPC.** HTTPS is already ubiquitous, trivially testable with `curl`, and has every client library any operator tool will want. Our mTLS happens at the Florete layer, not the HTTP layer — the HTTP endpoint binds `127.0.0.1` and is only reachable through the Florete tunnel, so HTTP is just the framing.
 
@@ -196,7 +196,7 @@ The practical consequence: treat the compiled-artifact JSON Schema as public API
 
 ## Why signed mgmt artifacts and policy-bounded autonomy
 
-The cluster's coordination point — config-server today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the cluster. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware with a dedicated `management-plane/<name>` signing principal (a sign-only identity issued separately from any user, distinct from the operator's `user/<op>` TLS principal — see [ADR-0005](../../../contributing/adr/0005-use-spiffe-identities)); agents verify locally against the corresponding public cert, delivered with `ca.crt` at enrollment. The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
+The rete's coordination point — config-server today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the rete. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware with a dedicated `management-plane/<name>` signing principal (a sign-only identity issued separately from any user, distinct from the operator's `user/<op>` TLS principal — see [ADR-0005](../../../contributing/adr/0005-use-spiffe-identities)); agents verify locally against the corresponding public cert, delivered with `ca.crt` at enrollment. The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
 
 This is the same posture as TUF / Sigstore / Tailscale's Tailnet Lock: sensitive state has a signed root of authority that lives outside the distribution path. We adopt it from C0 — even though C0 has no cloud component yet — because (a) verification logic is cheap to write once and grows with the system, (b) the operational story we sell to security-conscious buyers in B1+ ("you don't need to trust our cloud") is only credible if the property held from day one, and (c) retrofitting signature-checking into a deployed agent base is far harder than shipping it now.
 
@@ -243,9 +243,9 @@ This drives **two deployment tiers** for B1+:
 - **Managed issuer** — we host the bounded intermediate. Setup-and-go UX. Compromise blast radius = authorized principal set × policy window. Right for SMBs and pilots.
 - **BYO on-prem issuer** — customer runs the bounded intermediate inside their own infrastructure (DMZ, HSM, hardware-secured server). Same protocol, same operator-signed policy, just a different host. Right for security-conscious enterprises and regulated industries.
 
-Migration between tiers is a config flip, not a re-architecture, because the protocol and the operator-signed policy stay identical across both. Same cluster, different host for the issuer.
+Migration between tiers is a config flip, not a re-architecture, because the protocol and the operator-signed policy stay identical across both. Same rete, different host for the issuer.
 
-A useful refinement available in either tier: **per-principal-class issuance policy.** High-risk principals (operator, infra services, anything reaching production data) keep long-lived offline-issued certs; low-risk workloads rotate frequently through the online intermediate. Same cluster, two trust profiles, both expressed in operator-signed policy. This lets the operator pay the rotation/blast-radius cost only where convenience actually matters.
+A useful refinement available in either tier: **per-principal-class issuance policy.** High-risk principals (operator, infra services, anything reaching production data) keep long-lived offline-issued certs; low-risk workloads rotate frequently through the online intermediate. Same rete, two trust profiles, both expressed in operator-signed policy. This lets the operator pay the rotation/blast-radius cost only where convenience actually matters.
 
 **SPIFFE compatibility note.** C0/C1 produce SPIFFE-format-conformant X.509-SVIDs but don't implement SPIFFE *issuance* (the SPIRE Workload API). We're a SPIFFE-compatible trust domain whose certs any SPIFFE consumer (Istio, Linkerd, Vault, Envoy) can verify, but our own workloads don't yet receive SVIDs from a Workload-API endpoint — they hold static cert+key files installed at enrollment. The bounded intermediate adds the Workload API as a natural by-product: agents can dispense SVIDs to local workloads via SPIRE-compatible UDS, with rotation driven by the intermediate. We become SPIFFE-issuance conformant without abandoning the zero-trust posture. Until then, "SPIFFE compat" means format and trust shape, not issuance protocol. Don't oversell.
 
@@ -259,7 +259,7 @@ This is **What You See Is What You Sign (WYSIWYS)**: the signature must cover th
 
 So the rule for B1+ authoring UX:
 
-- **Read-only views can live in the cloud.** Cluster status, who's connected, mgmt-plane history, ctrl-plane state, metrics, audit log of past signing operations. Even if the cloud lies, it can mislead but cannot make the operator sign anything.
+- **Read-only views can live in the cloud.** Rete status, who's connected, mgmt-plane history, ctrl-plane state, metrics, audit log of past signing operations. Even if the cloud lies, it can mislead but cannot make the operator sign anything.
 - **Authoring + signing stay local.** `florctl` is the primary surface; a desktop GUI (Tauri/Electron, or `florctl serve` on localhost) can be added later without changing the trust model. This is how 1Password Desktop, HashiCorp Vault Enterprise authoring tools, and serious wallet apps work — local app, cloud-synced data.
 - **"Draft in cloud, sign locally" handoff** recovers most of the cloud-UI ergonomics without compromising trust: cloud UI proposes a change (renders the canonical to-be-signed payload, generates a signing ticket); operator pulls the ticket into local `florctl`, which **independently re-canonicalizes the payload, displays it, and signs**. The signature covers the canonical form, not whatever the cloud displayed. Cosign / Sigstore container-image signing already works this way.
 
@@ -274,7 +274,7 @@ Two use cases pull in opposite directions:
 - **Tool compatibility**: users want to type `ssh user@ssh.alpha.rete-lovers.rete`; curl, ssh, psql, browsers need hostnames they can resolve. Argues for a DNS-like form.
 - **Semantic cleanliness for identities**: network identities shouldn't pretend to be DNS when they aren't — SPIFFE uses `spiffe://` URIs precisely to avoid conflation. Argues for a URI form.
 
-The resolution: **both, interchangeably**. Canonical form is the SPIFFE URI `spiffe://<cluster>/<kind>/<name>` — used in certs (SAN) and compiled artifacts. Convenience form is `<service>.[<node>.]<cluster>.rete` — resolved by a local flor stub resolver that doesn't leak queries to public DNS.
+The resolution: **both, interchangeably**. Canonical form is the SPIFFE URI `spiffe://<rete>/<kind>/<name>` — used in certs (SAN) and compiled artifacts. Convenience form is `<service>.[<node>.]<rete>.rete` — resolved by a local flor resolver.
 
 An earlier draft used a bespoke `flor://` scheme. Switching to `spiffe://` costs nothing and buys real compatibility: what we produce is a SPIFFE X.509-SVID by definition (trust domain in the authority, workload path in the URI, URI in the SAN). Any SPIFFE consumer — SPIRE agents, Istio, Linkerd, Vault, Envoy, third-party auditing — can ingest our identities without adapters. The brand loss is tiny; the optionality gain is large.
 
@@ -286,14 +286,14 @@ Path-kind namespacing (`user/`, `service/`, `node/`, `vertex/<node>/`) is layere
 
 Two audiences with non-overlapping needs:
 
-- **End users and server admins** install Florete to *participate* in a cluster. They need a small, focused command set: enroll, apply, check status, run the daemon. They should never see commands they can't or shouldn't run (CA signing, compile, bundle issuance).
-- **Operators** additionally *author* cluster state. They need CA operations, validation, compilation, and bundle issuance — on their own workstation, against a checked-out repo, with no running agent involved.
+- **End users and server admins** install Florete to *participate* in a rete. They need a small, focused command set: enroll, apply, check status, run the daemon. They should never see commands they can't or shouldn't run (CA signing, compile, bundle issuance).
+- **Operators** additionally *author* rete state. They need CA operations, validation, compilation, and bundle issuance — on their own workstation, against a checked-out repo, with no running agent involved.
 
 This is the same split as `kubectl`/`kubelet`, `terraform`/agent, `salt-master`/`salt-minion`, `gh`/forge-server. The authoring tool and the participant runtime have different install footprints, different update cadences, and different security boundaries; conflating them into one binary makes the user CLI noisier without a real payoff.
 
 Concrete wins:
 
-- **Smaller node surface.** The node binary ships without CA code paths, signing primitives, or cluster-repo schema. Fewer attack surfaces on every pilot machine.
+- **Smaller node surface.** The node binary ships without CA code paths, signing primitives, or rete-repo schema. Fewer attack surfaces on every pilot machine.
 - **Clearer docs and UX.** `flor --help` on a user's laptop shows only what that user can do. `florctl --help` is the operator's reference.
 - **Independent release cadence possible later.** CA and compiler changes don't force a daemon rollout.
 
@@ -303,7 +303,7 @@ An earlier draft deferred this split to later milestones ("single binary is fast
 
 ## Why C0 before C1
 
-The architecture was designed C1-first — the recursive vertex/principal model, the agent/vertex split, and the unified `workloads`/`io[]` schema all only fully earn their keep once there's more than one vertex per node. C0 ships first anyway, because it's a strict reduction: same agent, same single vertex with the same compiled-artifact shape, just no cluster-flor on top, no FlorIO, no recursion, no cluster-vertex layer.
+The architecture was designed C1-first — the recursive vertex/principal model, the agent/vertex split, and the unified `workloads`/`io[]` schema all only fully earn their keep once there's more than one vertex per node. C0 ships first anyway, because it's a strict reduction: same agent, same single vertex with the same compiled-artifact shape, just no mesh-flor on top, no FlorIO, no recursion, no mesh-vertex layer.
 
 A single-flor-vertex prototype (service-to-service QUIC over UDP, identity-based tunnels) is:
 
@@ -311,6 +311,6 @@ A single-flor-vertex prototype (service-to-service QUIC over UDP, identity-based
 - Useful on its own as a "better VPN" product category.
 - Dogfoodable in our own prod/staging immediately.
 - First-pilot surface: we can sell "identity-based VPN replacement" before we sell "service mesh".
-- De-risks C1: the agent + service-endpoint machinery is exercised in production before cluster-vertex meshing lands on top.
+- De-risks C1: the agent + service-endpoint machinery is exercised in production before mesh-vertex lands on top.
 
-C1 reuses the full CA + identity + enrollment + install + bundle machinery from this spec. C1 adds cluster-vertex identities, `links.yaml`, `paths.yaml`, a second compiled vertex artifact, and the cluster-flor instance on top — additive, not replacing.
+C1 reuses the full CA + identity + enrollment + install + bundle machinery from this spec. C1 adds mesh-vertex identities, `links.yaml`, `paths.yaml`, a second compiled vertex artifact, and the mesh-flor instance on top — additive, not replacing.

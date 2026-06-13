@@ -5,7 +5,7 @@ description: Design of the management plane for C0
 
 ## Context
 
-C0 has only a management plane — operator-authored, signed cluster state. There is no control plane yet: nothing makes dynamic decisions about traffic at runtime. State is declared manually in a git repo and distributed to every node through a lightweight operator workflow: declare → validate → compile → commit (audit) → publish → nodes sync. A control plane lands in B1+ as a separate, parallel artifact stream operating within the bounds set by signed mgmt state (see [Decision authority layers](#decision-authority-layers) below). Both C0 and C1 share this manual foundation; C0 is the reference design, and C1 layers the mesh-specific additions on top.
+C0 has only a management plane — operator-authored, signed rete state. There is no control plane yet: nothing makes dynamic decisions about traffic at runtime. State is declared manually in a git repo and distributed to every node through a lightweight operator workflow: declare → validate → compile → commit (audit) → publish → nodes sync. A control plane lands in B1+ as a separate, parallel artifact stream operating within the bounds set by signed mgmt state (see [Decision authority layers](#decision-authority-layers) below). Both C0 and C1 share this manual foundation; C0 is the reference design, and C1 layers the rete-specific additions on top.
 
 The design must balance three forces:
 
@@ -13,54 +13,54 @@ The design must balance three forces:
 - **Prod-ready for small pilots** — 3-5 server nodes, 10-20 users, a handful of services, running a few weeks.
 - **Manually manageable by a single operator** during pilots.
 
-This spec is also the boundary that the rest of C0 (agent internals, identity, forwarding) must meet, and it should evolve naturally into C1 Manual Mesh (cluster-flor layer added on top via FlorIO, same CA and enrollment reused unchanged), then into B1 Cloud Control (coordination server replaces the file-based source of truth), and beyond into a fully distributed control plane.
+This spec is also the boundary that the rest of C0 (agent internals, identity, forwarding) must meet, and it should evolve naturally into C1 Manual Mesh (mesh-flor layer added on top via FlorIO, same CA and enrollment reused unchanged), then into B1 Cloud Control (coordination server replaces the file-based source of truth), and beyond into a fully distributed control plane.
 
 ## Design Highlights
 
 - **Source of truth is a git repo of YAML files, hand-edited.** No embedded DB. No CLI mutators that round-trip through YAML. Git diffs are the audit log; YAML comments explain intent.
 - **The CLI does a handful of things**: CA operations, identity / bundle issuance, validation, per-node compilation, safe apply. It never mutates source YAML. Smallest surface that still gives us safety.
-- **SPIFFE identities from day one.** Cluster has a root CA; principals get CSRs signed into X.509 certs whose SAN holds a SPIFFE URI (`spiffe://<cluster>/<kind>/<name>`). Peers verify by CA signature, not pinned cert. Only `ca.crt` lives in the repo — individual certs are delivered to their holders and stored locally. Real SPIFFE X.509-SVIDs, no extra cost.
-- **Principals are uniform.** Users, services, and nodes are principals with cluster-scoped identities. Roles attach to any principal. Users and services own workload identities (end-to-end mTLS); each node has a cluster-member identity used by its `flor-agent` workload to reach the cluster's own infrastructure services (config-server, metrics). Each principal's cert+key are *held* by a flor vertex acting on the principal's behalf — the agent included. (C1 adds cluster-vertices as a further, distinct principal kind for hop-by-hop mesh transit.)
+- **SPIFFE identities from day one.** Rete has a root CA; principals get CSRs signed into X.509 certs whose SAN holds a SPIFFE URI (`spiffe://<rete>/<kind>/<name>`). Peers verify by CA signature, not pinned cert. Only `ca.crt` lives in the repo — individual certs are delivered to their holders and stored locally. Real SPIFFE X.509-SVIDs, no extra cost.
+- **Principals are uniform.** Users, services, and nodes are principals with rete-scoped identities. Roles attach to any principal. Users and services own workload identities (end-to-end mTLS); each node has a rete-member identity used by its `flor-agent` workload to reach the rete's own infrastructure services (config-server, metrics). Each principal's cert+key are *held* by a flor vertex acting on the principal's behalf — the agent included. (C1 adds mesh-vertices as a further, distinct principal kind for hop-by-hop mesh transit.)
 - **Access is fully derived in C0.** With no multi-hop routing, who-reaches-what is determined by `users.yaml` + `services.yaml` + `roles.yaml` + `groups.yaml` + service location. No `paths.yaml`, no label allocation — the compiler walks the ACL matrix directly.
 - **Restart-with-rollback, not SIGHUP (for C0).** `flor agent sync` fetches the pre-compiled artifacts from the config-server and restarts the supervised vertex; `--commit-timeout` auto-rolls-back if the operator doesn't confirm within the window. Full hot-reload is hard; but the agent should be built with swappable ACL tables from day one so that a near-term post-C0 **ACL-only hot-reload** (see [Hot reload](distribution-and-reload#hot-reload)) can swap permission tables in place — that covers ~80% of day-to-day changes (add/remove user, change role membership) without dropping connections. Structural changes (new service, port change, identity rotation) still need a restart.
 - **RBAC, not per-principal ACLs.** Permissions attach to roles; principals get roles. Keeps the access control matrix smaller.
 - **Atomic full-artifact state delivery, with a monotonic version stamp.** Deltas are a later optimization; the version number is a zero-cost forward-compat anchor for them.
-- **Mgmt artifact is signed by the operator; agents verify locally.** The signing key is a SPIFFE principal in its own right — `management-plane/<name>` (convention: `primary`), a sign-only identity issued explicitly via `florctl ca sign --kind management-plane` and unrelated to any `users.yaml` entry (see [ADR-0005](../../../contributing/adr/0005-use-spiffe-identities)). The operator holds three keys total: CA root, their own `user/<op>` TLS keypair (issued like any other user), and the cluster's `management-plane/<name>` envelope-signing keypair. None of them leave operator hardware — the cluster's coordination server (today the config-server, B1+ a managed cloud service) only stores and serves; it cannot mint or modify state. C0 is the degenerate case: every artifact is signed mgmt and there are no control-plane decisions yet. The envelope carries a `plane: "mgmt"` discriminator and a `signature` field from day one so a parallel `plane: "ctrl"` stream (signed by a `control-plane/<name>` principal) can land in C1 without schema churn. See [Decision authority layers](#decision-authority-layers) below for the evolution target.
-- **Operator-issued bundles, not user-initiated PRs.** Users never need git write access or forge accounts. The operator is the only writer of cluster state.
-- **Stable boundary = the compiled per-node artifacts.** C0 produces an `agent.json` plus one `vertices/flor.json` per node from YAML; C1 adds a second vertex artifact for the cluster-flor layer with the same envelope; B1 fetches them from a coordination server; distributed control plane later emits them by consensus. The agent and vertex consume the same shapes throughout.
+- **Mgmt artifact is signed by the operator; agents verify locally.** The signing key is a SPIFFE principal in its own right — `management-plane/<name>` (convention: `primary`), a sign-only identity issued explicitly via `florctl ca sign --kind management-plane` and unrelated to any `users.yaml` entry (see [ADR-0005](../../../contributing/adr/0005-use-spiffe-identities)). The operator holds three keys total: CA root, their own `user/<op>` TLS keypair (issued like any other user), and the rete's `management-plane/<name>` envelope-signing keypair. None of them leave operator hardware — the rete's coordination server (today the config-server, B1+ a managed cloud service) only stores and serves; it cannot mint or modify state. C0 is the degenerate case: every artifact is signed mgmt and there are no control-plane decisions yet. The envelope carries a `plane: "mgmt"` discriminator and a `signature` field from day one so a parallel `plane: "ctrl"` stream (signed by a `control-plane/<name>` principal) can land in C1 without schema churn. See [Decision authority layers](#decision-authority-layers) below for the evolution target.
+- **Operator-issued bundles, not user-initiated PRs.** Users never need git write access or forge accounts. The operator is the only writer of rete state.
+- **Stable boundary = the compiled per-node artifacts.** C0 produces an `agent.json` plus one `vertices/flor.json` per node from YAML; C1 adds a second vertex artifact for the mesh-flor layer with the same envelope; B1 fetches them from a coordination server; distributed control plane later emits them by consensus. The agent and vertex consume the same shapes throughout.
 
 ## Details
 
 Specific design topics are placed in separate pages:
 <SiblingCards path="/docs/implementation/c0-tended-tunnels/mgmt-plane" />
 
-## Multi-cluster on a single node
+## Multi-rete on a single node
 
-A computing host may join more than one Florete cluster — for example, a developer's laptop enrolled in both a personal cluster and a work cluster, or a server node managed by two independent operators. This is a first-class use case and the design accommodates it without any special mode.
+A computing host may join more than one Florete rete — for example, a developer's laptop enrolled in both a personal rete and a work rete, or a server node managed by two independent operators. This is a first-class use case and the design accommodates it without any special mode.
 
-### Cluster scope
+### Rete scope
 
-Each cluster a node joins gets its own **cluster scope**: a per-cluster namespace for runtime state and installed material on that host. The scope is identified locally by the cluster name (from `cluster.yaml`). The cryptographic anchor is the bundle's CA cert and operator pubkey — two clusters with the same name can never be confused because their trust roots differ. The local name can be overridden at install time (`flor enroll <bundle> --as <name>`) if two independent clusters happen to share one.
+Each rete a node joins gets its own **rete scope**: a per-rete namespace for runtime state and installed material on that host. The scope is identified locally by the rete name (from `rete.yaml`). The cryptographic anchor is the bundle's CA cert and operator pubkey — two retes with the same name can never be confused because their trust roots differ. The local name can be overridden at install time (`flor enroll <bundle> --as <name>`) if two independent retes happen to share one.
 
-Per cluster scope on the node:
+Per rete scope on the node:
 
-- **Install root**: `~/.flor/clusters/<scope>/` — CA cert, all principal certs and keys for this cluster, compiled artifacts (`agent.json`, `vertices/*.json`), agent control socket (`agent.sock`).
+- **Install root**: `~/.flor/retes/<scope>/` — CA cert, all principal certs and keys for this rete, compiled artifacts (`agent.json`, `vertices/*.json`), agent control socket (`agent.sock`).
 - **Runtime root**: `/run/flor/<scope>/` — FlorIO sockets and any other runtime files (C1+).
-- **Process tree**: one `flor agent` process supervising its per-cluster vertex graph.
+- **Process tree**: one `flor agent` process supervising its per-mesh vertex graph.
 
 All cert and socket paths in compiled artifacts are **scope-relative** (e.g. `ca.crt`, not `~/.flor/ca.crt`). The agent resolves them against its install root at startup, so artifacts stay portable across nodes regardless of the local scope name.
 
-### Node identity in multiple clusters
+### Node identity in multiple retes
 
-A computing host that joins N clusters has N separate `node/<name>` principals — one in each cluster's trust domain. The names may differ across clusters (each cluster's operator chooses them independently). Each principal is acted on by a dedicated flor-agent process and held by that cluster's flor vertex. There is no shared node identity across clusters; the trust domains are fully independent.
+A computing host that joins N retes has N separate `node/<name>` principals — one in each rete's trust domain. The names may differ across retes (each rete's operator chooses them independently). Each principal is acted on by a dedicated flor-agent process and held by that rete's flor vertex. There is no shared node identity across retes; the trust domains are fully independent.
 
 ### Local listen addresses
 
-Two categories of listen addresses arise in a multi-cluster setup, and they have different audiences and different answers.
+Two categories of listen addresses arise in a multi-rete setup, and they have different audiences and different answers.
 
 **External UDP listeners** appear only on nodes that accept inbound connections — nodes with a fixed public or private `IP:port` declared in `nodes.yaml`. User devices (laptops, phones) sit behind NAT and use ephemeral source ports; they have no fixed UDP listen address. Therefore:
 
-- External UDP conflicts can only arise on server nodes, which are by definition admin-managed (datacenter, office LAN, home server). Two cluster operators wanting the same external UDP port on the same physical server must coordinate with the IT admin responsible for that host. At C0/C1 scale this involves a small number of ports and technically capable people.
+- External UDP conflicts can only arise on server nodes, which are by definition admin-managed (datacenter, office LAN, home server). Two rete operators wanting the same external UDP port on the same physical server must coordinate with the IT admin responsible for that host. At C0/C1 scale this involves a small number of ports and technically capable people.
 - B1+ direction: node-side capability advertisement — the node declares which external addresses and ports it has available. No implementation in C0/C1.
 
 **Local SOCKS5 and per-service inbound ports** exist on every node, including user laptops. Users cannot be asked to "adjust a port-override config." The agent must handle this on their behalf.
@@ -69,8 +69,8 @@ Model:
 
 - Compiled artifacts declare local listens as **preferences**, not requirements.
 - The agent at startup binds the preferred port if free; otherwise picks any available port and records the binding in agent state.
-- Apps that need the actual port query the agent control socket — already the authoritative source for per-cluster runtime state.
-- An ergonomic default: each cluster scope is assigned a **local-port offset** at install time, deterministic from the cluster CA fingerprint (or operator-chosen at `flor enroll` time), so cluster A's SOCKS5 lands at `:1080`, cluster B's at `:1180`, and so on. Single-cluster users get their expected default; multi-cluster users get predictable separation without any manual configuration.
+- Apps that need the actual port query the agent control socket — already the authoritative source for per-rete runtime state.
+- An ergonomic default: each rete scope is assigned a **local-port offset** at install time, deterministic from the rete CA fingerprint (or operator-chosen at `flor enroll` time), so rete A's SOCKS5 lands at `:1080`, rete B's at `:1180`, and so on. Single-rete users get their expected default; multi-rete users get predictable separation without any manual configuration.
 - FlorIO sockets (C1+) are filesystem paths under `/run/flor/<scope>/vertices/<vertex-name>.sock` — no port space, no collision possible.
 
 The user is responsible for nothing. They install the bundle; the agent resolves any local-resource conflicts; apps discover actual port values via the control socket if they care.
@@ -81,8 +81,8 @@ The compiled per-node artifact is the stable public contract. What changes acros
 
 | Aspect            | C0 Tended Tunnels              | C1 Manual Mesh                 | B1 Cloud Control                | Distributed CP (later)        |
 |-------------------|--------------------------------|--------------------------------|---------------------------------|-------------------------------|
-| Scope             | Service-to-service direct      | Full mesh, manual paths        | Same mesh, derived paths        | Same mesh                     |
-| Protocol entities | Users, services, nodes         | + Cluster vertices             | Same as C1                      | Same as C1                    |
+| Scope             | Service-to-service direct      | Rete mesh, manual paths        | Same rete, derived paths        | Same rete                     |
+| Protocol entities | Users, services, nodes         | + Rete vertices             | Same as C1                      | Same as C1                    |
 | Binaries          | `flor agent` + 1 `flor vertex` | `flor agent` + 2 `flor vertex` | Same as C1                      | Same as C1                    |
 | Source of truth   | YAML in git repo               | YAML in git repo               | Coordination server DB          | Consensus across agents       |
 | Compile           | Local, service-level only      | Local, both layers             | Server-side                     | Any agent / consensus-derived |
@@ -114,7 +114,7 @@ C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determi
 
 ## Scope Checklist
 
-- [ ] YAML schemas for all source files; `cluster.yaml` carries per-category crypto (`ca`, `signers.mgmt`, `tls_principals`); repo cert layout `certs/ca.crt` + `certs/management-planes/<name>.crt`; `enrollment.log` format
+- [ ] YAML schemas for all source files; `rete.yaml` carries per-category crypto (`ca`, `signers.mgmt`, `tls_principals`); repo cert layout `certs/ca.crt` + `certs/management-planes/<name>.crt`; `enrollment.log` format
 - [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and `flor.json` vertex config (`kind: vertex`), semver'd, envelope with version stamp + `authorized_mgmt_signers` snapshot
 - [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, vertices/flor.json}`
 - [ ] Naming scheme: canonical URI + `.rete` hostname resolver
@@ -122,9 +122,9 @@ C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determi
 - [ ] `florctl issue-bundle` (operator-side bundle issuer; Flow A keypair generation + Flow B CSR signing)
 - [ ] `florctl validate` with all rules above
 - [ ] `florctl compile --node <name>` emitting deterministic per-node artifacts
-- [ ] `florctl publish` pushing the compiled tree to the cluster config-server
+- [ ] `florctl publish` pushing the compiled tree to the rete config-server
 - [ ] Config-server implementation (`GET /artifact/<node>`, `POST /publish`) as a regular Florete-published service
-- [ ] Reserved-name handling: `node` / `operator` roles and `config-read` / `config-write` groups must be present in YAML (template); validator enforces; compiler auto-assigns `node` role to every node principal; operators are assigned manually via `role: operator` in `users.yaml`; the cluster's `management-plane/<name>` signer is *not* auto-derived — it's issued explicitly via `florctl ca sign --kind management-plane --name <name>` as part of operator bootstrap (convention: `name = primary`)
+- [ ] Reserved-name handling: `node` / `operator` roles and `config-read` / `config-write` groups must be present in YAML (template); validator enforces; compiler auto-assigns `node` role to every node principal; operators are assigned manually via `role: operator` in `users.yaml`; the rete's `management-plane/<name>` signer is *not* auto-derived — it's issued explicitly via `florctl ca sign --kind management-plane --name <name>` as part of operator bootstrap (convention: `name = primary`)
 - [ ] `flor id create` (CSR bundle producer, node-side)
 - [ ] `flor enroll` (two-step bootstrap: install certs, fetch artifacts from config-server, start agent)
 - [ ] `flor agent sync` with `--commit-timeout` default 5m, `--confirm`, `--dry-run`
@@ -133,8 +133,8 @@ C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determi
 - [ ] `flor agent status` over local Unix socket
 - [ ] Per-service SOCKS5 outbound proxy with port→identity binding; local listen ports are **preferences** — agent binds preferred if free, otherwise picks any available port and records the binding; bind failures are logged, not fatal
 - [ ] Installer: `install.sh` for Linux/Mac, MSI for Windows
-- [ ] Static landing page template (per-cluster, zero backend)
-- [ ] Example `my-cluster/` repo including a management node (`mgmt01` with config-server + metrics)
+- [ ] Static landing page template (per-rete, zero backend)
+- [ ] Example `my-rete/` repo including a management node (`mgmt01` with config-server + metrics)
 - [ ] Playbook doc: operator bootstrap (incl. management-node manual bootstrap), issuing bundles, publishing a service, maintenance window, emergency rollback
 
 ## Open Follow-ups
@@ -155,9 +155,9 @@ Not blockers for C0 release:
 - CRL / OCSP for immediate mid-cert-lifetime revocation without a new compile cycle.
 - **Automated cert rotation via a bounded online intermediate CA (B1+).** C0/C1 have only manual `florctl issue-bundle` rotation — workable at pilot scale, untenable at scale. The B1+ direction is a delegated intermediate CA whose authority (principal set, validity window) is operator-signed and narrow; can refresh certs freely within bounds, cannot create new principals. Two deployment tiers expected: managed (we host) and BYO on-prem (security-conscious customers run their own). Per-principal-class policy lets high-risk principals stay on long-lived offline-issued certs while low-risk workloads rotate frequently. Adds SPIFFE Workload-API conformance as a natural by-product. See [reasoning](reasoning#why-cert-rotation-stays-manual-in-c0-c1-and-the-b1-shape).
 - **Authoring UI surface (B1+).** Cloud-hosted UI is fine for read-only views (status, audit, metrics), but signing operations must stay local on operator hardware to avoid UI-substitution attacks. Authoring goes in `florctl` and (later) a local desktop GUI; cloud dashboards are read-only or use a "draft in cloud, sign locally" handoff. See [reasoning](reasoning#why-authoring-ui-must-be-local).
-- **Per-cluster local-port offset scheme** — deterministic port offset derived from cluster CA fingerprint (or operator-chosen at `flor enroll` time) so multi-cluster installs get predictable port separation without manual config (e.g. cluster A at `:1080`, cluster B at `:1180`). Ergonomic nicety; single-cluster users always see the default.
-- **Port-query on agent control socket** — extend `flor agent status` (or a dedicated subcommand) so apps can ask "what's the current SOCKS5 port for principal X?" instead of hard-coding the preferred port. Required for apps that must work correctly on multi-cluster hosts; optional for single-cluster users where the preferred port always wins.
-- **B1+ node-side capability advertisement** — node declares which external `IP:port` pairs it has available; cluster mgmt-plane consults that at compile time rather than having the cluster operator guess external UDP ports. Eliminates the remaining admin-coordination requirement for server nodes in multi-cluster setups.
+- **Per-rete local-port offset scheme** — deterministic port offset derived from rete CA fingerprint (or operator-chosen at `flor enroll` time) so multi-rete installs get predictable port separation without manual config (e.g. rete A at `:1080`, rete B at `:1180`). Ergonomic nicety; single-rete users always see the default.
+- **Port-query on agent control socket** — extend `flor agent status` (or a dedicated subcommand) so apps can ask "what's the current SOCKS5 port for principal X?" instead of hard-coding the preferred port. Required for apps that must work correctly on multi-rete hosts; optional for single-rete users where the preferred port always wins.
+- **B1+ node-side capability advertisement** — node declares which external `IP:port` pairs it has available; rete mgmt-plane consults that at compile time rather than having the rete operator guess external UDP ports. Eliminates the remaining admin-coordination requirement for server nodes in multi-rete setups.
 - Transparent outbound for non-SOCKS5 apps (iptables / SO_PEERCRED / libc shim).
 - `flor doctor` diagnostics (ping peers, check access matrix, confirm config-server reachability).
 - Backend-hosted enrollment forms, Slack/Discord approval bots.

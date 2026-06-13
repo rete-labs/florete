@@ -8,14 +8,14 @@ Accepted
 
 ## Context
 
-Florete uses SPIFFE IDs as cluster-internal principal identities (see [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity)). The `flor` crate has no Rust types for these yet — the QUIC endpoint runs on a self-signed cert with a trust-all client verifier. Before we can implement mTLS, certificate operations in `florctl`, or any of the management/control-plane artifact flows, we need a typed identity model and a CA primitive.
+Florete uses SPIFFE IDs as rete-internal principal identities (see [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity)). The `flor` crate has no Rust types for these yet — the QUIC endpoint runs on a self-signed cert with a trust-all client verifier. Before we can implement mTLS, certificate operations in `florctl`, or any of the management/control-plane artifact flows, we need a typed identity model and a CA primitive.
 
 Several decisions in this area shape downstream code substantially:
 
 - which Rust types model the three layers of identity machinery (the *name*, the *credential*, the *trust set* a credential is verifiable against),
 - whether we wrap those in our own abstractions or use the upstream `spiffe` crate's types directly,
 - whether the CA is a single root or a multi-level hierarchy in C0/C1,
-- how cluster signing authorities (control-plane, mgmt-plane) relate to the CA,
+- how rete signing authorities (control-plane, mgmt-plane) relate to the CA,
 - whether Rust enum variants, CLI flags, and SPIFFE URI segments should be plural or singular.
 
 These are inter-related and warrant a single ADR.
@@ -36,7 +36,7 @@ This vocabulary is SPIFFE-native: SPIFFE IDs are *the* names, X.509-SVIDs are th
 
 ### No `Identity` abstraction
 
-We deliberately do *not* wrap `SpiffeId` in a custom enum or newtype. Cluster-internal mTLS is SPIFFE-only by design; the cases where Florete will eventually need other identity classes (DNS at an ingress gateway facing the public Internet; `.onion` for self-authenticated client names) live in different layers, with different verifier flows, different trust roots, and different operator concerns. Wrapping `SpiffeId` in a single `Identity` type that has to grow into all of them would mean propagating a wrapper through every consumer for no semantic gain — the consumers don't share code with those future cases.
+We deliberately do *not* wrap `SpiffeId` in a custom enum or newtype. Rete-internal mTLS is SPIFFE-only by design; the cases where Florete will eventually need other identity classes (DNS at an ingress gateway facing the public Internet; `.onion` for self-authenticated client names) live in different layers, with different verifier flows, different trust roots, and different operator concerns. Wrapping `SpiffeId` in a single `Identity` type that has to grow into all of them would mean propagating a wrapper through every consumer for no semantic gain — the consumers don't share code with those future cases.
 
 When non-SPIFFE identity classes do arrive, they live in their own modules with their own types (e.g. `webpki::EndEntityCert` and rustls's regular cert chain for DNS-based public-Internet TLS). Sites that need to bridge translate explicitly. If concrete pressure later forces a unified abstraction, we refactor at that point with knowledge of what it must support.
 
@@ -62,7 +62,7 @@ A SPIFFE ID's path encodes which kind of principal it identifies and (sometimes)
 
 ```rust
 pub enum Kind { User, Service, Node, Vertex, ControlPlane, ManagementPlane }
-pub enum Scope { Cluster, Node(String) }   // node-name segment, not a SpiffeId
+pub enum Scope { Rete, Node(String) }   // node-name segment, not a SpiffeId
 ```
 
 These are not wrappers around `SpiffeId`. They are interpretation results returned by free functions:
@@ -86,10 +86,10 @@ Rust variants, CLI `--kind` values, and SPIFFE URI path segments all match: `Kin
 
 The trust material splits naturally along ownership lines:
 
-- **Trust bundle** (`X509Bundle`) — cluster-wide, shared. Both the inbound client-cert verifier and the outbound server-cert verifier consume it to chain-validate peers. Injected as `Arc<X509Bundle>` via the transport DI bundle's deps.
+- **Trust bundle** (`X509Bundle`) — rete-wide, shared. Both the inbound client-cert verifier and the outbound server-cert verifier consume it to chain-validate peers. Injected as `Arc<X509Bundle>` via the transport DI bundle's deps.
 - **Local SVIDs** (`X509Svid`) — owned by the inbound/outbound component that *operates as* that principal:
-  - SOCKS5 inbound (data flow into the mesh, "egress from the workload's PoV") holds the **caller SVID** — the principal whose SOCKS5 port this is. Each user/service has its own SOCKS5 port, bound to its identity at startup. The inbound passes the caller SVID on every outbound `connect`.
-  - TCP outbound (data flow out of the mesh to the local service) holds the **service SVIDs** — the principals it publishes. Constructed with the SVIDs, registers them with the transport via `publish`, then accepts incoming connections targeted at them.
+  - SOCKS5 inbound (data flow into the rete, "egress from the workload's PoV") holds the **caller SVID** — the principal whose SOCKS5 port this is. Each user/service has its own SOCKS5 port, bound to its identity at startup. The inbound passes the caller SVID on every outbound `connect`.
+  - TCP outbound (data flow out of the rete to the local service) holds the **service SVIDs** — the principals it publishes. Constructed with the SVIDs, registers them with the transport via `publish`, then accepts incoming connections targeted at them.
 
 This shape mirrors the operational reality (each port is one principal's port), keeps wiring simple (no name-keyed lookup in a shared blob), and enables dynamic add/remove of inbounds/outbounds without rewiring shared state — important once we move past static C0 configuration.
 
@@ -97,11 +97,11 @@ This shape mirrors the operational reality (each port is one principal's port), 
 
 ### Single CA, no intermediate, in C0/C1
 
-A `Ca` value represents a self-signed cluster root. All six kinds are issued through the same `Ca::sign_csr(csr_pem, &SpiffeId, Kind, validity)` path — the `Kind` argument selects the X.509 extension policy. Control-plane and management-plane signing identities are *regular principals under the CA* (with restricted X.509 extensions), not intermediate CAs.
+A `Ca` value represents a self-signed rete root. All six kinds are issued through the same `Ca::sign_csr(csr_pem, &SpiffeId, Kind, validity)` path — the `Kind` argument selects the X.509 extension policy. Control-plane and management-plane signing identities are *regular principals under the CA* (with restricted X.509 extensions), not intermediate CAs.
 
 The C0 design includes mgmt-envelope verification (operator-signed via `management-plane/<name>`); C1 adds ctrl envelopes. Existing florete docs settle on pinning for both: the operator pubkey is delivered with `ca.crt` at enrollment, and CP pubkeys are listed dynamically in mgmt's `authorized_control_planes`. Whether to revisit that to kind-based-with-CA-chain is a design call worth making when envelope-verification code is actually being written, with HPKP-style lockout, multi-signer support, and revocation cadence as the live tradeoffs. **This ADR doesn't re-decide the verification scheme.** It does, however, settle the cert shapes those signers need (`Kind::ManagementPlane`, `Kind::ControlPlane`, sign-only ext policy) so the issuance path supports them today.
 
-This ADR's runtime scope is mTLS — the cert chain authorities (the cluster `X509Bundle`, shared via DI) and local workload SVIDs (owned by each inbound/outbound consumer). Envelope verification implementation lands in a follow-up alongside mgmt/ctrl artifact loading.
+This ADR's runtime scope is mTLS — the cert chain authorities (the rete `X509Bundle`, shared via DI) and local workload SVIDs (owned by each inbound/outbound consumer). Envelope verification implementation lands in a follow-up alongside mgmt/ctrl artifact loading.
 
 ### Cert-level signing-vs-TLS separation via X.509 extensions
 
@@ -147,15 +147,15 @@ We considered wrapping `SpiffeId` in a custom type to preserve the option of gro
 
 4. **Use `SpiffeId` directly.** **Accepted.**
 
-	Pros: zero abstraction tax; the upstream `SpiffeId` API is what we'd want anyway; the codebase reads as what it is — a SPIFFE-only mesh transport.
+	Pros: zero abstraction tax; the upstream `SpiffeId` API is what we'd want anyway; the codebase reads as what it is — a SPIFFE-only rete transport.
 
 	Cons: when (if) DNS/.onion principals arrive in different layers, they get their own types in their own modules. Sites that bridge translate explicitly.
 
-The reversal is deliberate. An earlier draft of this ADR endorsed the enum on forward-compat grounds. Re-examining the future use cases (DNS at an ingress gateway, `.onion` for self-authenticated clients), they all live in *different layers* — public-facing TLS, anonymity-network entry points — that don't share verifier flows, ACL machinery, or trust roots with the cluster-internal mesh. Forcing them into a shared `Identity` type creates an abstraction with no real shared behaviour to abstract over. YAGNI applied at the right granularity.
+The reversal is deliberate. An earlier draft of this ADR endorsed the enum on forward-compat grounds. Re-examining the future use cases (DNS at an ingress gateway, `.onion` for self-authenticated clients), they all live in *different layers* — public-facing TLS, anonymity-network entry points — that don't share verifier flows, ACL machinery, or trust roots with the rete-internal traffic. Forcing them into a shared `Identity` type creates an abstraction with no real shared behaviour to abstract over. YAGNI applied at the right granularity.
 
 ### Why six kinds from day one
 
-The C1 milestone introduces `Kind::Vertex` for cluster mesh-vertices. The control-plane and management-plane kinds both arrive as the artifact-signing flows materialise (C1 for ctrl envelopes; ManagementPlane is introduced by this ADR to symmetrise mgmt envelope signing). All six are pre-declared in C0 because:
+The C1 milestone introduces `Kind::Vertex` for mesh-vertices. The control-plane and management-plane kinds both arrive as the artifact-signing flows materialise (C1 for ctrl envelopes; ManagementPlane is introduced by this ADR to symmetrise mgmt envelope signing). All six are pre-declared in C0 because:
 
 - the cost of an unused variant is nil,
 - post-hoc additions force `kind_of` and CLI `--kind` parsers to grow, and `match` arms in `Ca::sign_csr` to gain a new branch — touching every call site,
@@ -216,7 +216,7 @@ The cert chain isn't even consulted at envelope-verify time. So the control-plan
 
 ### Why introduce `Kind::ManagementPlane`
 
-The earlier florete spec used `"key_id": "operator:<fingerprint>"` for mgmt envelopes — the operator's signing key wasn't a SPIFFE principal at all, it was a raw fingerprint string. Meanwhile control-plane signatures already used a proper SPIFFE URI (`spiffe://<cluster>/control-planes/<name>`). The two should be symmetric:
+The earlier florete spec used `"key_id": "operator:<fingerprint>"` for mgmt envelopes — the operator's signing key wasn't a SPIFFE principal at all, it was a raw fingerprint string. Meanwhile control-plane signatures already used a proper SPIFFE URI (`spiffe://<rete>/control-planes/<name>`). The two should be symmetric:
 
 - Both are signing authorities under the same CA.
 - Both want sign-only certs (no TLS extKeyUsage).
@@ -246,7 +246,7 @@ Because envelope-layer checks aren't the only attack surface. If a `ControlPlane
 - The published florete docs use plural URI segments and `--kind` flag values; they need an update as part of C0 implementation. (Side-deliverable.)
 - The `operator:<fingerprint>` `key_id` form referenced in [mgmt-plane.mdx](/docs/implementation/c1-manual-mesh/mgmt-plane) needs to be revised to a SPIFFE URI matching the new `Kind::ManagementPlane`. (Side-deliverable.)
 - Six `Kind` variants exist before three of them are exercised — small dead surface in C0.
-- If non-SPIFFE identity classes (DNS for ingress GW, `.onion`) eventually arrive *and* turn out to share verifier code with the SPIFFE mesh, we will refactor at that point. We accept the refactor cost as the price of not abstracting prematurely.
+- If non-SPIFFE identity classes (DNS for ingress GW, `.onion`) eventually arrive *and* turn out to share verifier code with the SPIFFE rete, we will refactor at that point. We accept the refactor cost as the price of not abstracting prematurely.
 
 ### Evolution beyond C1
 

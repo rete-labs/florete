@@ -28,14 +28,14 @@ In order to create a service mesh, we need per-node proxies. This is common serv
 The C0. Tended Tunnels milestone doesn't include real multi-hop mesh. It does include a simple set of tunnels between principals and targets - QUIC connections over UDP. But from the user PoV it already looks like a service mesh. The only visible limitation is the tunnels are 1-hop. We expect that for up to 90% of small IT companies this is actually enough.
 
 Internally there are more important differences:
-- there will be no links between nodes (or, rather cluster vertices) - the connections will be between principals and targets directly
+- there will be no links between nodes (or, rather rete vertices) - the connections will be between principals and targets directly
 - the targets (services) will be visible publicly (i.e. anybody will be able to attempt connecting), secured by mTLS
 
-This differs from C1. Manual Mesh - there only cluster vertices will be visible publicly, not the targets. Aside from this information disclosure, security guarantees between C0 and C1 will be the roughly the same, provided by mTLS (two layers of it for C1, but managed in the same manual control plane).
+This differs from C1. Manual Mesh - there only rete vertices will be visible publicly, not the targets. Aside from this information disclosure, security guarantees between C0 and C1 will be the roughly the same, provided by mTLS (two layers of it for C1, but managed in the same manual control plane).
 
 #### Vertex
 
-In C0. Tended Tunnels there will be only single vertex per node. Formally, it is a link vertex. But we won't call it this way because here it isn't used to create links between vertices of the higher layer, as there is none. It will serve workloads directly, just like cluster vertex will in C1. So effectively in C0 we will test
+In C0. Tended Tunnels there will be only single vertex per node. Formally, it is a link vertex. But we won't call it this way because here it isn't used to create links between vertices of the higher layer, as there is none. It will serve workloads directly, just like mesh vertex will in C1. So effectively in C0 we will test
 - inbound and outbound interfaces
 - links over UDP and tunnels between principals and targets (these will be the same in C0; separated in C1)
 
@@ -59,7 +59,7 @@ We need an ability to support clients and servers from IP LAN - like smart home 
 
 ### Configuration
 
-We need config files for manual configuration of the cluster. And CLI utilites to manage it. What must be configurable:
+We need config files for manual configuration of the rete. And CLI utilites to manage it. What must be configurable:
 - identities of users and services
 - UDP links of vertices (IPs and ports)
 - location of services at vertices (no service discovery, so this config should be duplicated among all nodes)
@@ -85,7 +85,7 @@ We need a local dev environment for the system. Minimally we can have it emulate
 
 #### Test Env
 
-We need a test environment that is not limited to a single PC nor local containers/VMs. Minimally we require a pilot-like Florete cluster with multiple VMs (2 cloud providers will be nice), services, users. Optimally we'd need a CI/CD process to deploy to them.
+We need a test environment that is not limited to a single PC nor local containers/VMs. Minimally we require a pilot-like Florete rete with multiple VMs (2 cloud providers will be nice), services, users. Optimally we'd need a CI/CD process to deploy to them.
 
 ## Development Constraints
 

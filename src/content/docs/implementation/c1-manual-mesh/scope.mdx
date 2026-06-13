@@ -9,10 +9,10 @@ This milestone inherits all goals, limitations, development constraints, evoluti
 
 C0 is a set of 1-hop tunnels — every principal reaches every target by a direct QUIC connection to the target's host node. C1 adds the actual mesh:
 
-- **Cluster layer** on top of the **link layers**. The data plane is implemented by two separate flor instances per node (referenced as cluster-flor and link-flor), communicating over FlorIO (a local datagram socket). This is the first milestone that exercises our recursive architecture.
-- **Multi-hop forwarding** between cluster vertices (using MPLS-style labels).
+- **Mesh layer** on top of the **link layers**. The data plane is implemented by two separate flor instances per node (referenced as mesh-flor and link-flor), communicating over FlorIO (a local datagram socket). This is the first milestone that exercises our recursive architecture.
+- **Multi-hop forwarding** between mesh-vertices (using MPLS-style labels).
 
-### Cluster Vertex
+### Mesh Vertex
 
 Let's look into core services of this vertex.
 
@@ -38,9 +38,9 @@ Optional, out of scope for C1:
 **Forwarding service** handles packets: locally originated or destined, and transit packets. Mandatory features:
 - addressless, label-based forwarding engine (transport's ConnectionId + Forward and Backward labels)
 
-#### Cluster Vertex As a Third Principal Kind
+#### Mesh Vertex As a Third Principal Kind
 
-C0 has only user and service principals. C1 adds **cluster vertex** identities — one per node per Florete cluster — used for inter-vertex mTLS on mesh links. A node joining multiple clusters runs multiple vertex identities. Everything else about the identity model (CA, enrollment bundles, revocation) carries over unchanged.
+C0 has only user and service principals. C1 adds **mesh-vertex** identities — one per node per Florete rete — used for inter-vertex mTLS on mesh links. A node joining multiple retes runs multiple vertex identities. Everything else about the identity model (CA, enrollment bundles, revocation) carries over unchanged.
 
 ### Link Vertex
 
@@ -54,7 +54,7 @@ Requiring dgram service is already a design decision, but rather obvious one: st
 
 **Forwarding service** is degenerate: no special routing info is needed, packets are just sent to / read from underlying medium of the link. Target medium is UDP/IP, will be inherited from C0.
 
-Actual published services in links will be cluster vertices, usually one per each link end. This may be taken in account and optimized for (i.e. no need for multi-service links really - they are not useful in practice).
+Actual published services in links will be mesh-vertices, usually one per each link end. This may be taken in account and optimized for (i.e. no need for multi-service links really - they are not useful in practice).
 
 ## Evolution Constraints
 
@@ -65,11 +65,11 @@ For future evolution there is a requirement to support various link protocols:
 - VPN tunnels (WireGuard, OpenVPN, VLESS + Reality, Hysteria, TUIC and others)
 - Custom protocols (e.g. for raw radio links we cannot use QUIC, need special ARQ-based protocol)
 
-So we need a design where we'd be able to integrate different link protocols easily. But for C1 we need only single link protocol (QUIC, as implemented in C0). Support of QUIC will be introduced via FlorIO. But Connection service of the cluster vertex must be link-agnostic.
+So we need a design where we'd be able to integrate different link protocols easily. But for C1 we need only single link protocol (QUIC, as implemented in C0). Support of QUIC will be introduced via FlorIO. But Connection service of the mesh-vertex must be link-agnostic.
 
 ## No-goals
 
 In addition to C0's list:
 - **Automatic multi-hop path derivation.** In C1, operators write paths by hand. Declarative derivation from topology + access is deferred post-C1.
 - **Priority / fallback paths.** Reserved syntax in path configuration, not implemented.
-- **Automatic role selection** on cluster-vertex links. Manual role configuration (originator / acceptor) is the only mode.
+- **Automatic role selection** on mesh-vertex links. Manual role configuration (originator / acceptor) is the only mode.

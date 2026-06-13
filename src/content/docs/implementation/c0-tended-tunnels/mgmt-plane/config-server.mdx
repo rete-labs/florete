@@ -5,12 +5,12 @@ description: Management-node config distribution service for C0
 
 ## Config-server
 
-The **config-server** is the cluster infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
+The **config-server** is the rete infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
 
 It's declared in `services.yaml` as **two separate services** — one for reads (nodes) and one for writes (operators) — so Florete's per-service RBAC can gate them cleanly:
 
 ```yaml
-# services.yaml — cluster infrastructure
+# services.yaml — rete infrastructure
 services:
   config-server:                  # read-only: serves compiled artifacts to nodes
     at: mgmt01
@@ -41,8 +41,8 @@ roles:
 
 **Reserved-name conventions:**
 
-- `node`, `operator` (roles), `config-read`, `config-write` (groups), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial cluster template.
-- **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `node/` principal (so each node's compiled artifact has the right egress row to reach `config-server`). The `operator` role is assigned manually in `users.yaml` (`fyodor: { role: operator }`) — the validator rejects the cluster if no user has it (otherwise nothing can publish).
+- `node`, `operator` (roles), `config-read`, `config-write` (groups), and the `config-server` / `config-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial rete template.
+- **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `node/` principal (so each node's compiled artifact has the right egress row to reach `config-server`). The `operator` role is assigned manually in `users.yaml` (`fyodor: { role: operator }`) — the validator rejects the rete if no user has it (otherwise nothing can publish).
 
 **Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "config-server" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `config-read`) and one for writes (gated by `operator` role via `config-write`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
 
