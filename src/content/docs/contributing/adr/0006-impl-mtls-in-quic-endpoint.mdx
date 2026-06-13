@@ -6,6 +6,8 @@ title: "0006: Implement mTLS in QuicEndpoint"
 
 Accepted
 
+**Amended by [ADR-0007: Decouple Naming, Identity, and Routing](/docs/contributing/adr/0007-decouple-naming-identity-routing)** (naming/SNI mechanism only). The mTLS design below — SAN as the authoritative gate, the custom verifiers, the peer-identity type-state split, publish/accept, per-call `ClientConfig` — stands. What ADR-0007 supersedes: SNI is an internal routing hint the server resolves by **registry lookup, not `dns::parse`**; name→identity resolution is **contextual** (a trust domain now, a Name Service later); trust domains **may be dotted**; and `dns::format` / `dns::parse` become `render` / `resolve` over a validated `Dialable` type. Amended passages below are flagged inline.
+
 ## Context
 
 The `flor` crate's QUIC endpoint currently runs with a self-signed cert and a trust-all client verifier — a placeholder that lets the demo handshake without any real authentication. The pieces around it have landed:
@@ -18,7 +20,7 @@ This ADR settles how mTLS gets wired through these. With it, `QuicEndpoint` will
 
 - present a client certificate during outbound connections (mTLS),
 - require client certificates for inbound connections (mTLS),
-- validate both directions against the cluster's `X509Bundle`,
+- validate both directions against the rete's `X509Bundle`,
 - expose the *peer's* `SpiffeId` to the application after a successful handshake,
 - support a vertex hosting multiple local principals on one endpoint, with each inbound/outbound owning the identity it operates as.
 
@@ -32,17 +34,19 @@ This is the same role SNI plays in service-mesh sidecars (Istio, Linkerd-with-SP
 
 ### SNI carries the Florete convenience DNS name
 
+> **Amended by [ADR-0007](/docs/contributing/adr/0007-decouple-naming-identity-routing).** SNI is now an internal routing hint the server resolves by **registry lookup** (keyed by the rendered name), never by `dns::parse` — so the kind a vertex name would otherwise lose is preserved, and the wire label may later become opaque. The convenience-name *shape* below still holds as today's `render` output, but it is the *user-facing* name (resolved with context), decoupled from the wire SNI; the trust domain may be dotted. The `dns::format` / `dns::parse` helpers named below are replaced by `render` / `resolve` over a `Dialable` type.
+
 The SNI string is the **`.rete` convenience DNS name** derived from the target's SPIFFE ID:
 
-- `spiffe://<cluster>/service/<svc>` → `<svc>.<cluster>.rete`
-- `spiffe://<cluster>/service/<node>/<svc>` → `<svc>.<node>.<cluster>.rete`
-- `spiffe://<cluster>/vertex/<node>/<name>` → `<name>.<node>.<cluster>.rete` (C1)
+- `spiffe://<rete>/service/<svc>` → `<svc>.<rete>.rete`
+- `spiffe://<rete>/service/<node>/<svc>` → `<svc>.<node>.<rete>.rete`
+- `spiffe://<rete>/vertex/<node>/<name>` → `<name>.<node>.<rete>.rete` (C1)
 
 This matches Istio's pattern of using the K8s service DNS name in SNI (`productpage.default.svc.cluster.local`) — a DNS-valid string, derived from the structural identifier, with the cryptographic identity in SAN. For Florete the same shape is already user-facing: `.rete` names are how operators type service addresses in `curl` / `psql` / shell commands.
 
 The synthesis is a `dns::format(&SpiffeId) -> Result<String>` helper in `src/core/identity/dns.rs`, paired with the existing-by-then `dns::parse`. Only `Kind::Service` and `Kind::Vertex` are dialable; `dns::format` returns an error for other kinds. Callers never see the SNI string — they pass a `SpiffeId` to `connect`, and the connector synthesises SNI internally for the rustls/quinn call.
 
-**Service and vertex share the same DNS namespace.** A vertex on node `alpha` named `cluster` produces `cluster.alpha.<cluster>.rete`; a service on node `alpha` named `cluster` would produce the same string. The cluster compiler/validator enforces that service and vertex names on the same node don't collide (extending the existing identity.mdx rule that already forbids node↔service name collisions). Keeping the namespace bare — no `svc` / `vrt` infix — is justified by:
+**Service and vertex share the same DNS namespace.** A vertex on node `alpha` named `rete` produces `rete.alpha.<rete>.rete`; a service on node `alpha` named `rete` would produce the same string. The rete compiler/validator enforces that service and vertex names on the same node don't collide (extending the existing identity.mdx rule that already forbids node↔service name collisions). Keeping the namespace bare — no `svc` / `vrt` infix — is justified by:
 
 - A vertex *is* a service from the dial-it-by-name perspective: both terminate mTLS on a node, both have URI SAN, both are reached by name. Forcing a kind discriminator into DNS conflates with the SPIFFE URI which already encodes the kind.
 - Users dial services, not vertices; there's no second user-facing DNS namespace to maintain.
@@ -59,14 +63,14 @@ QuicConnector::connect(&self, caller: &X509Svid, target: &SpiffeId)
     -> Result<QuicConnection, Report<Error>>;
 ```
 
-Internally, `connect` calls `Resolver::resolve(target) -> SocketAddr` to find where to dial, derives the SNI via `dns::format(target)`, builds a per-call rustls `ClientConfig` with the caller SVID and a `SpiffeServerVerifier` parameterised by the expected target, and dials.
+Internally, `connect` calls `Resolver::resolve(target) -> SocketAddr` to find where to dial, derives the SNI via `sni_for(target)` (see [ADR-0007](/docs/contributing/adr/0007-decouple-naming-identity-routing); `target` is a `Dialable`), builds a per-call rustls `ClientConfig` with the caller SVID and a `SpiffeServerVerifier` parameterised by the expected target, and dials.
 
 ### Each consumer owns its own SVID
 
 The transport does *not* maintain a centralised map of local SPIFFE IDs to SVIDs. Local SVIDs flow into the transport from the inbound/outbound components that operate as those principals:
 
 - **SOCKS5 inbound** holds the **caller SVID** — the user or service principal whose port this is. Each user/service has its own SOCKS5 port, bound to its identity at startup. On every `handle_socks5` call, the inbound passes `&self.caller_svid` to `QuicConnector::connect`.
-- **TCP outbound** (the future "egress from the mesh" component that terminates inbound mesh connections at local services' `127.0.0.1:port`s) holds the **service SVIDs** for every service it serves on this node. It registers them in one call via `QuicPublisher::publish(svids)` at startup and receives back a `QuicAcceptor` for incoming connections targeted at any of those SPIFFE IDs.
+- **TCP outbound** (the future "egress from the rete" component that terminates inbound rete connections at local services' `127.0.0.1:port`s) holds the **service SVIDs** for every service it serves on this node. It registers them in one call via `QuicPublisher::publish(svids)` at startup and receives back a `QuicAcceptor` for incoming connections targeted at any of those SPIFFE IDs.
 
 Per-call (or per-publish) ownership makes dynamic add/remove of inbounds/outbounds work without rewiring shared state — important once C0 grows beyond static startup configuration. It also matches the operational reality: each port is one principal's port.
 
@@ -110,8 +114,8 @@ The internal type is mockable via mockall like today; the public type is also mo
 
 ### Custom rustls verifiers
 
-- `SpiffeResolvesServerCert` — `rustls::server::ResolvesServerCert` impl. Reads the SNI as a `.rete` convenience name, parses it back to a `SpiffeId` via `dns::parse`, returns the matching SVID from the endpoint's published-services table (populated by `QuicPublisher::publish`). A miss (unknown SNI, unknown SPIFFE ID, nothing published for it) means no cert is presented and the handshake fails — that's the right outcome.
-- `SpiffeClientCertVerifier` — validates the inbound peer cert chain against the cluster's `X509Bundle` (using `webpki` directly or `WebPkiClientVerifier` if it composes cleanly). The leaf's URI SAN is what authenticates the peer; surfaced to the acceptor via `peer_identity()` and returned as the `SpiffeId` in `accept`.
+- `SpiffeResolvesServerCert` — `rustls::server::ResolvesServerCert` impl. **(Amended by [ADR-0007](/docs/contributing/adr/0007-decouple-naming-identity-routing).)** Reads the SNI and looks it up **directly** in the endpoint's published-cert registry, which is keyed by `sni_for(svid.spiffe_id())` (the transport's SNI-derivation seam, today the rendered `.rete` name; populated by `QuicPublisher::publish`) and holds each entry's canonical `SpiffeId`. No `dns::parse`. A miss (unknown SNI, nothing published for it) means no cert is presented and the handshake fails — that's the right outcome.
+- `SpiffeClientCertVerifier` — validates the inbound peer cert chain against the rete's `X509Bundle` (using `webpki` directly or `WebPkiClientVerifier` if it composes cleanly). The leaf's URI SAN is what authenticates the peer; surfaced to the acceptor via `peer_identity()` and returned as the `SpiffeId` in `accept`.
 - `SpiffeServerVerifier` — validates the outbound peer cert chain against the bundle, then verifies the leaf's URI SAN equals the *expected target* `SpiffeId` passed to `connect`. SAN match is the gate; SNI is not consulted.
 
 ### Resolver maps identity to address
@@ -129,7 +133,7 @@ There is no `WorkloadCredentials` struct. The earlier draft of ADR-0005 introduc
 The landed `Socks5Inbound` (in `src/northbound/inbound/socks5.rs`) is the C0 inbound. To wire identity:
 
 - `Socks5Inbound::new(listen_addr, connector, caller: X509Svid)` — adds the caller SVID. The SOCKS5 port serves exactly one principal (matches Florete's "per-service SOCKS5 proxy" design from identity.mdx).
-- `handle_socks5` parses the SOCKS5 target host (e.g. `api.alpha.cluster.rete`) via `dns::parse(host) -> SpiffeId` instead of forwarding it as a raw string, then calls `connector.connect(&self.caller_svid, &target_spiffe).await`.
+- `handle_socks5` parses the SOCKS5 target host (e.g. `api.alpha.rete-lovers.rete`) via `dns::parse(host) -> SpiffeId` instead of forwarding it as a raw string, then calls `connector.connect(&self.caller_svid, &target_spiffe).await`.
 - IP-form SOCKS5 targets stay rejected (today already returns `AddressTypeNotSupported`); only `.rete` domain targets are translated.
 
 The `QuicBackend` test trait in `socks5.rs` is updated in lockstep: `open_stream(target: &SpiffeId)` instead of `&str`, and test backends construct fixture SpiffeIds with `build_id_*` from `core::identity`.
@@ -158,19 +162,19 @@ Option 3 matches **Istio's observed practice** — Istio sidecars put DNS-form h
 
 We considered three approaches to disambiguating `service` and `vertex` in DNS:
 
-1. **K8s-style infix** (`api.alpha.svc.cluster.rete` vs `api.alpha.vrt.cluster.rete`). Unambiguous. Adds boilerplate to every user-typed `.rete` name; people grumble about this in K8s already.
+1. **K8s-style infix** (`api.alpha.svc.rete-lovers.rete` vs `api.alpha.vrt.rete-lovers.rete`). Unambiguous. Adds boilerplate to every user-typed `.rete` name; people grumble about this in K8s already.
 2. **Different TLDs** (`.rete` for service, `.vrt.rete` for vertex). Even uglier; introduces two namespaces.
 3. **Shared namespace + validator** — compiler/validator enforces non-collision between service and vertex names on the same node. **Accepted.**
 
 The argument for shared namespace: a vertex *is* a service from the dial-by-name perspective — same mTLS endpoint shape, same routing role. SPIFFE URIs already encode the kind; we don't need to repeat it in DNS. Users only ever dial services in practice (vertices are infrastructure-internal, not user-facing). identity.mdx already forbids node↔service name collisions; extending that to forbid service↔vertex collisions per-node is a one-line validator rule.
 
-The disambiguation when both forms exist is via the SPIFFE URI in cert SAN, not via DNS. If you dial `api.alpha.cluster.rete` and the validator allowed both a service `api` and a vertex `api` on alpha, both would resolve to the same SPIFFE-URI ambiguity — that's the validator's job to prevent. We don't paper over a config error with a DNS infix.
+The disambiguation when both forms exist is via the SPIFFE URI in cert SAN, not via DNS. If you dial `api.alpha.rete-lovers.rete` and the validator allowed both a service `api` and a vertex `api` on alpha, both would resolve to the same SPIFFE-URI ambiguity — that's the validator's job to prevent. We don't paper over a config error with a DNS infix.
 
 Forward-compat for namespaces (à la K8s `default`): `dns::format` and `dns::parse` are the localised change. If Florete grows namespaces, both helpers update together; SNI and user-facing DNS stay aligned.
 
 ### Why `connect` takes no address
 
-Florete is post-IP: workloads address each other by identity, never by IP/port. Surfacing `SocketAddr` in the transport API would push that abstraction break to every caller. SOCKS5 inbound takes an identity and asks the connector for a connection — it doesn't know nor care which IP or port the cluster currently puts that identity on. The address comes from the `Resolver`, called *inside* `connect`.
+Florete is post-IP: workloads address each other by identity, never by IP/port. Surfacing `SocketAddr` in the transport API would push that abstraction break to every caller. SOCKS5 inbound takes an identity and asks the connector for a connection — it doesn't know nor care which IP or port the rete currently puts that identity on. The address comes from the `Resolver`, called *inside* `connect`.
 
 ### Why each consumer owns its SVID (no shared local-SVID map)
 
@@ -225,7 +229,7 @@ If `peer_id()` callsites turn out ergonomically clumsy during impl, the impl can
 
 rustls 0.23 ships `WebPkiClientVerifier::builder` for chain validation against trust anchors. That handles half of what we need:
 
-- chain-validating against the cluster's bundle — yes,
+- chain-validating against the rete's bundle — yes,
 - extracting and surfacing URI SAN — no.
 
 Two paths:
