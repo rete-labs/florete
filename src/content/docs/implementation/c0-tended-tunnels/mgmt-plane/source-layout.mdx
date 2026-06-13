@@ -6,10 +6,10 @@ description: Git repo structure and YAML source files for C0
 ## Git Repo Layout
 
 ```
-my-cluster/
-├── cluster.yaml          # name, per-category crypto policy, signer-cert references
+my-rete/
+├── rete.yaml             # name, per-category crypto policy, signer-cert references
 ├── certs/                # public certs that live in the repo
-│   ├── ca.crt            # cluster root CA cert (singleton)
+│   ├── ca.crt            # rete root CA cert (singleton)
 │   └── management-planes/
 │       └── primary.crt   # mgmt-envelope signer cert (one or more during rotation)
 ├── nodes.yaml            # nodes: UDP reachability
@@ -51,7 +51,7 @@ Two parallel namespaces, two conventions:
 | Namespace | Form | Examples |
 |---|---|---|
 | SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/primary`, `--kind management-plane`, `Kind::ManagementPlane` |
-| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `<node>/mgmt/vertices/flor.json`, `~/.flor/clusters/<scope>/` |
+| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `<node>/mgmt/vertices/flor.json`, `~/.flor/retes/<scope>/` |
 
 The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
 
@@ -59,10 +59,10 @@ Each node's compiled directory holds an `agent.json` (read by `flor agent run`) 
 
 The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `florctl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
 
-### cluster.yaml
+### rete.yaml
 
 ```yaml
-cluster:
+rete:
   name: rete-lovers                                      # also the SPIFFE trust domain
 
   ca:
@@ -84,22 +84,22 @@ cluster:
     # they aren't committed; this block only sets policy.
 ```
 
-The cluster `name` doubles as the SPIFFE trust domain: every principal in this cluster has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
+The rete `name` doubles as the SPIFFE trust domain: every principal in this rete has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
 
-**Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (cluster lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validity_days` slot; the field is optional and falls back to the compiler default if omitted. Smaller clusters can leave the policy fields out entirely and just declare cert paths.
+**Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (rete lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validity_days` slot; the field is optional and falls back to the compiler default if omitted. Smaller retes can leave the policy fields out entirely and just declare cert paths.
 
 **Algorithm is not configurable in C0.** All keys are Ed25519. A per-category `algorithm` slot will appear when a second algorithm is actually supported (B1+, e.g. for hardware tokens or post-quantum schemes); until then, exposing the field would be cosmetic.
 
-**Signer cert references.** `signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<cluster>/management-plane/<name>`); `signers.mgmt.keys[].cert` is the repo-relative path to the public cert. The compiler reads these certs and embeds their pubkeys into every mgmt artifact's `authorized_mgmt_signers` field, so agents always know the currently-accepted signer set — rotation is a YAML list edit, not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
+**Signer cert references.** `signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<rete>/management-plane/<name>`); `signers.mgmt.keys[].cert` is the repo-relative path to the public cert. The compiler reads these certs and embeds their pubkeys into every mgmt artifact's `authorized_mgmt_signers` field, so agents always know the currently-accepted signer set — rotation is a YAML list edit, not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
 
 ### nodes.yaml
 
-Every node declares its **vertex graph** — the flor vertices that run on that node and how they reference each other via `uses:`. C0 nodes have a single layer: one **link-vertex** (`kind: link`) per node, of type `quic`, terminating QUIC directly at the workload boundary. Principals' cert+keys live on this vertex; mTLS terminates here. C1 adds a **cluster-vertex** (`kind: mesh`, playing the cluster role) on top of the link layer, at which point principals migrate up and link-vertices carry only hop-by-hop transit — but that's a C1 concern.
+Every node declares its **vertex graph** — the flor vertices that run on that node and how they reference each other via `uses:`. C0 nodes have a single layer: one **link-vertex** (`kind: link`) per node, of type `quic`, terminating QUIC directly at the workload boundary. Principals' cert+keys live on this vertex; mTLS terminates here. C1 adds a **mesh-vertex** (`kind: mesh`, playing the rete role) on top of the link layer, at which point principals migrate up and link-vertices carry only hop-by-hop transit — but that's a C1 concern.
 
 Two vertex kinds exist in the design (only `link` is used in C0):
 
 - `link` — terminates a transport on **external medium** (IP — QUIC or direct UDP today; in-kernel `wg`, third-party `vless`, … later). One per underlay surface. No hop-by-hop forwarding.
-- `mesh` — operates entirely **inside Florete** (its medium is other vertices). Does hop-by-hop label-forwarding. The cluster-vertex (C1) and the future interrete-vertex are both `kind: mesh` — what differs is the role configuration each is given, not the kind. Same code, same recursion property.
+- `mesh` — operates entirely **inside Florete** (its medium is other vertices). Does hop-by-hop label-forwarding. The mesh-vertex (C1) and the future interrete-vertex are both `kind: mesh` — what differs is the role configuration each is given, not the kind. Same code, same recursion property.
 
 ```yaml
 nodes:
@@ -127,20 +127,20 @@ nodes:
 
 Each vertex entry has:
 
-- `name` — local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields). Defaults to `type` when there's exactly one vertex of that type on the node. For mesh-vertices in C1 the name carries semantic meaning — `cluster` is the conventional name for the cluster mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
+- `name` — local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields). Defaults to `type` when there's exactly one vertex of that type on the node. For mesh-vertices in C1 the name carries semantic meaning — `rete` is the conventional name for the rete-wide mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
 - `kind` — `link` or `mesh` (see above). C0 uses only `link`.
 - `type` — the interface this vertex exposes upwards (`quic` in C0; `udp`, in-kernel `wg`, third-party `vless`, … become available in C1+). The mesh-vertex can consume any supported link interface (via Connection Manager adapter), currently it exposes only `quic` interface (via FlorIO). The recursion property: an upper-layer mesh-vertex of `type: quic` consumes a lower mesh-vertex of `type: quic` indistinguishably from a wire-terminating link-vertex of `type: quic`.
 - `address` — listen `host:port` for link vertices that bind a socket. Omit for initiator-only nodes (user laptops, phones); they connect outbound from whatever ephemeral port they get.
 
 In C0 every node that hosts a publicly-reachable service must be Internet-facing (see [scope](../../scope)) — service/user endpoints establish QUIC directly to the service's host node, with no relaying.
 
-Node-naming convention for pilots: short DNS-like names for servers (`alpha`, `web01`), and `<user>-<device>` for user devices (`alice-laptop`, `bob-phone`). Names must be unique within a cluster.
+Node-naming convention for pilots: short DNS-like names for servers (`alpha`, `web01`), and `<user>-<device>` for user devices (`alice-laptop`, `bob-phone`). Names must be unique within a rete.
 
 ### services.yaml
 
 ```yaml
 services:
-  # Cluster infrastructure — on the management node (reserved; validator enforces)
+  # Rete infrastructure — on the management node (reserved; validator enforces)
   config-server:                      # read side — nodes poll for compiled artifacts
     at: mgmt01
     addr: 127.0.0.1:9000
@@ -173,7 +173,7 @@ services:
     groups: [brokers]
   ssh:
     at: alpha                         # node-scoped service (published per-node)
-    scope: node                       # vs. default `scope: cluster`
+    scope: node                       # vs. default `scope: rete`
     addr: 0.0.0.0:22                  # also reachable directly for emergency admin access
     groups: [admin]
 ```
@@ -238,7 +238,7 @@ users:
 
 **The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `florctl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
 
-The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `florctl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *cluster*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
+The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `florctl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *rete*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
 
 **Multi-device users**: list all the user's devices. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
 

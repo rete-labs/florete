@@ -11,9 +11,9 @@ Read [Mgmt Plane](../mgmt-plane/) first. The bounds described there are what eve
 
 ## What lives in the ctrl artifact
 
-In C1 only **cluster-flor** has ctrl-shaped state — it's where multi-hop forwarding lives. Link-flor and the agent itself have nothing dynamic in C1, so no ctrl artifacts are emitted for them. (Link-up/down liveness will likely appear here in B1+; the slot exists, just unused.)
+In C1 only **mesh-flor** has ctrl-shaped state — it's where multi-hop forwarding lives. Link-flor and the agent itself have nothing dynamic in C1, so no ctrl artifacts are emitted for them. (Link-up/down liveness will likely appear here in B1+; the slot exists, just unused.)
 
-The C1 ctrl artifact for cluster-flor:
+The C1 ctrl artifact for mesh-flor:
 
 ```json
 {
@@ -26,12 +26,12 @@ The C1 ctrl artifact for cluster-flor:
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "active_peers": [
-      "spiffe://rete-lovers/vertex/beta/cluster",
-      "spiffe://rete-lovers/vertex/gamma/cluster"
+      "spiffe://rete-lovers/vertex/beta/rete",
+      "spiffe://rete-lovers/vertex/gamma/rete"
     ],
     "forwarding_table": [
-      { "in_label": 17, "out_peer": "spiffe://rete-lovers/vertex/beta/cluster",  "out_label": 42 },
-      { "in_label": 23, "out_peer": "spiffe://rete-lovers/vertex/gamma/cluster", "out_label": 71 }
+      { "in_label": 17, "out_peer": "spiffe://rete-lovers/vertex/beta/rete",  "out_label": 42 },
+      { "in_label": 23, "out_peer": "spiffe://rete-lovers/vertex/gamma/rete", "out_label": 71 }
     ],
     "label_bindings": [
       {
@@ -61,16 +61,16 @@ Field semantics:
 
 - **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)) with two additions: `plane: "ctrl"` and `obeys_mgmt_version`. The latter pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
 - **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against the pubkey listed in mgmt's `authorized_ctrl_signers`; ctrl signed by an unauthorized key is rejected.
-- **`active_peers`** — the subset of mgmt's `allowed_peers` that this cluster-flor should currently dial / accept inbound from. In C1 this equals the full set produced by `allowed_peers`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the cluster-wide topology information a per-node agent ever sees — it knows its own peers, nothing else.
+- **`active_peers`** — the subset of mgmt's `allowed_peers` that this mesh-flor should currently dial / accept inbound from. In C1 this equals the full set produced by `allowed_peers`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the rete-wide topology information a per-node agent ever sees — it knows its own peers, nothing else.
 - **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries. In-label uniqueness is enforced by the producer; the agent verifies that each `out_peer` is in `active_peers`.
 - **`label_bindings`** — binds each accepted (initiator, target) pair from the mgmt allow lists to a local label. Each binding's (scope, target_spiffe_id, principal) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
 
-**No `active_paths` field.** Per-node agents have no use for the cluster-wide path enumeration: a flor vertex can only act on packets it actually sees, which means its own forwarding rows and label bindings. Knowing that label 17 globally corresponds to "alice → alpha → beta → kafka" buys nothing operationally — the vertex doesn't process the path, it processes labels. Keeping path enumeration out of per-node ctrl artifacts also matches the practical limit of local verifiability (see "What hijacked CP can and cannot do" below).
+**No `active_paths` field.** Per-node agents have no use for the rete-wide path enumeration: a flor vertex can only act on packets it actually sees, which means its own forwarding rows and label bindings. Knowing that label 17 globally corresponds to "alice → alpha → beta → kafka" buys nothing operationally — the vertex doesn't process the path, it processes labels. Keeping path enumeration out of per-node ctrl artifacts also matches the practical limit of local verifiability (see "What hijacked CP can and cannot do" below).
 
 ## Source layout (additions to mgmt-plane's)
 
 ```
-my-cluster/
+my-rete/
 ├── …                            # mgmt YAMLs and compiled mgmt subtree (see mgmt-plane)
 ├── .gitignore                   # contains: .flor/compiled/*/ctrl/
 └── .flor/
@@ -80,24 +80,24 @@ my-cluster/
             │   └── …
             └── ctrl/            # signed by CP key; gitignored
                 └── vertices/
-                    └── cluster.json
+                    └── rete.json
 ```
 
 Ctrl artifacts are gitignored even in C1, where they're deterministic from operator YAMLs. The reasoning is lifecycle, not freshness: ctrl is runtime state, not authoring state. Committing it would conflate the audit log (mgmt) with the running configuration (ctrl) and create workflow drift at C1→B1+, where ctrl genuinely doesn't belong in git.
 
-If an operator wants to record a snapshot of ctrl state for audit (e.g., "what forwarding decisions were live during the incident on May 3?"), it goes in a separate audit log, not in the cluster repo.
+If an operator wants to record a snapshot of ctrl state for audit (e.g., "what forwarding decisions were live during the incident on May 3?"), it goes in a separate audit log, not in the rete repo.
 
 ## Compile step (in C1)
 
 The same `florctl compile` invocation that produces mgmt artifacts also produces ctrl artifacts in C1. There's no separate command — they're emitted from the same source-of-truth YAMLs in one pass:
 
 ```
-florctl compile --node alpha --repo my-cluster/
+florctl compile --node alpha --repo my-rete/
 # emits:
 #   .flor/compiled/alpha/mgmt/agent.json
 #   .flor/compiled/alpha/mgmt/vertices/public.json
-#   .flor/compiled/alpha/mgmt/vertices/cluster.json
-#   .flor/compiled/alpha/ctrl/vertices/cluster.json
+#   .flor/compiled/alpha/mgmt/vertices/rete.json
+#   .flor/compiled/alpha/ctrl/vertices/rete.json
 ```
 
 The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl artifact is signed with the operator's CP signing key. In C0/C1 both keys live on the operator's workstation — same machine, separate files (`~/.flor/operator-mgmt.key` and `~/.flor/control-planes/primary.key`). They are *not* the same key; conflating them would couple mgmt-signing-authority lifecycle with CP-signing-authority lifecycle, which becomes painful as soon as B1+ wants to put the CP key on a different host (managed cloud or BYO on-prem).
@@ -114,7 +114,7 @@ Authentication for the publish side is via the existing `config-write` group (op
 The label allocator is a ctrl-plane concern in B1+. In C1 it runs at compile time as a deterministic walk over operator-declared paths:
 
 - Per-link counter; for each path, walk hop-by-hop and assign the next unused labels for forward and backward directions.
-- The full label map for the cluster is implicit — each node's ctrl artifact carries only its local slice (forwarding rows where this node is the transit, label bindings where this node hosts the initiator or target).
+- The full label map for the rete is implicit — each node's ctrl artifact carries only its local slice (forwarding rows where this node is the transit, label bindings where this node hosts the initiator or target).
 - `florctl compile --repo X` produces identical output on any machine given identical inputs (same deterministic walk order as the rest of compile).
 
 In B1+ the allocator runs continuously inside the CP and re-runs whenever active paths change. The wire format is the same; only the producer changes.
@@ -157,7 +157,7 @@ This deserves to be named explicitly because it's a real and inherent tradeoff o
 
 **Class-level summary:** access (confidentiality, integrity, authentication) survives a hijacked CP. Availability and traffic-pattern privacy don't. For customers who can't accept that tradeoff, the **BYO on-prem CP** deployment tier (planned for B1+) keeps the CP signing key out of any cloud control. For customers who can, the managed CP tier offers the convenience of cloud-hosted bounded-CP and accepts the residual blast radius.
 
-This tradeoff is intrinsic to "global path coherence is a non-local property and cannot be locally verified by per-node agents." Mitigations (redundant ctrl annotations the initiator's agent can fully verify; out-of-band cluster-wide consistency gossip; transparency log) are deferred until concrete pressure justifies them.
+This tradeoff is intrinsic to "global path coherence is a non-local property and cannot be locally verified by per-node agents." Mitigations (redundant ctrl annotations the initiator's agent can fully verify; out-of-band rete-wide consistency gossip; transparency log) are deferred until concrete pressure justifies them.
 
 ## Explicitly deferred
 
@@ -177,7 +177,7 @@ Captured rationale for the C1-specific ctrl-plane decisions. The broader "why bo
 
 ### Why land the ctrl-plane stream in C1 even with no autonomous CP
 
-The shape of the artifact stream — envelope, signature scheme, distribution endpoints, agent-side verification — is the public contract that every C1 deployment commits to. Pushing the split to B1+ would mean changing that contract once it's already deployed; even at pilot scale (handful of clusters) that's a flag-day migration we don't need to take.
+The shape of the artifact stream — envelope, signature scheme, distribution endpoints, agent-side verification — is the public contract that every C1 deployment commits to. Pushing the split to B1+ would mean changing that contract once it's already deployed; even at pilot scale (handful of retes) that's a flag-day migration we don't need to take.
 
 By landing the stream in C1 with a degenerate producer (`florctl compile`) we exercise:
 
@@ -191,7 +191,7 @@ All of these are forward-compatible with B1+, where only the *producer* changes 
 
 ### Why the CP signing identity is its own SPIFFE kind (not collapsed with config-server or operator)
 
-Three identities show up around the cluster's coordination point, and they have different roles, lifecycles, and compromise blast radii:
+Three identities show up around the rete's coordination point, and they have different roles, lifecycles, and compromise blast radii:
 
 - **`service/config-server`** — service identity, authenticates the *coordination service* to its clients. Compromise = clients dial an imposter; mTLS catches it.
 - **`node/<node>`** — service-class identity for control-plane *clients* (the agent), authenticates them to config-server. Compromise = imposter agent reads its own per-node artifacts.
@@ -220,9 +220,9 @@ In C1 ctrl is a deterministic function of operator YAMLs — same input, same ou
 But ctrl's *role* is runtime state, not authoring state. Even when its content happens to be derivable, treating it as an authoring artifact creates two kinds of drift:
 
 - **Workflow drift at C1→B1+.** In B1+ ctrl will be CP-produced, churning at seconds-to-minutes cadence. Operators trained to "compile and commit" against C1 will have to unlearn that and reorient when CP becomes autonomous. Cleanest if the workflow is the same throughout: operator commits mgmt, ctrl is regenerated downstream.
-- **Audit confusion.** The git log for the cluster repo is the operator's *signed-decisions audit*. Mixing in CP-shaped state — even when it's derivable — dilutes that signal. A reviewer reading the diff has to figure out what was an authoring change vs. what was just a recompile of CP-shaped data.
+- **Audit confusion.** The git log for the rete repo is the operator's *signed-decisions audit*. Mixing in CP-shaped state — even when it's derivable — dilutes that signal. A reviewer reading the diff has to figure out what was an authoring change vs. what was just a recompile of CP-shaped data.
 
-So we treat ctrl as gitignored from day one. If an operator wants a ctrl-state snapshot for audit (incident response, change review), they capture it explicitly to a separate path — never to the cluster repo.
+So we treat ctrl as gitignored from day one. If an operator wants a ctrl-state snapshot for audit (incident response, change review), they capture it explicitly to a separate path — never to the rete repo.
 
   </Accordion>
 </Accordions>

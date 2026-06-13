@@ -8,14 +8,14 @@ import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 ## Key Challenge
 
 Key challenge of the foundational work lies in how to represent vertices and Portal APIs between them, and how to satisfy requirement to support different link protocols easily. In our previous attempt we implemented vertices as async actors within Tokio runtime, and Portal API was actor API, channel-based, with data path (connection) implemented as a trait object. This has following drawbacks:
-- Cluster vertex with QUIC endpoint for transport service needs UDP socket to work on: that's natural for any implementation because QUIC runs over UDP sockets. Moreover, almost any transport endpoint will require some sort of a datagram socket - e.g. TCP over IP, or DTLS over UDP, or WireGuard over UDP.
+- Mesh-vertex with QUIC endpoint for transport service needs UDP socket to work on: that's natural for any implementation because QUIC runs over UDP sockets. Moreover, almost any transport endpoint will require some sort of a datagram socket - e.g. TCP over IP, or DTLS over UDP, or WireGuard over UDP.
 - Implementing a socket-like structure in a userspace properly is hard: in terms of async Rust, you need a waker to notify when sending or receiving is ready. And, as we're using quinn-rs connections with dgram service for links, we ended up with `AsyncUdpSocket` over `send_datagram`/`receive_datagram` methods of a link vertex's QUIC endpoint. The QUIC API lacks the needed waker, implementation works, but busy-waiting (`poll_send` is always ready). And fixing this probably requires rewriting/extending top-level QUIC APIs of quinn exactly for this niche use case - a task not feasible for the time being.
 - What is even more important, this design of vertices as in-process actors isn't extendable really with other link protocols: it requires re-implementing them in async Rust! A task that isn't feasible either.
 
 ## New Solution
 
 Instead of trying to implement the socket-like structure in the userspace, we can use actual kernel-provided socket! This brilliantly solves both problems:
-- we get real socket structure for the cluster vertex to use
+- we get real socket structure for the mesh-vertex to use
 - we can separate link implementations to external processes, enabling modular design and support for virtually any link protocol
 
 The main drawback of this new approach is performance: copying of the packet to and from userspace multiple times, context switches, calls into IP stack. Theoretically it can be solved using zero-copy buffers (AF_XDP?) and eBPF, but requires deep dive into these technologies. Non-UDP or even non-socket IPC can be adopted probably. Hopefully, we can leave this for later, performance isn't a goal for our C1 milestone.
@@ -25,10 +25,10 @@ The main drawback of this new approach is performance: copying of the packet to 
 ### Problem Definition
 
 Need to specify architecture of our solution that covers C1 scenarios and has following mandatory properties:
-- Cluster vertex must use some datagram socket to communicate with link vertex
+- Mesh-vertex must use some datagram socket to communicate with link-vertex
 - The architecture must allow adding third party link implementations without re-implementing them in Rust
 - Cross-platfrom design for Linux, Windows, MacOS, Android, iOS, and HarmonyOS
-- Recursiveness: datagram socket used to communicate with link vertex should be reusable by cluster vertex users, including interrete vertex
+- Recursiveness: datagram socket used to communicate with link vertex should be reusable by mesh-vertex users, including interrete vertex
 
 ### Accepted Design
 
@@ -75,7 +75,7 @@ Implement single executable called `flor` with following modules:
 - Northbound native Flor IO (Inbound/Outbound): datagram socket and custom protocol (impl-specific, we do not want to stabilize it and provide as public API at the moment)
 - TransportEndpoint: QUIC, provides connections for clients
 - ForwardingEngine:
-   - (cluster & others) forwarding by MPLS-inspired labels
+   - (mesh & others) forwarding by MPLS-inspired labels
    - (link) star topology forwarding (over UDP socket)
 - ConnectionManager: extendable module that can provide different connection types:
    1. native: connections over Flor IO (southbound Flor IO socket)
@@ -100,7 +100,7 @@ This section stores raw reasoning flow (human-only, AI wasn't involved) that lea
 
 #### Non-recursive
 
-In this case we have `flor` binary that provides service mesh connectivity to workloads. This binary will be using TUN to transparently capture traffic later on. It will support interrete and cluster vertices - no possibility to run multiple binaries (stacking) is expected. Links are treated as special case (which really is, to some degree).
+In this case we have `flor` binary that provides service mesh connectivity to workloads. This binary will be using TUN to transparently capture traffic later on. It will support interrete and mesh-vertices - no possibility to run multiple binaries (stacking) is expected. Links are treated as special case (which really is, to some degree).
 
 This makes sense, as there can be only signle TUN capture-all interface? Actually no, if we go into network namespaces. But it is OS-specific. Not available on mobiles probably.
 
@@ -121,7 +121,7 @@ Drawbacks:
 
 #### Recursive
 
-Here we have `flor` binary that can be used recursively. I.e. normally we'd have 2 of them running: `flor --cluster ` and `flor --link`. Inbound/outbound interface for them will be common and allow TCP and UDP. Recursive case will be UDP-based.
+Here we have `flor` binary that can be used recursively. I.e. normally we'd have 2 of them running: `flor --mesh ` and `flor --link`. Inbound/outbound interface for them will be common and allow TCP and UDP. Recursive case will be UDP-based.
 
 So, this flor consists of
 - Inbound (SOCKS5 TCP and UDP)
@@ -129,7 +129,7 @@ So, this flor consists of
 - ConnectionManager that can handle links as well as higher-order connections (depending on the role of this flor instance; btw they can bridge...)
 - TransportEndpoint (QUIC) and ForwardingEngine that work on top of datagram socket(s) provided by ConnectionManager
 
-First: how to add 3rd party links in this design? They cannot be drop-in replacements for `flor --link`. So here design must follow Non-recursive case with such links added to `flor --cluster`, which will then run without `flor --link`. Or we'd have `flor --link` as a middle-man/shim between `flor --cluster` and 3rd party links.
+First: how to add 3rd party links in this design? They cannot be drop-in replacements for `flor --link`. So here design must follow Non-recursive case with such links added to `flor --mesh`, which will then run without `flor --link`. Or we'd have `flor --link` as a middle-man/shim between `flor --mesh` and 3rd party links.
 
 Second, why SOCKS5 or UDP is used as a native Florete IPC? That shouldn't be the case actually. It is legacy of IP, and we shouldn't build our recursive usage on this tech!
 
@@ -147,7 +147,7 @@ And with third party link it will look like:
 flor(VLESS) =3rdparty-specific=> VLESS-process
 ```
 
-So third parties won't provide Florete Link Vertex API to Flor! They will be plugged-in by entirely custom adapters using whatever they need to work as links for cluster layer.
+So third parties won't provide Florete Link Vertex API to Flor! They will be plugged-in by entirely custom adapters using whatever they need to work as links for mesh layer.
 
 This approach will allow recursive use cases:
 ```
@@ -166,8 +166,8 @@ User-facing interface has two roles, Inbound and Outbound: forward and reverse p
 #### Inbound
 
 The typical workflow for the IP Inbound in the Florete looks like this:
-- Alice wants to TCP-connect to Bob, which is published as e.g. "bob.cluster"
-- Alice requests "connect bob.cluster" command in some form
+- Alice wants to TCP-connect to Bob, which is published as e.g. "bob.rete"
+- Alice requests "connect bob.rete" command in some form
 - Inbound receives / intercepts the request, creates the connection using other components and returns a TCP connection (or means to establish it, e.g. IP address) in a response to Alice
 - Alice uses/establishes the connection and exchanges data with Bob
 
@@ -209,7 +209,7 @@ There are following design decisions to be made:
 3. Recursion consern: do we want to stack our own proxy?
 4. Flatten the recursion: a single entity allowing access to multiple layers - how?
 
-Regarding L7 proxy (HTTP), it would be nice to have for cluster scenarios for load-balancing later - just like Envoy in Kubernetes. In their current design though L7 isn't per-node, but rather some instances in the cluster (how they're called?). In our case it can be distributed service with some deploy policy (not per node).
+Regarding L7 proxy (HTTP), it would be nice to have for rete scenarios for load-balancing later - just like Envoy in Kubernetes. In their current design though L7 isn't per-node, but rather some instances in the rete (how they're called?). In our case it can be distributed service with some deploy policy (not per node).
 
 Accepted proposal: start with SOCKS5 TCP proxy as it is pure tunneling solution for L4.
 Drawbacks: not as popular as HTTP proxy probably - may be harder to use.
@@ -224,7 +224,7 @@ Answers to the questions above:
 
 The typical workflow for the IP Outbound in the Florete looks like this:
 - Bob is a TCP server
-- The Outbound publishes it in the cluster layer as "bob.cluster" service
+- The Outbound publishes it in the mesh layer as "bob.rete" service
 - When connection from Alice arrives, the Outbound delivers it to the Bob
 
 Implementation options include:
@@ -241,7 +241,7 @@ Reasoning below goes into the wrong way of doing recursive design over IP Inboun
 
 ### Internal Structure
 
-The main idea of splitting cluster and link vertices can be implemented in a few ways. Let's design from ground up here, from link to cluster because we'll need to support third party links later.
+The main idea of splitting mesh and link vertices can be implemented in a few ways. Let's design from ground up here, from link to mesh because we'll need to support third party links later.
 
 So we have some link-providing entity, usually a process (but some links may be implemented in-kernel - e.g. WireGuard). It exposes following communication methods:
 - IP interface via TUN device
@@ -251,9 +251,9 @@ If we want to create multiple links, there are two options:
 - link provider is capable of establishing multiple links with common interface, route traffic from based on IP rules
 - link provider establishes links with separate interfaces
 
-The cluster process needs to handle this complexity via adaptor pattern.
+The mesh process needs to handle this complexity via adaptor pattern.
 
-Recursiveness: the cluster process must be able to work on top of another cluster process.
+Recursiveness: the mesh process must be able to work on top of another mesh process.
 
 Need to name the entities. Link entities can be named as they're - as they may be third party. Our own will be called QuicLink.
 
@@ -261,7 +261,7 @@ But! Given that main one will be using QUIC as well, we can implement them in a 
 
 So, Flor may run in two modes:
 - link mode: then built-in QUIC links will be created
-- cluster/recursive mode: uses supported link providers; initially we'll have only our own link provider, "flor-link"
+- mesh/recursive mode: uses supported link providers; initially we'll have only our own link provider, "flor-link"
 
 Ideally, in recursive mode Flor shouldn't know whether it manages links or connections in other layer. Though it may be reflected in configuration - as it must match the actual layers and their specific (link layers certainly differ).
 
@@ -287,8 +287,8 @@ Note: we probably don't want ConnectionManager to instantiate subprocesses - thi
 
 Two alternative designs:
 
-1. `flor(cluster) => flor(link)/3rd-party-link`
-2. `flor(cluster) => flor(link) => flor-link/3rd-party-link`
+1. `flor(mesh) => flor(link)/3rd-party-link`
+2. `flor(mesh) => flor(link) => flor-link/3rd-party-link`
 
 I.e. we may move ConnManager to the layer below. This contradicts Florete HLD abstraction where top-level vertex uses Portal API for low-level vertex to establish connections? Not necessarily, but introduces a middleman... probably we can make flor in a way that it manages third-party links directly, without a separate link-manager process? Or this can help with modular design, when we'd need to implement link management processes for third-party links...
 */}

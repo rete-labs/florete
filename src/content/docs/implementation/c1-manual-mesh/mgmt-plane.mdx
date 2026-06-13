@@ -9,36 +9,36 @@ This milestone inherits the management plane design from [C0. Tended Tunnels](..
 
 C1 is also where the **ctrl-plane artifact stream** appears for the first time, even though no autonomous control-plane service exists yet. In C1 the ctrl artifact is operator-produced via `florctl compile` (degenerate case — every "decision" equals the corresponding bound), but it travels in its own envelope, has its own signature, and is verified separately by each agent against bounds expressed here in mgmt. This page covers the **bounds**; ctrl mechanics and how decisions are derived from them live in [Ctrl Plane](../ctrl-plane/).
 
-**All source YAMLs in the cluster repo author mgmt-plane bounds.** Ctrl-plane decisions are derived: in C1 by `florctl compile`, in B1+ by an autonomous CP service. The authoring surface stays mgmt-shaped throughout — operators never edit ctrl artifacts directly.
+**All source YAMLs in the rete repo author mgmt-plane bounds.** Ctrl-plane decisions are derived: in C1 by `florctl compile`, in B1+ by an autonomous CP service. The authoring surface stays mgmt-shaped throughout — operators never edit ctrl artifacts directly.
 
-What C1 adds is the **mesh layer**: cluster-vertex as a new principal kind (with SPIFFE IDs of the form `spiffe://<cluster>/vertex/<node>/<name>`), declared inter-node links, explicit multi-hop paths, and a second flor vertex per node so the recursive stack from [Data Plane](../data-plane/) can run.
+What C1 adds is the **mesh layer**: mesh-vertex as a new principal kind (with SPIFFE IDs of the form `spiffe://<rete>/vertex/<node>/<name>`), declared inter-node links, explicit multi-hop paths, and a second flor vertex per node so the recursive stack from [Data Plane](../data-plane/) can run.
 
 Two framing notes worth getting right up front, because the obvious mental model is wrong in opposite directions for the two new pieces:
 
-**Cluster-vertex identity belongs to cluster-flor; the cert+key are *held* by link-flor.** Cluster-flor publishes itself as a service in the link layer — that's the recursive principle, exactly as the [HLD describes](../../../overview/high-level-design#service). Like any principal, cluster-flor delegates the mTLS handshake to a vertex (link-flor in this case), which holds the cert+key on its behalf. The shape is identical to C0 flor holding alice's cert+key: alice owns the identity, flor acts on her behalf. Link-flor isn't the cluster-vertex any more than C0 flor is alice.
+**Mesh-vertex identity belongs to mesh-flor; the cert+key are *held* by link-flor.** Mesh-flor publishes itself as a service in the link layer — that's the recursive principle, exactly as the [HLD describes](../../../overview/high-level-design#service). Like any principal, mesh-flor delegates the mTLS handshake to a vertex (link-flor in this case), which holds the cert+key on its behalf. The shape is identical to C0 flor holding alice's cert+key: alice owns the identity, flor acts on her behalf. Link-flor isn't the mesh-vertex any more than C0 flor is alice.
 
-**Link-flor is a full vertex, not a UDP forwarder.** It has a QUIC transport endpoint that terminates cluster-vertex ↔ cluster-vertex mTLS, a UDP connection manager for the wire, and a FlorIO interface where it serves cluster-flor (its only local principal in the standard topology). It just doesn't act on its own behalf — like every other vertex, it acts on behalf of the workloads it carries.
+**Link-flor is a full vertex, not a UDP forwarder.** It has a QUIC transport endpoint that terminates mesh-vertex ↔ mesh-vertex mTLS, a UDP connection manager for the wire, and a FlorIO interface where it serves mesh-flor (its only local principal in the standard topology). It just doesn't act on its own behalf — like every other vertex, it acts on behalf of the workloads it carries.
 
-**Two link types from day one: QUIC and bare UDP.** Cluster-flor's connection manager runs multiple adapters simultaneously, picking per peer:
+**Two link types from day one: QUIC and bare UDP.** Mesh-flor's connection manager runs multiple adapters simultaneously, picking per peer:
 
-- **QUIC links** — full mTLS link-layer crypto, terminated by a separate **link-flor** vertex that cluster-flor reaches over FlorIO. Right answer for Internet-facing peerings (NAT traversal, metadata-resistance, authenticated transport).
-- **Bare UDP links** — no link-layer crypto, implemented **directly inside cluster-flor** as a plain UDP socket. No link-flor process for these peerings. Right answer for private LAN/datacenter peerings where the underlay is already trusted and the cluster-vertex ↔ cluster-vertex QUIC overhead is wasted.
+- **QUIC links** — full mTLS link-layer crypto, terminated by a separate **link-flor** vertex that mesh-flor reaches over FlorIO. Right answer for Internet-facing peerings (NAT traversal, metadata-resistance, authenticated transport).
+- **Bare UDP links** — no link-layer crypto, implemented **directly inside mesh-flor** as a plain UDP socket. No link-flor process for these peerings. Right answer for private LAN/datacenter peerings where the underlay is already trusted and the mesh-vertex ↔ mesh-vertex QUIC overhead is wasted.
 
-Both can coexist in the same cluster-flor. From the user's PoV the mesh looks the same — services are published once (in cluster-flor) and reachable through any combination of QUIC and UDP links along the path. The link-type choice is per-link, declared in `links.yaml`, transparent to workloads, and the multi-hop forwarding works uniformly across mixed link types.
+Both can coexist in the same mesh-flor. From the user's PoV the mesh looks the same — services are published once (in mesh-flor) and reachable through any combination of QUIC and UDP links along the path. The link-type choice is per-link, declared in `links.yaml`, transparent to workloads, and the multi-hop forwarding works uniformly across mixed link types.
 
-This is also why publication should always go through cluster-flor in the standard topology: it's what gives operators a single mesh view regardless of which underlay each hop uses. Publishing in link-flor remains schema-allowed (see "mixed-vertex publication" in deferred work) but is not the default story for private-network optimisation; using a UDP link is.
+This is also why publication should always go through mesh-flor in the standard topology: it's what gives operators a single mesh view regardless of which underlay each hop uses. Publishing in link-flor remains schema-allowed (see "mixed-vertex publication" in deferred work) but is not the default story for private-network optimisation; using a UDP link is.
 
 ## What C1 adds
 
-- **Two link types** — QUIC (via link-flor) and bare UDP (direct in cluster-flor). Cluster-flor's connection manager runs both adapters simultaneously and picks per peer; the multi-hop forwarder works uniformly across mixed link types.
-- **One or two flor vertices per node** instead of C0's one. Same `flor` binary, no `--role` flag — what makes a vertex link-shaped or cluster-shaped is its compiled config (transport_endpoint + connection_manager + which workloads it carries). A node with only UDP-link peerings runs just cluster-flor; nodes with any QUIC peerings additionally run link-flor.
-- **Cluster-vertex as a new principal kind** — one per node per Florete cluster, distinct from C0's node principal. SPIFFE ID `spiffe://<cluster>/vertex/<node>/<name>` (e.g. `vertex/alpha/cluster` by convention). Used for hop-by-hop link-layer mTLS.
-- **`flor-agent` as a distinct first-class workload**, not a vertex. The node has its own cluster-member identity (`node/<node>`); the agent is the workload that acts on the node's behalf — fetching configs, supervising vertices, reaching config-server. Like every other principal, the node delegates its mTLS to a vertex (cluster-flor).
-- **`links.yaml`** — declares allowed UDP peerings between cluster-vertices (a topology bound).
-- **`paths.yaml`** — declares allowed multi-hop routes at the cluster layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
-- **Three mgmt artifacts per node** — one `agent.json` plus `vertices/<name>.json` per vertex under `<node>/mgmt/`. Standard topology produces `vertices/public.json` (link-vertex) and `vertices/cluster.json` (mesh-vertex). Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/vertices/cluster.json` (see [Ctrl Plane](../ctrl-plane/)).
-- **`authorized_ctrl_signers`** in mgmt — the cluster's mgmt artifact carries one or more authorized CP signing pubkeys; agents accept ctrl artifacts only if signed by one of these. In C1 there's a single CP key, operator-held.
-- **Per-vertex FlorIO sockets** — each vertex that exposes FlorIO gets a socket at `/run/flor/<cluster>/vertices/<vertex-name>.sock`. The compiler derives the path from the cluster name and vertex name declared in `nodes.yaml`; no separate `cluster.yaml` config is needed.
+- **Two link types** — QUIC (via link-flor) and bare UDP (direct in mesh-flor). Mesh-flor's connection manager runs both adapters simultaneously and picks per peer; the multi-hop forwarder works uniformly across mixed link types.
+- **One or two flor vertices per node** instead of C0's one. Same `flor` binary, no `--role` flag — what makes a vertex link-shaped or mesh-shaped is its compiled config (transport_endpoint + connection_manager + which workloads it carries). A node with only UDP-link peerings runs just mesh-flor; nodes with any QUIC peerings additionally run link-flor.
+- **Mesh-vertex as a new principal kind** — one per node per Florete rete, distinct from C0's node principal. SPIFFE ID `spiffe://<rete>/vertex/<node>/<name>` (e.g. `vertex/alpha/rete` by convention). Used for hop-by-hop link-layer mTLS.
+- **`flor-agent` as a distinct first-class workload**, not a vertex. The node has its own rete-member identity (`node/<node>`); the agent is the workload that acts on the node's behalf — fetching configs, supervising vertices, reaching config-server. Like every other principal, the node delegates its mTLS to a vertex (mesh-flor).
+- **`links.yaml`** — declares allowed UDP peerings between mesh-vertices (a topology bound).
+- **`paths.yaml`** — declares allowed multi-hop routes at the mesh layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
+- **Three mgmt artifacts per node** — one `agent.json` plus `vertices/<name>.json` per vertex under `<node>/mgmt/`. Standard topology produces `vertices/public.json` (link-vertex) and `vertices/rete.json` (mesh-vertex). Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/vertices/rete.json` (see [Ctrl Plane](../ctrl-plane/)).
+- **`authorized_ctrl_signers`** in mgmt — the rete's mgmt artifact carries one or more authorized CP signing pubkeys; agents accept ctrl artifacts only if signed by one of these. In C1 there's a single CP key, operator-held.
+- **Per-vertex FlorIO sockets** — each vertex that exposes FlorIO gets a socket at `/run/flor/<rete>/vertices/<vertex-name>.sock`. The compiler derives the path from the rete name and vertex name declared in `nodes.yaml`; no separate `rete.yaml` config is needed.
 - **Additional validator rules** — link validity, address feasibility, multi-hop path validity, principal-role coherence for services that appear as path initiators. (Label feasibility moves to ctrl-plane.)
 
 Everything else (CA, per-node bundles, revocation, `flor agent sync --commit-timeout`, config-server-fronted distribution, naming, version-stamped envelope, SOCKS5 proxy, emergency-access safety net) is identical to C0.
@@ -46,7 +46,7 @@ Everything else (CA, per-node bundles, revocation, `flor agent sync --commit-tim
 ## Source layout additions
 
 ```
-my-cluster/
+my-rete/
 ├── …                            # everything from C0 mgmt-plane
 ├── links.yaml                   # NEW: declared allowed peerings (topology bound)
 ├── paths.yaml                   # NEW: declared allowed paths (path bound — hop sequences only, no labels)
@@ -58,21 +58,21 @@ my-cluster/
         │   │   ├── agent.json
         │   │   └── vertices/
         │   │       ├── public.json   # link-vertex named "public"
-        │   │       └── cluster.json  # mesh-vertex named "cluster"
+        │   │       └── rete.json     # mesh-vertex named "rete"
         │   └── ctrl/            # signed by CP key; gitignored
         │       └── vertices/
-        │           └── cluster.json
+        │           └── rete.json
         └── …
 ```
 
 YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is the compiled, signed projection of those bounds. The ctrl subtree alongside it is produced by the same `florctl compile` step in C1 (the ctrl producer becomes a CP service in B1+); it's gitignored because its lifecycle is "runtime state, not authoring artifact." See [Ctrl Plane](../ctrl-plane/) for what's inside `ctrl/`.
 
-### cluster.yaml (additions over C0)
+### rete.yaml (additions over C0)
 
-C1 adds a `signers.ctrl` block listing the cluster's authorized ctrl-envelope signers, symmetric to `signers.mgmt` from C0:
+C1 adds a `signers.ctrl` block listing the rete's authorized ctrl-envelope signers, symmetric to `signers.mgmt` from C0:
 
 ```yaml
-cluster:
+rete:
   name: rete-lovers                 # same as C0
 
   ca:
@@ -96,7 +96,7 @@ The compiler embeds the listed ctrl-signer pubkeys into every mgmt artifact's `a
 
 ### nodes.yaml (additions over C0)
 
-C1 extends each node's vertex graph with a **cluster-vertex** (`kind: mesh`, named `cluster` by convention) on top of the link layer, and broadens the link-vertex `type` enum from C0's QUIC-only to include `udp` (and, after C1, `wg`, `vless`, …). The cluster-vertex's `uses:` field names which link-vertices it relies upon for transit.
+C1 extends each node's vertex graph with a **mesh-vertex** (`kind: mesh`, named `rete` by convention) on top of the link layer, and broadens the link-vertex `type` enum from C0's QUIC-only to include `udp` (and, after C1, `wg`, `vless`, …). The mesh-vertex's `uses:` field names which link-vertices it relies upon for transit.
 
 ```yaml
 nodes:
@@ -104,56 +104,56 @@ nodes:
     vertices:
       - { name: public,   kind: link, type: quic, address: 1.2.3.4:4433 }
       - { name: internal, kind: link, type: udp,  address: 10.0.0.5:4433 }
-      - { name: cluster,  kind: mesh, type: quic, uses: [public, internal] }
-    agent_via: cluster              # which vertex hosts the agent's node/alpha principal
+      - { name: rete,  kind: mesh, type: quic, uses: [public, internal] }
+    agent_via: rete              # which vertex hosts the agent's node/alpha principal
   beta:
     vertices:
       - { name: public,   kind: link, type: quic, address: 5.6.7.8:4433 }
       - { name: internal, kind: link, type: udp,  address: 10.0.0.6:4433 }
-      - { name: cluster,  kind: mesh, type: quic, uses: [public, internal] }
-    agent_via: cluster
+      - { name: rete,  kind: mesh, type: quic, uses: [public, internal] }
+    agent_via: rete
   gamma:
     vertices:
       - { name: internal, kind: link, type: udp, address: 10.0.0.7:4433 }
-      - { name: cluster,  kind: mesh, type: quic, uses: [internal] }
-    agent_via: cluster
+      - { name: rete,  kind: mesh, type: quic, uses: [internal] }
+    agent_via: rete
     internal_only: true             # not reachable from Internet; only via peers
 ```
 
-The `kind: mesh` value is *structural* — it identifies the vertex code that operates over Florete-internal media (other vertices) and does hop-by-hop label-forwarding. The same kind is used for the cluster-vertex in C1 and for the future interrete-vertex; what distinguishes them is the **vertex `name`** the operator assigns and the configuration that follows from it. "Cluster-vertex" names a *convention*, not a YAML kind — the cluster-vertex is "the `kind: mesh` vertex named `cluster` on this node."
+The `kind: mesh` value is *structural* — it identifies the vertex code that operates over Florete-internal media (other vertices) and does hop-by-hop label-forwarding. The same kind underlies both the C1 mesh-vertex (named `rete` by convention) and the future interrete-vertex (named `interrete`); what distinguishes them is the **vertex `name`** the operator assigns and the configuration that follows from it. `rete` is a *name* convention, not a YAML kind — the C1 mesh-vertex is "the `kind: mesh` vertex named `rete` on this node."
 
 C1 conventions and constraints:
 
-- **Exactly one mesh-vertex per node**, named `cluster` by convention. Its SPIFFE ID is `spiffe://<cluster>/vertex/<node>/<vertex-name>` — e.g. alpha's cluster mesh-vertex is `spiffe://rete-lovers/vertex/alpha/cluster`. The name is operator-chosen; `cluster` is the community convention, not a reserved or validated label. A future interrete-vertex on the same node would be `vertex/alpha/interrete` by convention.
+- **Exactly one mesh-vertex per node**, named `rete` by convention. Its SPIFFE ID is `spiffe://<rete>/vertex/<node>/<vertex-name>` — e.g. alpha's rete mesh-vertex is `spiffe://rete-lovers/vertex/alpha/rete`. The name is operator-chosen; `rete` is the community convention, not a reserved or validated label. A future interrete-vertex on the same node would be `vertex/alpha/interrete` by convention.
 - **`agent_via:`** on the node entry names which vertex hosts the agent's `node/<node>` principal. Required when the node has multiple vertices (always in C1). The agent connects to config-server through the named vertex's SOCKS5 listener.
-- **Cluster-vertex `type`** is the upward interface contract. `type: quic` is what mesh vertices in C1 use; this is what makes recursion work — an upper-layer mesh-vertex consuming a lower mesh-vertex sees the same QUIC interface a wire-terminating QUIC link-vertex would expose.
-- **Cluster-vertex `uses:`** lists the link-vertex names this cluster-vertex relies upon. Multiple link-vertices supports the canonical "border" case (one Internet-facing QUIC link + one private-net UDP link) and the parallel-underlay case (e.g., dual-ethernet UDP between two nodes — two `type: udp` link-vertices on each side, both in `uses:`).
-- **Workloads (users, services) attach via `via:`** — each service and user device entry names its host vertex with a `via:` field. C1 convention is `via: cluster` for all workloads (migrating up from C0's single link-vertex). Link-vertices in C1 carry only cluster-vertex ↔ cluster-vertex transit.
-- **No-process link-vertices are an implementation optimization, not a separate config category.** The runtime may collapse a `type: udp` link-vertex into cluster-flor's process (a UDP socket inline), or implement a `type: wg` link-vertex as an in-kernel WireGuard interface with no userspace process at all. The YAML lists every link-vertex uniformly; the agent decides what to spawn.
+- **Mesh-vertex `type`** is the upward interface contract. `type: quic` is what mesh vertices in C1 use; this is what makes recursion work — an upper-layer mesh-vertex consuming a lower mesh-vertex sees the same QUIC interface a wire-terminating QUIC link-vertex would expose.
+- **Mesh-vertex `uses:`** lists the link-vertex names this mesh-vertex relies upon. Multiple link-vertices supports the canonical "border" case (one Internet-facing QUIC link + one private-net UDP link) and the parallel-underlay case (e.g., dual-ethernet UDP between two nodes — two `type: udp` link-vertices on each side, both in `uses:`).
+- **Workloads (users, services) attach via `via:`** — each service and user device entry names its host vertex with a `via:` field. C1 convention is `via: rete` for all workloads (migrating up from C0's single link-vertex). Link-vertices in C1 carry only mesh-vertex ↔ mesh-vertex transit.
+- **No-process link-vertices are an implementation optimization, not a separate config category.** The runtime may collapse a `type: udp` link-vertex into mesh-flor's process (a UDP socket inline), or implement a `type: wg` link-vertex as an in-kernel WireGuard interface with no userspace process at all. The YAML lists every link-vertex uniformly; the agent decides what to spawn.
 
-A node joining multiple Florete clusters appears in each cluster's repo under whatever name that cluster uses — cross-cluster multi-tenancy is handled at the repo level, not in `nodes.yaml`. The `address` ports on link-vertices must not overlap with another cluster's entries on the same external IP; the node operator is responsible for this when enrolling into multiple clusters (see [Multi-cluster on a single node](#multi-cluster-on-a-single-node) below).
+A node joining multiple Florete retes appears in each rete's repo under whatever name that rete uses — cross-rete multi-tenancy is handled at the repo level, not in `nodes.yaml`. The `address` ports on link-vertices must not overlap with another rete's entries on the same external IP; the node operator is responsible for this when enrolling into multiple retes (see [Multi-rete on a single node](#multi-rete-on-a-single-node) below).
 
 ### services.yaml (additions over C0)
 
-C1 adds a required `via:` field to every service entry. Because C1 nodes have multiple vertices (link + mesh), the compiler must know which vertex hosts each service. Workloads in C1 belong on the cluster mesh-vertex by convention:
+C1 adds a required `via:` field to every service entry. Because C1 nodes have multiple vertices (link + mesh), the compiler must know which vertex hosts each service. Workloads in C1 belong on the rete mesh-vertex by convention:
 
 ```yaml
 services:
   api:
     at: alpha
-    via: cluster                    # REQUIRED in C1: name of vertex on alpha that hosts api
+    via: rete                    # REQUIRED in C1: name of vertex on alpha that hosts api
     addr: 127.0.0.1:8000
     socks5_proxy: 127.0.0.1:18000
     groups: [api]
     roles: [api-backend]
   mongodb:
     at: beta
-    via: cluster
+    via: rete
     addr: 127.0.0.1:27017
     groups: [db]
   ssh:
     at: alpha
-    via: cluster
+    via: rete
     scope: node
     addr: 0.0.0.0:22
     groups: [admin]
@@ -170,11 +170,11 @@ users:
   alice:
     roles: [developer]
     nodes:
-      - { at: alice-laptop, via: cluster }
+      - { at: alice-laptop, via: rete }
   bob:
     roles: [devops]
     nodes:
-      - { at: bob-workstation, via: cluster }
+      - { at: bob-workstation, via: rete }
 ```
 
 Each `nodes:` entry is an `{at, via}` object in C1. `at:` names the host node; `via:` names the vertex on that node that holds alice's identity material and SOCKS5 listener. In C0 `via:` was omittable (one vertex per node); in C1 it is required.
@@ -182,7 +182,7 @@ Each `nodes:` entry is an `{at, via}` object in C1. `at:` names the host node; `
 ### links.yaml (new) — topology bound
 
 ```yaml
-# Bound: the set of cluster-vertex peerings the CP is allowed to bring up.
+# Bound: the set of mesh-vertex peerings the CP is allowed to bring up.
 # Each entry under `allowed_links` is a typed rule. Agents verify ctrl's
 # active peers against the union of all rules' results.
 # In C1 the only rule type is `enum`. New rule types can be added as
@@ -256,7 +256,7 @@ allowed_paths:
   # - { type: any-path-respecting, must_avoid: [delta], max_hops: 4 }
 ```
 
-Paths declared here are the operator-signed bound on which routes are allowed. The ctrl artifact selects which paths are *currently provisioned* and assigns labels for them; agents only ever see local slices of those decisions (their own forwarding rows + label bindings) and never the cluster-wide path enumeration — see [Ctrl Plane](../ctrl-plane/) for why.
+Paths declared here are the operator-signed bound on which routes are allowed. The ctrl artifact selects which paths are *currently provisioned* and assigns labels for them; agents only ever see local slices of those decisions (their own forwarding rows + label bindings) and never the rete-wide path enumeration — see [Ctrl Plane](../ctrl-plane/) for why.
 
 ### Why typed-rule lists in the YAMLs (and where they don't apply)
 
@@ -284,7 +284,7 @@ flor vertex run --config <vertex.json>      # NEW: vertex daemon
 
 On top of C0's:
 
-- **Vertex graph validity** — every node declares at least one mesh-vertex (`kind: mesh`, named `cluster` by convention in C1) and at least one link-vertex; every `uses:` reference resolves to a vertex name declared on the same node; vertex names are unique within a node. C1 graphs are trees (one mesh root above link-vertex leaves); the schema does not require acyclicity in general — see [Reasoning > Why the vertex graph is a directed graph, not a DAG](#reasons-behind-the-c1-additions).
+- **Vertex graph validity** — every node declares at least one mesh-vertex (`kind: mesh`, named `rete` by convention in C1) and at least one link-vertex; every `uses:` reference resolves to a vertex name declared on the same node; vertex names are unique within a node. C1 graphs are trees (one mesh root above link-vertex leaves); the schema does not require acyclicity in general — see [Reasoning > Why the vertex graph is a directed graph, not a DAG](#reasons-behind-the-c1-additions).
 - **Workload vertex binding** — every service's `via:` and every user device entry's `via:` must name a vertex declared on the respective `at:` node. The `agent_via:` field on a node entry must name a vertex declared on that node. In C1 these fields are required (multiple vertices per node); omitting them is an error ("specify `via:` to disambiguate among `<list of vertex names>`"). Validator also warns (not errors) when `via:` references a `kind: link` vertex — that is a valid mixed-topology opt-in but unusual enough to surface.
 - **Link validity** — every link is between two distinct, known nodes; the `via` reference resolves to a link-vertex on each side (symmetric shorthand or asymmetric form); both link-vertices have the same `type`.
 - **Address feasibility** — link pairings use addresses that can actually reach each other (public↔public, or shared internal network). Internal-only nodes can only pair with peers on the same internal network.
@@ -301,7 +301,7 @@ On top of C0's:
 
 ## Compile step additions
 
-`florctl compile` produces **two artifact subtrees per node** in C1: a signed mgmt subtree (`<node>/mgmt/`) and a CP-signed ctrl subtree (`<node>/ctrl/`). The mgmt subtree contains one `agent.json` plus one `vertices/<name>.json` per vertex (standard topology: `vertices/public.json` for the link-vertex and `vertices/cluster.json` for the mesh-vertex), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
+`florctl compile` produces **two artifact subtrees per node** in C1: a signed mgmt subtree (`<node>/mgmt/`) and a CP-signed ctrl subtree (`<node>/ctrl/`). The mgmt subtree contains one `agent.json` plus one `vertices/<name>.json` per vertex (standard topology: `vertices/public.json` for the link-vertex and `vertices/rete.json` for the mesh-vertex), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
 
 This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelope:
 
@@ -354,7 +354,7 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
   "connection_manager": { "adapter": "udp", "listen": "0.0.0.0:4433" },
   "workloads": [
     {
-      "spiffe_id": "spiffe://rete-lovers/vertex/alpha/cluster",
+      "spiffe_id": "spiffe://rete-lovers/vertex/alpha/rete",
       "identity":  { "cert_path": "cv-alpha.crt", "priv_path": "cv-alpha.key" },
       "io": [
         { "kind": "florio", "socket": "/run/flor/rete-lovers/vertices/public.sock", "direction": "bidirectional" }
@@ -363,23 +363,23 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
   ],
   "ingress": [
     {
-      "target_spiffe_id": "spiffe://rete-lovers/vertex/alpha/cluster",
+      "target_spiffe_id": "spiffe://rete-lovers/vertex/alpha/rete",
       "allow": [
-        "spiffe://rete-lovers/vertex/beta/cluster",
-        "spiffe://rete-lovers/vertex/gamma/cluster"
+        "spiffe://rete-lovers/vertex/beta/rete",
+        "spiffe://rete-lovers/vertex/gamma/rete"
       ]
     }
   ],
   "egress": [
     {
-      "target_spiffe_id": "spiffe://rete-lovers/vertex/beta/cluster",
+      "target_spiffe_id": "spiffe://rete-lovers/vertex/beta/rete",
       "via": { "udp_peer": "5.6.7.8:4433" },
-      "allow": ["spiffe://rete-lovers/vertex/alpha/cluster"]
+      "allow": ["spiffe://rete-lovers/vertex/alpha/rete"]
     },
     {
-      "target_spiffe_id": "spiffe://rete-lovers/vertex/gamma/cluster",
+      "target_spiffe_id": "spiffe://rete-lovers/vertex/gamma/rete",
       "via": { "udp_peer": "10.0.0.7:4433" },
-      "allow": ["spiffe://rete-lovers/vertex/alpha/cluster"]
+      "allow": ["spiffe://rete-lovers/vertex/alpha/rete"]
     }
   ]
 }
@@ -387,14 +387,14 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
 
 Things worth pointing out about this shape:
 
-- **The cert+key are link-flor's loaded material, not its identity.** `vertex/alpha/cluster` is a workload entry that link-flor serves and acts on behalf of. From link-flor's perspective it's just a service name with a bidirectional FlorIO channel — link-flor has no idea what a cluster-vertex semantically is. The structural mirror to C0 flor holding alice's cert+key is exact.
-- **No top-level `florio` block.** FlorIO sockets are properties of individual workloads' `io` entries, derived from the vertex name. The socket path `/run/flor/<cluster>/vertices/<vertex-name>.sock` is a compiler convention, not a config field.
-- **`ingress`/`egress` work just like C0's.** The link layer has the same access-control shape as the cluster layer; flor doesn't distinguish which mTLS layer it's enforcing.
-- **No forwarding table, no labels, no paths.** Multi-hop forwarding lives entirely in cluster-flor.
+- **The cert+key are link-flor's loaded material, not its identity.** `vertex/alpha/rete` is a workload entry that link-flor serves and acts on behalf of. From link-flor's perspective it's just a service name with a bidirectional FlorIO channel — link-flor has no idea what a mesh-vertex semantically is. The structural mirror to C0 flor holding alice's cert+key is exact.
+- **No top-level `florio` block.** FlorIO sockets are properties of individual workloads' `io` entries, derived from the vertex name. The socket path `/run/flor/<rete>/vertices/<vertex-name>.sock` is a compiler convention, not a config field.
+- **`ingress`/`egress` work just like C0's.** The link layer has the same access-control shape as the mesh layer; flor doesn't distinguish which mTLS layer it's enforcing.
+- **No forwarding table, no labels, no paths.** Multi-hop forwarding lives entirely in mesh-flor.
 
-Mixed-topology case (publishing a regular service in link-flor for private-network use): the service's workload entry simply moves from `cluster.json` into the link-vertex's config file (`public.json` in the standard topology), with no schema change. The compiler decides placement based on the service's `via:` field.
+Mixed-topology case (publishing a regular service in link-flor for private-network use): the service's workload entry simply moves from `rete.json` into the link-vertex's config file (`public.json` in the standard topology), with no schema change. The compiler decides placement based on the service's `via:` field.
 
-### `cluster.json` payload
+### `rete.json` payload
 
 ```json
 {
@@ -411,11 +411,11 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
       "type": "enum",
       "peers": [
         {
-          "spiffe_id": "spiffe://rete-lovers/vertex/beta/cluster",
+          "spiffe_id": "spiffe://rete-lovers/vertex/beta/rete",
           "via": { "adapter": "via-link" }
         },
         {
-          "spiffe_id": "spiffe://rete-lovers/vertex/gamma/cluster",
+          "spiffe_id": "spiffe://rete-lovers/vertex/gamma/rete",
           "via": { "adapter": "internal", "udp_peer": "10.0.0.7:5544" }
         }
       ]
@@ -447,7 +447,7 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
   "egress": [
     {
       "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
-      "via": { "first_hop": "spiffe://rete-lovers/vertex/beta/cluster" },
+      "via": { "first_hop": "spiffe://rete-lovers/vertex/beta/rete" },
       "allow": ["spiffe://rete-lovers/service/api"]
     }
   ],
@@ -460,7 +460,7 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
 }
 ```
 
-The agent's principal — `node/alpha` — appears as a workload here so the agent can dial config-server through cluster-flor like any other principal. This is the mechanism that makes the agent's bootstrap chain work: agent → cluster-flor's SOCKS5 → mTLS to config-server. It's also why the agent doesn't need to hold any cert+key itself.
+The agent's principal — `node/alpha` — appears as a workload here so the agent can dial config-server through mesh-flor like any other principal. This is the mechanism that makes the agent's bootstrap chain work: agent → mesh-flor's SOCKS5 → mTLS to config-server. It's also why the agent doesn't need to hold any cert+key itself.
 
 `connection_manager.adapters[]` is a **list**, one entry per active link type, each with a stable `name` that per-peer `via.adapter` fields reference. The example above shows alpha running both adapters: `via-link` (FlorIO down to link-flor for QUIC peerings) and `internal` (a bare UDP socket for the trusted-LAN peering with gamma). A node with only QUIC peerings would have just the `florio` adapter; a node with only UDP peerings would have just the `udp` adapter and **no link-flor at all**. Other adapter values (`wg` and similar for third-party links) are foreshadowed in [Scope > Link Protocols](../scope#link-protocols) and [Data Plane](../data-plane/), not implemented in C1.
 
@@ -481,7 +481,7 @@ Per-allow forwarding labels (`local_label`) and the `forwarding_table` itself ar
   "ca_cert_path": "ca.crt",
   "vertices": [
     { "name": "public",  "config": "vertices/public.json"  },
-    { "name": "cluster", "config": "vertices/cluster.json" }
+    { "name": "rete", "config": "vertices/rete.json" }
   ],
   "control_plane": {
     "principal":     "spiffe://rete-lovers/node/alpha",
@@ -490,9 +490,9 @@ Per-allow forwarding labels (`local_label`) and the `forwarding_table` itself ar
 }
 ```
 
-The agent supervises every vertex listed under `vertices`. To reach `config-server`, the agent acts as the principal `node/alpha`; it finds the SOCKS5 port for that principal by scanning the referenced vertex configs for a matching workload's `inbound` channel. Paths in the artifact (`ca_cert_path`, `cert_path`, `priv_path`) are scope-relative and resolved by the agent against the cluster install root (`~/.flor/clusters/<scope>/`) at startup — see [C0's compile step](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step) for the convention.
+The agent supervises every vertex listed under `vertices`. To reach `config-server`, the agent acts as the principal `node/alpha`; it finds the SOCKS5 port for that principal by scanning the referenced vertex configs for a matching workload's `inbound` channel. Paths in the artifact (`ca_cert_path`, `cert_path`, `priv_path`) are scope-relative and resolved by the agent against the rete install root (`~/.flor/retes/<scope>/`) at startup — see [C0's compile step](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step) for the convention.
 
-The number and shape of vertices is fully driven by `vertices`. The standard mixed-topology has two (link + cluster); a node with only `udp`-type links runs cluster-flor alone (one vertex, no link-flor); an enrollment-bootstrap config (single-vertex, direct UDP to mgmt01, just enough for the first sync) is also one. The agent doesn't care — it enumerates whatever it's told to.
+The number and shape of vertices is fully driven by `vertices`. The standard mixed-topology has two (link + rete); a node with only `udp`-type links runs mesh-flor alone (one vertex, no link-flor); an enrollment-bootstrap config (single-vertex, direct UDP to mgmt01, just enough for the first sync) is also one. The agent doesn't care — it enumerates whatever it's told to.
 
 Label allocation, forwarding tables, and the per-allow label bindings are ctrl-plane state, not mgmt — see [Ctrl Plane](../ctrl-plane/) for that machinery.
 
@@ -502,44 +502,44 @@ C1 adds two new principal kinds on top of C0's users, services, and nodes:
 
 | Kind | In C0 | In C1 | SPIFFE ID | Used for |
 |---|---|---|---|---|
-| Cluster vertex | No | **Yes** | `spiffe://<cluster>/vertex/<node>/cluster` | Hop-by-hop link-layer mTLS (one per node per cluster, named `cluster` by convention) |
-| Control plane | Reserved | **Yes** | `spiffe://<cluster>/control-plane/<name>` | Signing authority for ctrl artifacts (one or more per cluster; in C1 a single operator-held key) |
+| Mesh-vertex | No | **Yes** | `spiffe://<rete>/vertex/<node>/rete` | Hop-by-hop link-layer mTLS (one per node per rete, named `rete` by convention) |
+| Control plane | Reserved | **Yes** | `spiffe://<rete>/control-plane/<name>` | Signing authority for ctrl artifacts (one or more per rete; in C1 a single operator-held key) |
 
 A useful "owned-by / held-by" view across all four principal kinds:
 
 | Kind | Principal (identity owner) | Cert+key held by (the vertex on its behalf) |
 |---|---|---|
-| node | the node (the host as cluster member) | cluster-flor (via the `node/<node>` workload entry there) |
-| cluster-vertex | cluster-flor (qua principal in the link layer) | link-flor |
-| user | the human (their workload) | cluster-flor |
-| service | the service workload | cluster-flor (or link-flor in mixed-topology setups) |
+| node | the node (the host as rete member) | mesh-flor (via the `node/<node>` workload entry there) |
+| mesh-vertex | mesh-flor (qua principal in the link layer) | link-flor |
+| user | the human (their workload) | mesh-flor |
+| service | the service workload | mesh-flor (or link-flor in mixed-topology setups) |
 
-A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../overview/high-level-design#vertex). Cluster-flor does the cluster-layer mTLS for its workloads; link-flor does the link-layer mTLS for cluster-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
+A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../overview/high-level-design#vertex). Mesh-flor does the mesh-layer mTLS for its workloads; link-flor does the link-layer mTLS for mesh-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
 
-The `node/<name>` principal is the node's identity *within a specific cluster's trust domain* — the cluster's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. cluster-flor holds the cert+key and runs mTLS for `node/<name>`, exactly as it does for user and service principals. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach config-server through cluster-flor's SOCKS5 listener.
+The `node/<name>` principal is the node's identity *within a specific rete's trust domain* — the rete's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. Mesh-flor holds the cert+key and runs mTLS for `node/<name>`, exactly as it does for user and service principals. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach config-server through mesh-flor's SOCKS5 listener.
 
-Node-identity vs. cluster-vertex-identity aren't merged because they serve different layers and are held by different vertices — `node/<name>` is for control-plane traffic (agent ↔ config-server), `vertex/<node>/cluster` is for hop-by-hop mesh transit mTLS. A node joining multiple Florete clusters has one `node/<name>` principal per cluster (in each cluster's own trust domain) and one flor-agent process per cluster acting on its behalf.
+Node-identity vs. mesh-vertex-identity aren't merged because they serve different layers and are held by different vertices — `node/<name>` is for control-plane traffic (agent ↔ config-server), `vertex/<node>/rete` is for hop-by-hop mesh transit mTLS. A node joining multiple Florete retes has one `node/<name>` principal per rete (in each rete's own trust domain) and one flor-agent process per rete acting on its behalf.
 
-Enrollment flow is unchanged: `florctl issue-bundle --node alpha --cluster <config-server-url>` packages alpha's node identity *and* alpha's cluster-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/cluster` principal for every node in C1 (derived from the cluster mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the cluster trust domain.
+Enrollment flow is unchanged: `florctl issue-bundle --node alpha --rete <config-server-url>` packages alpha's node identity *and* alpha's mesh-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/rete` principal for every node in C1 (derived from the rete mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the rete trust domain.
 
 CP signing identities are issued separately on the operator's own machine (`florctl ca sign --kind control-plane --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_ctrl_signers` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
 
-The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the cluster currently runs (which may be richer or simpler than what was bundled).
+The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the rete currently runs (which may be richer or simpler than what was bundled).
 
-## Multi-cluster on a single node
+## Multi-rete on a single node
 
-The foundation — cluster scope, per-scope install root, one agent per cluster, scope-relative artifact paths, local listen-address ownership — is established in [C0's multi-cluster section](../../c0-tended-tunnels/mgmt-plane/#multi-cluster-on-a-single-node). C1 introduces two additional concerns specific to the mesh layer.
+The foundation — rete scope, per-scope install root, one agent per rete, scope-relative artifact paths, local listen-address ownership — is established in [C0's multi-rete section](../../c0-tended-tunnels/mgmt-plane/#multi-rete-on-a-single-node). C1 introduces two additional concerns specific to the mesh layer.
 
-**FlorIO socket path.** The socket between cluster-flor and a link-flor vertex is at `/run/flor/<cluster-name>/vertices/<link-vertex-name>.sock`. Both segments are scope-distinct by construction: `<cluster-name>` separates clusters, and `<vertex-name>` separates vertices within a cluster. Two clusters' stacks on the same host use different socket paths as long as their cluster names differ — which they will unless two independent operators happen to share a name, in which case the node operator overrides the local scope name via CLI (`flor enroll <bundle> --as <scope>`).
+**FlorIO socket path.** The socket between mesh-flor and a link-flor vertex is at `/run/flor/<rete-name>/vertices/<link-vertex-name>.sock`. Both segments are scope-distinct by construction: `<rete-name>` separates retes, and `<vertex-name>` separates vertices within a rete. Two retes' stacks on the same host use different socket paths as long as their rete names differ — which they will unless two independent operators happen to share a name, in which case the node operator overrides the local scope name via CLI (`flor enroll <bundle> --as <scope>`).
 
-**UDP connection-manager listeners and external addresses.** Cluster-flor's bare-UDP adapter (`connection_manager.adapters[].listen`) and link-flor's QUIC-link UDP listener only appear on server nodes — nodes with a declared external `IP:port` in `nodes.yaml`. Server nodes are by definition admin-managed. Two clusters binding the same external `IP:port` on the same host must be coordinated by the IT admin responsible for that host; this is the same constraint as any two services sharing a server. User devices have no fixed UDP listen address and are unaffected. B1+ direction: node-side port-availability advertisement, so the cluster's mgmt-plane knows which external ports the node has available rather than relying on operator coordination (see [C0 multi-cluster section](../../c0-tended-tunnels/mgmt-plane/#multi-cluster-on-a-single-node)).
+**UDP connection-manager listeners and external addresses.** Mesh-flor's bare-UDP adapter (`connection_manager.adapters[].listen`) and link-flor's QUIC-link UDP listener only appear on server nodes — nodes with a declared external `IP:port` in `nodes.yaml`. Server nodes are by definition admin-managed. Two retes binding the same external `IP:port` on the same host must be coordinated by the IT admin responsible for that host; this is the same constraint as any two services sharing a server. User devices have no fixed UDP listen address and are unaffected. B1+ direction: node-side port-availability advertisement, so the rete's mgmt-plane knows which external ports the node has available rather than relying on operator coordination (see [C0 multi-rete section](../../c0-tended-tunnels/mgmt-plane/#multi-rete-on-a-single-node)).
 
 ## Explicitly deferred (in addition to C0's list)
 
 - `florctl compile --derive-paths` — declarative path derivation from topology + access. Ships post-C1 once the topology model is stable.
 - Priority / fallback paths.
 - 3rd-party connection-manager adapters (WireGuard, VLESS, …) and the identity-projection rules they need. Architectural placeholder in [Scope > Link Protocols](../scope#link-protocols) and [Data Plane](../data-plane/); no implementation in C1, but the multi-adapter `connection_manager.adapters[]` shape is exercised by the QUIC + UDP pair so adding a third adapter type is purely additive.
-- Mixed-vertex publication (services in link-flor instead of cluster-flor). Now a corner case rather than a planned optimisation, since UDP links cover the private-network performance story without splitting publication. Schema still allows it; YAML surface and validator rules deferred indefinitely.
+- Mixed-vertex publication (services in link-flor instead of mesh-flor). Now a corner case rather than a planned optimisation, since UDP links cover the private-network performance story without splitting publication. Schema still allows it; YAML surface and validator rules deferred indefinitely.
 
 ## Evolution
 
@@ -547,21 +547,21 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 
 ## Scope checklist (delta over C0)
 
-- [ ] YAML schemas for `links.yaml` (incl. `type: quic | udp`) and `paths.yaml`; per-vertex FlorIO socket convention (`/run/flor/<cluster>/vertices/<vertex-name>.sock`) baked into compiler rather than declared in `cluster.yaml`
-- [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and a single `vertex.json` shape used for both link-flor and cluster-flor (`kind: vertex`); `ingress.allow`/`egress.allow` are flat SPIFFE-ID lists; `allowed_peers` (and `allowed_links`/`allowed_paths` in the source YAMLs) use the typed-rule list shape
-- [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, vertices/*.json}` (vertices/ contains `cluster.json` always; a link-vertex file — named after its `name:` field in `nodes.yaml` — for each `quic`-type link-vertex on the node)
-- [ ] Two new principal kinds wired through issuance, compile, and runtime: `vertex/<node>/<name>` (cluster mesh-vertex, named `cluster` by convention) and `control-plane/<name>`
+- [ ] YAML schemas for `links.yaml` (incl. `type: quic | udp`) and `paths.yaml`; per-vertex FlorIO socket convention (`/run/flor/<rete>/vertices/<vertex-name>.sock`) baked into compiler rather than declared in `rete.yaml`
+- [ ] Compiled-artifact schemas: `agent.json` (`kind: agent`) and a single `vertex.json` shape used for both link-flor and mesh-flor (`kind: vertex`); `ingress.allow`/`egress.allow` are flat SPIFFE-ID lists; `allowed_peers` (and `allowed_links`/`allowed_paths` in the source YAMLs) use the typed-rule list shape
+- [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, vertices/*.json}` (vertices/ contains `rete.json` always; a link-vertex file — named after its `name:` field in `nodes.yaml` — for each `quic`-type link-vertex on the node)
+- [ ] Two new principal kinds wired through issuance, compile, and runtime: `vertex/<node>/<name>` (rete mesh-vertex, named `rete` by convention) and `control-plane/<name>`
 - [ ] `via:` and `agent_via:` validation: required in C1 (multiple vertices per node), compiler resolves to target vertex for workload placement
-- [ ] `authorized_ctrl_signers` field in mgmt cluster.json carrying the cluster's CP signing pubkeys
-- [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in cluster-flor) implementations, plus the `allowed_peers` typed-rule bound declaring which peer cluster-vertices are reachable through which adapter
+- [ ] `authorized_ctrl_signers` field in mgmt rete.json carrying the rete's CP signing pubkeys
+- [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in mesh-flor) implementations, plus the `allowed_peers` typed-rule bound declaring which peer mesh-vertices are reachable through which adapter
 - [ ] Multi-hop forwarder operates uniformly across mixed adapter types
 - [ ] `florctl compile` emitting the per-node mgmt layout (omitting the link-vertex file when no QUIC-type link-vertices are declared). The ctrl subtree is produced by the same `florctl compile` invocation but documented in [Ctrl Plane](../ctrl-plane/).
 - [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, principal role coherence)
-- [ ] `florctl issue-bundle --node <n>` includes the node's cluster-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
+- [ ] `florctl issue-bundle --node <n>` includes the node's mesh-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
 - [ ] `florctl ca sign --kind control-plane --name <name>` issues a CP signing keypair on operator hardware
 - [ ] `flor vertex run --config <vertex.json>` daemon entry point
 - [ ] `flor agent run` supervises vertex instances (mechanism — direct fork, systemd, or future local runtime — left open in C1); fetches mgmt and ctrl artifacts as separate streams from the config-server
-- [ ] Example `my-cluster/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
+- [ ] Example `my-rete/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
 
 ## Reasoning
 
@@ -570,14 +570,14 @@ Captured justifications for the C1-specific additions. See the [C0 reasoning](..
 <Accordions type="single">
   <Accordion title="Reasons behind the C1 additions">
 
-### Why "kind: mesh" rather than "kind: cluster"
+### Why "kind: mesh" rather than "kind: rete"
 
 Two axes are worth keeping separate when classifying a vertex:
 
 - **Kind** (structural — what the code does): does it operate over external medium and terminate a transport on the wire (link), or does it operate over Florete-internal medium and do hop-by-hop label-forwarding (mesh)? This is a property of the vertex implementation.
-- **Role** (configuration — where it sits in the architecture): cluster-vertex, interrete-vertex, … . This is an assignment made at deploy time when the operator wires `uses:` and the per-cluster scope.
+- **Role/name** (configuration — where it sits in the architecture): the `rete` mesh-vertex (rete-spanning), the `interrete` mesh-vertex, … . This is an assignment made at deploy time via the vertex `name`, when the operator wires `uses:` and the per-rete scope.
 
-C0's design notes used "cluster-vertex" as if it were a kind, but it's really a role. The interrete-vertex (a future upper layer between clusters) shares the structural behavior with the cluster-vertex completely — same code, same forwarding, same recursion. They differ only in which scope they participate in and what their peers are. Naming the kind `mesh` (after the defining behavior — multi-hop label-forwarded mesh transit) keeps the structural axis crisp and lets new roles plug in as configuration rather than as new kinds.
+C0's design notes used "mesh-vertex" loosely, as if it named a single thing; precisely, `mesh` is the *kind* and `rete` / `interrete` are *names* of mesh-vertices playing different roles. The interrete-vertex (a future upper layer between retes) shares the structural behavior with the `rete` mesh-vertex completely — same code, same forwarding, same recursion. They differ only in which scope they participate in and what their peers are. Naming the kind `mesh` (after the defining behavior — multi-hop label-forwarded mesh transit) rather than after a role-name keeps the structural axis crisp and lets new roles plug in as configuration rather than as new kinds.
 
 This is also what makes the recursion property in `type` work cleanly: a `kind: mesh, type: quic` vertex exposes a QUIC interface upward, indistinguishable to consumers from a `kind: link, type: quic` wire-terminating vertex. Recursion is the consequence; mesh is the structure.
 
@@ -585,7 +585,7 @@ This is also what makes the recursion property in `type` work cleanly: a `kind: 
 
 Today's C1 graphs are trees (mesh root, link leaves) and the obvious mental model is "vertices form a DAG — `uses:` is acyclic." Worth resisting that simplification at the schema level.
 
-A concrete future case that breaks acyclicity: a **uni-directional link-vertex**. Imagine a satellite-downlink-style link that physically only carries packets one way. The cluster-vertex above uses this link-vertex for the forward direction. The link-vertex itself, having no return channel, needs the cluster layer to obtain its backward direction — so the link-vertex `uses:` the cluster-vertex too. Result: a 2-cycle (link ↔ mesh), each using the other for a different purpose. Cluster forwards data through link going out; link hands return signaling back to cluster going in.
+A concrete future case that breaks acyclicity: a **uni-directional link-vertex**. Imagine a satellite-downlink-style link that physically only carries packets one way. The mesh-vertex above uses this link-vertex for the forward direction. The link-vertex itself, having no return channel, needs the mesh layer to obtain its backward direction — so the link-vertex `uses:` the mesh-vertex too. Result: a 2-cycle (link ↔ mesh), each using the other for a different purpose. Rete forwards data through link going out; link hands return signaling back to rete going in.
 
 Other shapes are imaginable (radio-relay rings, asymmetric tunnels with crypto on one side only), and the unifying property is "directed graph, cycles allowed." Pinning to DAG at the schema level would close off these designs unnecessarily.
 
@@ -593,27 +593,27 @@ C1 does not implement cycles — the validator can require acyclicity *in C1* as
 
 ### Why the agent is separated from the vertex
 
-C0's single flor process did three jobs at once: it ran the data-plane vertex, it pulled state from config-server, and it handled node-level control-plane traffic. Conflating these works for one process per node but breaks the moment there's more than one — *which* vertex talks to config-server? With a recursive stack the answer ("just one of them, by config") becomes a design question; cleaner to give the node a first-class cluster-member identity (`node/<node>`) with the agent as the dedicated workload that acts on its behalf, and to treat every vertex as a pure data-plane component.
+C0's single flor process did three jobs at once: it ran the data-plane vertex, it pulled state from config-server, and it handled node-level control-plane traffic. Conflating these works for one process per node but breaks the moment there's more than one — *which* vertex talks to config-server? With a recursive stack the answer ("just one of them, by config") becomes a design question; cleaner to give the node a first-class rete-member identity (`node/<node>`) with the agent as the dedicated workload that acts on its behalf, and to treat every vertex as a pure data-plane component.
 
-The agent doesn't *hold* the node cert+key — cluster-flor does, exactly as it holds user and service identities. The node is the principal; the agent is the workload that wields that identity (fetching configs, reaching config-server via cluster-flor's SOCKS5 listener), exactly as alice's process acts on alice's behalf. The principal/vertex distinction is the same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
+The agent doesn't *hold* the node cert+key — mesh-flor does, exactly as it holds user and service identities. The node is the principal; the agent is the workload that wields that identity (fetching configs, reaching config-server via mesh-flor's SOCKS5 listener), exactly as alice's process acts on alice's behalf. The principal/vertex distinction is the same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
 
 This also maps to the HLD's [Execution Plane Agent concept](../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and in C1 the workloads it supervises are flor vertex processes plus (eventually) user and service workloads.
 
 How exactly the agent launches vertex processes — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C1. The runtime API stays simple: a vertex starts when given a config; the agent makes that happen by whatever means the platform offers. The shape resembles kubelet's relationship to its container runtime; the analogue here is intentional but the WRI design is deferred.
 
-### Why cluster-flor's identity lives in link-flor's config
+### Why mesh-flor's identity lives in link-flor's config
 
-Cluster-flor publishes itself as a service in the link layer — it *is* the cluster-vertex principal there. By the recursive principle, that means link-flor (its serving vertex at the link layer) holds the cluster-vertex cert+key and runs the QUIC handshake with peer cluster-vertices on cluster-flor's behalf.
+Mesh-flor publishes itself as a service in the link layer — it *is* the mesh-vertex principal there. By the recursive principle, that means link-flor (its serving vertex at the link layer) holds the mesh-vertex cert+key and runs the QUIC handshake with peer mesh-vertices on mesh-flor's behalf.
 
-The shape is identical to C0 flor holding alice's cert+key: alice owns the identity, flor holds the material and acts on alice's behalf. We never confuse alice with flor; we shouldn't confuse cluster-flor with link-flor either. Both pairings are instances of the same principal/vertex relationship, just at different layers.
+The shape is identical to C0 flor holding alice's cert+key: alice owns the identity, flor holds the material and acts on alice's behalf. We never confuse alice with flor; we shouldn't confuse mesh-flor with link-flor either. Both pairings are instances of the same principal/vertex relationship, just at different layers.
 
-A consequence worth being explicit about: link-flor's config is **vocabulary-neutral**. It speaks of `workloads`, `ingress`/`egress`, SPIFFE-ID names, and FlorIO sockets — never of "cluster vertex". From link-flor's PoV, `vertex/alpha/cluster` is just a workload it serves with bidirectional FlorIO. Mixing in a regular service there (a private-network optimisation) is a one-line YAML change with no schema impact.
+A consequence worth being explicit about: link-flor's config is **vocabulary-neutral**. It speaks of `workloads`, `ingress`/`egress`, SPIFFE-ID names, and FlorIO sockets — never of "mesh-vertex". From link-flor's PoV, `vertex/alpha/rete` is just a workload it serves with bidirectional FlorIO. Mixing in a regular service there (a private-network optimisation) is a one-line YAML change with no schema impact.
 
 Publication is **static-config-only** in C1: link-flor's local services are baked into its compiled JSON, not announced dynamically over FlorIO. This is a deliberate simplification — keeps everything publishable under the signed-config model and avoids designing the Publish side of FlorIO before we need it. Connect remains the only dynamic FlorIO verb.
 
 ### Why one `workloads` list and an `io[]` direction
 
-C0 had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated principal-vs-target with workload-kind; C1's cluster-vertex case broke it (a cluster-vertex is both, on a single FlorIO channel).
+C0 had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated principal-vs-target with workload-kind; C1's mesh-vertex case broke it (a mesh-vertex is both, on a single FlorIO channel).
 
 Unifying to `workloads[].io[].direction` resolves the asymmetry: a workload is a principal if it has at least one `inbound` channel, a target if it has at least one `outbound` channel, both if both. FlorIO becomes a `bidirectional` channel — one socket, both directions, no mechanism duplication. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
 
@@ -627,9 +627,9 @@ Operator YAML doesn't expose this fan-out. The compiler is the only thing that t
 
 A single-link-type C1 forces a bad tradeoff. QUIC-only is right for Internet-facing peerings (NAT traversal, metadata-resistance, mTLS at the link layer) but burns CPU and adds a second crypto layer for peerings that already cross only trusted private network — datacenter racks, office LANs, on-vehicle Ethernet. UDP-only would leave the Internet-facing case unsolved.
 
-The clean answer is to make link type a per-link choice, with both adapters present in cluster-flor's connection manager from the start. From the workload's PoV nothing changes — the mesh looks like one mesh, services are published once in cluster-flor regardless of which underlay each hop uses. From cluster-flor's PoV the multi-hop forwarder takes a peer cluster-vertex SPIFFE ID, looks it up in `allowed_peers` for the adapter selection, and dials through the right adapter; the forwarder doesn't know or care whether the hop is QUIC-via-link-flor or bare-UDP-direct.
+The clean answer is to make link type a per-link choice, with both adapters present in mesh-flor's connection manager from the start. From the workload's PoV nothing changes — the mesh looks like one mesh, services are published once in mesh-flor regardless of which underlay each hop uses. From mesh-flor's PoV the multi-hop forwarder takes a peer mesh-vertex SPIFFE ID, looks it up in `allowed_peers` for the adapter selection, and dials through the right adapter; the forwarder doesn't know or care whether the hop is QUIC-via-link-flor or bare-UDP-direct.
 
-A consequence worth being explicit about: bare UDP links **don't need a link-flor process**. A node with only UDP-type peerings runs cluster-flor alone, with a `udp` adapter directly bound to a UDP socket. This is also why publication should always go through cluster-flor in the standard topology — using link-flor publication for "private network optimisation" was the wrong solve; the right solve is a UDP link, which keeps the recursive principle intact and the mesh story uniform.
+A consequence worth being explicit about: bare UDP links **don't need a link-flor process**. A node with only UDP-type peerings runs mesh-flor alone, with a `udp` adapter directly bound to a UDP socket. This is also why publication should always go through mesh-flor in the standard topology — using link-flor publication for "private network optimisation" was the wrong solve; the right solve is a UDP link, which keeps the recursive principle intact and the mesh story uniform.
 
 Implementing both adapters from C1 also exercises the multi-adapter shape of `connection_manager.adapters[]` in production. Adding a third adapter (WireGuard, VLESS, …) later is then purely additive — no reshape of the schema, no migration of existing configs.
 
@@ -639,15 +639,15 @@ Why bare UDP and not "QUIC without crypto"? Because the simplest possible thing 
 
 Identity should answer "who is this principal?", not "what is it configured to do?" Other principals in our trust domain follow this rule: alice's `user/alice` SPIFFE ID doesn't carry her role (`developer`); api's `service/api` doesn't carry its role (`api-backend`). Roles, groups, intent — these are configuration that resolves to ACLs at compile time, not facets of identity.
 
-An earlier iteration encoded role as a SPIFFE path segment (`vertex/cluster/<node>`). That broke the identity/configuration separation other principals respect. Switching to `vertex/<node>/<name>` fixes the leak: node-scoping is structural (a vertex literally lives on a node), name is the local identifier within the node, and role/intent — when needed — lives in YAML metadata (deferred until a feature actually demands it).
+An earlier iteration encoded role as a SPIFFE path segment (`vertex/rete/<node>`). That broke the identity/configuration separation other principals respect. Switching to `vertex/<node>/<name>` fixes the leak: node-scoping is structural (a vertex literally lives on a node), name is the local identifier within the node, and role/intent — when needed — lives in YAML metadata (deferred until a feature actually demands it).
 
 This also mirrors `service/<node>/<service>` exactly. Mesh-vertices are, conceptually, services — they provide IPC for the mesh to function. Treating their SPIFFE form the same way as node-scoped services keeps the trust-domain naming uniform.
 
-Convention names (`cluster` for the cluster mesh-vertex; `interrete` for the B1+ interrete-mesh-vertex) are operator habits, not validator rules — same as `<service>` names under `service/<node>/`.
+Convention names (`rete` for the rete mesh-vertex; `interrete` for the B1+ interrete mesh-vertex) are operator habits, not validator rules — same as `<service>` names under `service/<node>/`.
 
 ### Why workload binding to vertex is explicit
 
-C0 has one vertex per node; the question "which vertex hosts this workload?" had a single answer and could be implicit. C1 has multiple vertices per node, and the question genuinely admits more than one answer (workloads can be hosted on the cluster mesh-vertex in the standard topology, or on a link-vertex in mixed-topology setups, or — in B1+ — on different mesh-vertices for different scopes).
+C0 has one vertex per node; the question "which vertex hosts this workload?" had a single answer and could be implicit. C1 has multiple vertices per node, and the question genuinely admits more than one answer (workloads can be hosted on the rete mesh-vertex in the standard topology, or on a link-vertex in mixed-topology setups, or — in B1+ — on different mesh-vertices for different scopes).
 
 Explicit `via:` in services.yaml and users.yaml forces the operator to express the choice rather than relying on a derivation rule the compiler picks unilaterally. The default-when-unique rule (one rule, applied across all milestones) keeps C0 ergonomic without weakening C1's correctness story.
 
@@ -667,13 +667,13 @@ The pattern of "discriminator-tagged bound types" is proven elsewhere — Kubern
 
 The obvious mental model is that a path is a sequence of nodes. It's wrong in two ways.
 
-**Paths are between mesh-vertices.** The thing doing the multi-hop forwarding in Florete is cluster-flor — the `kind: mesh` vertex on each node. Link-flor (the `kind: link` vertex) terminates the wire transport, but it has no forwarding logic; it hands traffic up to cluster-flor over FlorIO. A path, then, is a sequence of cluster-flor instances on successive nodes — a sequence of mesh-vertices, not nodes. In C1 this distinction is invisible because every node has exactly one mesh-vertex (named `cluster` by convention), making node and mesh-vertex 1:1. But the identity of the thing being named is still the mesh-vertex, and the notation must say so.
+**Paths are between mesh-vertices.** The thing doing the multi-hop forwarding in Florete is mesh-flor — the `kind: mesh` vertex on each node. Link-flor (the `kind: link` vertex) terminates the wire transport, but it has no forwarding logic; it hands traffic up to mesh-flor over FlorIO. A path, then, is a sequence of mesh-flor instances on successive nodes — a sequence of mesh-vertices, not nodes. In C1 this distinction is invisible because every node has exactly one mesh-vertex (named `rete` by convention), making node and mesh-vertex 1:1. But the identity of the thing being named is still the mesh-vertex, and the notation must say so.
 
-Why it matters in B1+: a node could host both a `cluster` mesh-vertex (for the local cluster) and an `interrete` mesh-vertex (for inter-cluster forwarding). A path that naively references nodes would be ambiguous about which mesh-vertex to traverse at that node — the two vertices serve different scopes and the path shouldn't mix them. Naming mesh-vertices directly makes the scope unambiguous and leaves no room for the compiler to guess wrong.
+Why it matters in B1+: a node could host both a `rete` mesh-vertex (for the local rete) and an `interrete` mesh-vertex (for inter-rete forwarding). A path that naively references nodes would be ambiguous about which mesh-vertex to traverse at that node — the two vertices serve different scopes and the path shouldn't mix them. Naming mesh-vertices directly makes the scope unambiguous and leaves no room for the compiler to guess wrong.
 
-**The hop notation also carries link specification.** A path hop from mesh-vertex A to mesh-vertex B is realized by a specific link declared in `allowed_links`. In C1 there is usually only one link between any given pair of mesh-vertices, so the link derives automatically. But "usually" is not "always": two servers could have two separate Ethernet connections between them, each configured as a distinct `type: udp` link-vertex pair — both feeding into the same cluster-vertex pair. In that case the path must say which physical link the route should use, because the choice affects latency, capacity, and which physical adapter carries the traffic.
+**The hop notation also carries link specification.** A path hop from mesh-vertex A to mesh-vertex B is realized by a specific link declared in `allowed_links`. In C1 there is usually only one link between any given pair of mesh-vertices, so the link derives automatically. But "usually" is not "always": two servers could have two separate Ethernet connections between them, each configured as a distinct `type: udp` link-vertex pair — both feeding into the same mesh-vertex pair. In that case the path must say which physical link the route should use, because the choice affects latency, capacity, and which physical adapter carries the traffic.
 
-The `via:` field on a hop addresses exactly this: it names the source-side link-vertex for that hop. It is *not* triggered by a node having multiple link-vertices in general — having both a `public` QUIC link-vertex and an `internal` UDP link-vertex on alpha does not require `via:` on the alpha→beta hop, as long as only one of them participates in the alpha/cluster ↔ beta/cluster link. `via:` is only needed when the same mesh-vertex pair is connected by more than one declared link.
+The `via:` field on a hop addresses exactly this: it names the source-side link-vertex for that hop. It is *not* triggered by a node having multiple link-vertices in general — having both a `public` QUIC link-vertex and an `internal` UDP link-vertex on alpha does not require `via:` on the alpha→beta hop, as long as only one of them participates in the alpha/rete ↔ beta/rete link. `via:` is only needed when the same mesh-vertex pair is connected by more than one declared link.
 
 Both fields (`vertex:` for mesh-vertex disambiguation, `via:` for link disambiguation) apply the same default-when-unique rule used everywhere else in the design: omit when unambiguous, specify when not. In C1 `vertex:` is always omittable. `via:` is omittable unless the operator explicitly provisions redundant physical links between the same pair of nodes — a deliberate, unusual topology choice. Both fields are reserved in the schema so B1+ can express complicated situations without a format migration.
 
