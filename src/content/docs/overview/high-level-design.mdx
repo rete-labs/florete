@@ -3,7 +3,13 @@ title: High-Level Design
 description: How the Florete vision is achieved
 ---
 
-Florete technology is built of two intertwinted parts: the Florenetes orchestrator and the Florete network. The orchestrator runs over the Florete network, which provides a service mesh abstraction. The network's control plane is itself a distributed app managed by the orchestrator. Inter-cluster networking is implemented by Florete network as well, extended beyond in-cluster service mesh.
+Florete technology is built of two intertwinted parts: the Florenetes orchestrator and the Florete network. The orchestrator runs over the Florete network, which provides a service mesh abstraction. The network's control plane is itself a distributed app managed by some orchestrator. Inter-cluster networking is implemented by Florete network as well, extended beyond in-cluster service mesh.
+
+<Callout title="Rete, and its (future) relationship to clusters">
+We name a single Florete network's trust domain — one CA, one identity/principal namespace, one boundary within which names resolve and peers authenticate — a [rete](#rete); the `.rete` hostname TLD names it. Where this document says "in-cluster service mesh" or "cluster layer", read the *network* boundary as a rete.
+
+How a rete maps to a **Florenetes cluster** (the orchestrator unit, [below](#florenetes-design)) is **not yet designed**. It may be one-to-one — or, by analogy with an Istio mesh spanning several Kubernetes clusters, a single rete may **span multiple clusters**. The abstract model of Florete is independent of that mapping. One consequence to keep in mind as the design firms up: **interrete** is precisely *inter-rete* (between trust domains), which — once a rete can span clusters — is distinct from inter-cluster connectivity *within* a single rete. We keep this open until the cluster concept is designed.
+</Callout>
 
 ## Florete Network Design
 
@@ -21,6 +27,12 @@ As we are building a working technology, not a theory, we'd rather follow common
 
 [^rina]: [RINA](https://en.wikipedia.org/wiki/Recursive_Internetwork_Architecture), the only post-IP architecture that is active, but so far academic-only.
 [^smesh]: [Service mesh](https://en.wikipedia.org/wiki/Service_mesh), a service-to-service connection fabric used in modern clusters.
+
+The model is small: three **abstractions** — layer, vertex, service — describe any layer; each layer is one of two **kinds** (a link or a mesh); and two conventional overlays (a rete, an interrete) mark the **trust boundary** a mesh spans.
+
+### Abstractions
+
+The core nouns every Florete layer is described with — independent of how the layer is implemented.
 
 #### Layer
 
@@ -68,6 +80,14 @@ TODO([#36](https://github.com/rete-labs/florete/issues/36)): Explore practical n
 
 [^istio]: [Istio](https://istio.io/) is a prominent service mesh implementation for Kubernetes.
 
+#### Service
+
+Let's define Florete network **service** as an entity that is published (via Portal::Publish) in some layer. This is an abstraction of (micro)services in a service mesh. Any vertex from a recursive layer (a [mesh](#mesh)) is a service, because it publishes itself in some other layers. Note that vertices of a [link](#link) are not services themselves, because there is no other layer to publish them.
+
+### Layer Kinds
+
+A layer — and the vertex that implements it — is one of two kinds: a primitive **link**, or a recursive **mesh**.
+
 #### Link
 
 At the end of recursion there are primitive layers that are implemented upon something that's not a layer, some "physics", or external communication means / media.
@@ -87,9 +107,29 @@ TODO([#37](https://github.com/rete-labs/florete/issues/37)): Create detailed des
 [^avery]: Avery Pennarun, [The world in which IPv6 was a good design](https://apenwarr.ca/log/20170810), 2017
 [^kind]: We explicitly avoid term "level" as it implies stack-like construct; layers are not necessarily form stacks! Also note how we distinguish layers: each link is a layer itself; there is no "common link layer" like in Internet model.
 
-#### Service
+#### Mesh
 
-Let's define Florete network **service** as an entity that is published (via Portal::Publish) in some layer. This is an abstraction of (micro)services in a service mesh. Any vertex from a recursive layer is a service, because it publishes itself in some other layers. Note that vertices of a link are not services themselves, because there is no other layer to publish them.
+Opposite the link sits the general, recursive layer — a **mesh**. A mesh is a service mesh in the full sense: a fabric where any user can reach any other ([the reason](#layer) we call a layer a mesh), built not on a physical medium but on the [Portal](#vertex) APIs of *other* layers. This is where the recursion of the architecture lives.
+
+A mesh is implemented by a **mesh-vertex** — the non-degenerate [vertex](#vertex), with all three parts active: a transport endpoint terminating connections for Portal users, a connection manager holding in-layer connections to peer mesh-vertices (carried over lower layers), and a non-trivial **forwarding engine** that moves packets by labels (MPLS-style) — local-origin, local-destination, and transit.
+
+So **link** and **mesh** are the two shapes a layer — and the vertex implementing it — can take: the link is the primitive base case (exactly one peer, no transit); the mesh is the recursive case (many peers, label-forwarded transit). Above the physical medium, every layer is a mesh, built recursively on links and on other meshes.
+
+### Trust Boundaries
+
+Beyond its kind, a mesh sits on a second axis — the **trust boundary** it spans. Two conventional overlays, named after the scopes they cover, mark its extremes.
+
+#### Rete
+
+A **rete** is a trust domain: a set of nodes sharing one CA and one identity namespace — the boundary within which names resolve and peers authenticate. The base [mesh](#mesh) over a rete's nodes is, by convention, formed of mesh-vertices named `rete`, because that mesh *spans* the rete.
+
+<Callout title="The rete (trust domain) vs. the mesh named after it">
+Do not read "rete" as "the first mesh overlay". The **rete** is the *trust domain* — an identity and security boundary. The first mesh overlay is a **mesh** — one of potentially several a node joins — that happens to span that rete and is therefore *named* `rete` after it. The naming is a convention, not an identity: the mesh spans the rete; it is not the rete.
+</Callout>
+
+#### Interrete
+
+An **interrete** is a *federation* of retes — several trust domains interconnected. Similarly, a [mesh](#mesh) layered on top of the per-rete meshes and links is called interrete mesh (its mesh-vertices are named `interrete`). It is spanning trust-domain boundaries rather than living inside one. Where a rete mesh carries traffic *within* a trust domain, an interrete mesh carries it *between* them — trust **federated** across the participating retes, never silently shared. Exploratory notes on the global case are gathered under [Interrete Thoughts](#interrete-thoughts).
 
 ### Consequences
 
@@ -321,21 +361,19 @@ This is a concept that needs further exploration. On practice there is a need fo
 
 TODO([#51](https://github.com/rete-labs/florete/issues/51)): Explore supernodes and recursive cluster intertwinted networks
 
-## Interrete
+## Interrete Thoughts
 
-Interrete is inter-cluster networking (lowercase when referencing just some inter-cluster layer; capitalized when referencing a global network of clusters). It is built using the same recursive layering principle as the Florete network of the cluster (service mesh).
+Interrete is inter-domain networking (lowercase when referencing just some inter-rete layer; capitalized when referencing a global network of retes). It is built using the same recursive layering principle as the Florete network of the rete (service mesh).
 
-Interrete connectivity can be provided similarly to IP network services, just for native Florete network. Probably there will be native Florete Ingress and Egress Gateways — distributed services that implement interrete connectivity via remote Portal APIs. Alternatively, it is possible to add interrete connectivity via local proxies over cluster layer. The implications of these different approaches need to be investigated.
+Interrete connectivity can be provided similarly to IP network services, just for native Florete network. Probably there will be native Florete Ingress and Egress Gateways — distributed services that implement interrete connectivity via remote Portal APIs. Alternatively, it is possible to add interrete connectivity via local proxies over the rete layer. The implications of these different approaches need to be investigated.
 
-Interrete is a layer of Florete network that isn't centrally managed. There are a few interconnected clusters that manage their own segments of the layer. And there are borders where they're actually connected.
+Interrete is a layer of Florete network that isn't centrally managed. There are a few interconnected retes that manage their own segments of the layer. And there are borders where they're actually connected.
 
 Design of the global Interrete isn't well-thought yet, but it will probably resemble Autonomous Systems of the Internet with important differences:
-- There will be much more user clusters than ASes now, as that's not prerogative of ISPs and large corporations
-- Operating a cluster connected to Interrete should be fully automated and not require technical skills of the owner
-- Dynamic routing between clusters must support high mobility of nodes — it would be normal for connection points to change
+- There will be much more user retes than ASes now, as that's not prerogative of ISPs and large corporations
+- Operating a rete connected to Interrete should be fully automated and not require technical skills of the owner
+- Dynamic routing between retes must support high mobility of nodes — it would be normal for connection points to change
 
 Interrete layer will require robust route aggregation method to scale to Internet-level. That's where addressing may be needed (either some new one, John Day suggested some "topological" addressing; or it will be IP-like).
-
-We probably would need to design low-scale interrete for a few small clusters — and then scale it up to global Interrete.
 
 TODO([#52](https://github.com/rete-labs/florete/issues/52)): Explore interrete (inter-cluster networking)
