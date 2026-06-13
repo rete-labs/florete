@@ -5,6 +5,8 @@
         "0003-use-di-framework",
         "0004-use-single-runtime",
         "0005-use-spiffe-identities",
-        "0006-impl-mtls-in-quic-endpoint"
+        "0006-impl-mtls-in-quic-endpoint",
+        "0007-decouple-naming-identity-routing",
+        "0008-name-rete-mesh-cluster"
     ]
 }

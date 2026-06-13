@@ -1,0 +1,125 @@
+---
+title: "0007: Decouple Naming, Identity, and Routing"
+---
+
+## Status
+
+Accepted
+
+Refines the naming/SNI mechanism of [ADR-0006: Implement mTLS in QuicEndpoint](/docs/contributing/adr/0006-impl-mtls-in-quic-endpoint). The *rete* / *mesh* / *cluster* vocabulary this ADR uses is defined in [ADR-0008: Distinguish Rete, Mesh, and Cluster](/docs/contributing/adr/0008-name-rete-mesh-cluster).
+
+## Context
+
+[ADR-0006](/docs/contributing/adr/0006-impl-mtls-in-quic-endpoint) settled mTLS and pinned the QUIC SNI to the `.rete` *convenience hostname*: the server was to read SNI, run `dns::parse` to recover a `SpiffeId`, and look up which published cert to present. [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity) defines that hostname as `<service>.<rete>.rete` (rete-scoped) or `<service>.<node>.<rete>.rete` (node-scoped), with `<rete>` standing in for the SPIFFE trust domain.
+
+Implementing it surfaced three coupled problems that the convenience-name-as-SNI framing cannot resolve on its own:
+
+1. **The name→identity mapping is not injective, so the kind is lost.** `dns::format` is total over the two dialable kinds (`Service`, `Vertex`), but a service and a vertex with the same name on the same node format to the *same* hostname — the shared `.rete` namespace ADR-0006 deliberately chose. A server that *parses* SNI therefore cannot recover whether the caller meant a service or a vertex, and so cannot resolve a vertex SVID at all. Harmless in C0 (services only); it breaks C1 mesh-transit, where flor dials vertices.
+
+2. **Self-sufficient parse forces single-label trust domains.** For `dns::parse` to split `<svc>.<node>.<rete>.rete` without external context, `<rete>` must be exactly one DNS label. That forbids dotted SPIFFE trust domains — the SPIFFE norm (`cluster.local`, and our own test domain `demo.flor`) — undercutting the SPIFFE interop ADR-0005 sells, and it pushes operators to fake hierarchy with dashes, which does not scale to multi-rete or open federation.
+
+3. **Treating SNI as the verbatim convenience name couples the wire to the human name.** It fixes the on-wire encoding to the user-facing one, foreclosing an opaque or privacy-preserving routing label later, and conflates two concerns that change for different reasons.
+
+We need a naming model that keeps the cryptographic identity authoritative, resolves human names with context, admits dotted trust domains, and frees the wire routing label to evolve — while staying trivial for single-rete C0 and open to multi-rete and an eventual post-IP namespace.
+
+## Decision
+
+Separate three layers that the convenience-name-as-SNI design had collapsed into one string.
+
+### Three layers
+
+1. **User-facing name** — the `.rete` convenience hostname (DNS-compatibility glue). Human/tool input; *resolved* to an identity.
+2. **Identity** — the SPIFFE ID, and its validated dialable view [`Dialable`](#dialable). The canonical, durable name: it is what appears in cert SAN, ACLs, compiled artifacts, and the transport API. **Authoritative.**
+3. **Wire routing hint** — SNI. *Derived from* the identity by the transport. The receiver recovers the *identity* by **lookup, never by parsing it out of SNI**; SNI itself is a routing label the transport may give richer structure than a bare identity (Istio encodes port and subset in it, for example) and route on. It is not the user-facing name, and is free to evolve.
+
+The identity layer is the stable core; the name and the routing hint are replaceable layers above and below it.
+
+### Resolution is contextual, not self-sufficient
+
+Turning a name into an identity requires **namespace context**. In C0 the context is the caller's trust domain, and resolution is a pure-local string transform. Beyond C0, a network-aware **Name Service** (a separate layer, not part of the identity module) performs distributed lookup of the target's rete/trust-domain and identity. Both produce the same output; the local single-rete case is the degenerate one.
+
+With context, the node-vs-rete shape is unambiguous *even for dotted trust domains*: strip the `.rete` suffix, strip the known trust-domain suffix, and the residual label count decides — 1 label ⇒ rete-scoped, 2 ⇒ node-scoped.
+
+### `Dialable`
+
+`Dialable` is a validated identity newtype admitting exactly the kinds that have a hostname and may be a `connect` target: `Service` and `Vertex`. It carries **no** DNS-representability constraint. The kind restriction is enforced at the construction site, not by a type zoo:
+
+- external ingress (SOCKS5) builds **services only**;
+- flor-internal code builds **either** (it dials vertices for mesh transit);
+- the Endpoint API `connect(caller: &X509Svid, target: &Dialable)` accepts both.
+
+The codec is `render(&Dialable) -> String` (infallible concatenation, `<name>[.<node>].<trust-domain>.rete`, full form including the trust domain) and `resolve(host, ctx_td) -> Result<Dialable>` (strip `.rete`, strip the context trust domain, residual labels decide scope; a non-matching trust-domain suffix is a foreign rete — unsupported in C0). This mirrors the existing [`NodeScopableKind`](/docs/contributing/adr/0005-use-spiffe-identities) discipline of making illegal states unrepresentable, and documents the *dial from anyone, to a service or vertex* asymmetry of `connect`.
+
+### Dotted trust domains are allowed
+
+No single-label constraint anywhere, and no short-name↔trust-domain map. Contextual resolution removes the need for either. `render` is pure concatenation and produces a valid DNS string for a dotted trust domain (`tcp-echo.beta.demo.flor.rete`); `resolve` strips the *known* trust domain, so the residual is unambiguous regardless of how many labels the trust domain has.
+
+### SNI is an internal routing hint, resolved by lookup
+
+The transport derives SNI from the identity through an `sni_for` seam — today `sni_for(d) == render(d)`, but `sni_for` is the contract and `render` an implementation detail it may diverge from. The server keys its published-cert registry by `sni_for(...)` and looks the incoming SNI up **directly**; it never parses an identity back out of SNI. Each registry entry carries the canonical `SpiffeId` (kind intact), so resolution is kind-preserving and needs no context on the server. Because resolution is by lookup, the wire label is free to evolve — carry richer routing structure, or become opaque/hashed so service names do not travel in clear — with no change visible to the identity layer. SNI is cleartext on the wire and visible to DPI; keeping sensitive routing data out of it, or adopting TLS Encrypted Client Hello (ECH), is a future option this decoupling preserves. SNI was never trusted (ADR-0006: SAN is authoritative); this formalizes it as a pure routing hint.
+
+### Exact SAN match remains the gate, and admits load balancing
+
+The outbound verifier still gates on **leaf SAN == expected target** (ADR-0006). This is forward-compatible with load balancing without relaxation: a load-balanced (rete-scoped) service presents the **rete-wide** SAN; node-scope is an addressing/placement concern, never the client-facing SAN. An instance may hold more than one SVID — its node identity *and* the rete identity — which `publish(Vec<X509Svid>)` already supports. Both load-balancer shapes evolve from this with no verifier change:
+
+- a **TLS-terminating** balancer presents the rete-wide SAN to the client and re-originates mTLS to node-scoped backends;
+- a **non-terminating coordinator** steers the flow (e.g. QUIC connection-ID routing[^quic-lb]) to a backend that completes the handshake directly with the client, presenting the rete-wide SAN; the coordinator holds no data-path SVID.
+
+## Rationale
+
+### Why decouple — Istio's precedent, with clearer names
+
+Istio gives workloads SPIFFE identities — `spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>`, default trust domain `cluster.local` — in the certificate's URI SAN, and authenticates peers by **SAN match**.[^istio-spiffe] Its SNI is a *routing* input, not identity: a mesh routes east-west through a gateway in `AUTO_PASSTHROUGH` mode that **does not terminate TLS**, forwarding by SNI,[^istio-auto-passthrough] where that SNI is Istio's internal `outbound_.<port>_.<subset>_.<hostname>` form (e.g. `outbound_.22_._.ssh-0.ssh-headless.infra.svc.cluster.local`). Two lessons carry over — and they are exactly our [three layers](#three-layers): **identity lives in the SAN**, and **SNI is a routing label that may encode more than the identity** (port, subset, hostname), distinct from the user-facing name.
+
+On naming we are **closer to Istio than it first looks** — and cleaner. An Istio mesh is *not* cluster-bound: it spans multiple Kubernetes clusters, and a service is reached by the *same* app-facing name wherever its endpoints live (location transparency via cross-cluster endpoint discovery).[^istio-deployment-models] A rete is the same — it is a trust domain, not a cluster (Florete has no cluster concept yet), free to span clusters — and a `.rete` name is likewise location-transparent. **Neither Istio nor Florete puts a cluster identifier in the app-facing name**, and both get the same location transparency.
+
+Where we differ is in the *clarity of the human-facing name*, not in cluster-awareness:
+
+- **The trust domain is operator-named and visible.** Istio's app-facing name carries a fixed `cluster.local` suffix — a leftover from its in-cluster origins, shared mesh-wide and rarely changed, so the name does not actually distinguish one trust domain from another. Florete lets the operator name the rete and surfaces it: `<svc>.<rete>.rete` reads meaningfully and stays unambiguous *across* retes — the case that matters once retes [federate](#evolution).
+- **No orchestration-isms.** We drop the fixed `.svc.` marker and the mandatory namespace infix of `<svc>.<ns>.svc.cluster.local`; those encode Kubernetes structure that is useless in a user-typed address. A `.rete` name carries only what a human needs — service, optional node, rete.
+- **The wire is decoupled from the name.** What rides on the wire as SNI is `sni_for`'s business, resolved by lookup — free to carry richer or opaque routing later — while the human name and the SAN identity stay put.
+
+So we borrow Istio's split (identity in the SAN, SNI as a routing hint) and its location transparency, and spend the freedom on a friendlier human surface: an explicit, operator-named trust domain and no orchestration-specific infixes.
+
+### Why contextual resolution over self-sufficient parse
+
+The single-label constraint existed *only* to make `parse` context-free. It forbids dotted SPIFFE trust domains (interop loss), creates the node-vs-rete ambiguity for any multi-label suffix, and drives dash-mimicry. A short-name↔trust-domain map was considered and rejected: it works for small federations with known mappings but not for open/Internet-scale resolution. Contextual resolution degenerates to "ask your resolver," which scales the way DNS — and its eventual successor — does. The cost (names are no longer resolvable by pure string math) is the *correct* cost: a cross-rete name genuinely requires a directory.
+
+### Why `Dialable` rather than raw `SpiffeId` or a Service/Vertex type zoo
+
+A raw `SpiffeId` target leaves "is this even dialable?" as a runtime error at every call site and hides the from-anyone/to-service-or-vertex asymmetry. A precise `Service`/`Vertex` pair was considered, but nothing downstream dispatches on the distinction — the verifier and the registry both use the canonical `SpiffeId` — so it would be precision with no consumer. One validated `Dialable`, with the kind enforced where the value is born, makes `render` infallible and illegal targets unrepresentable while keeping the `SpiffeId` as the single canonical value on the wire and in ACLs.
+
+### Why SNI by lookup, not parse
+
+The receiver already holds the authoritative set of published identities, so resolving the on-wire label against that set (a) preserves the kind a vertex name would otherwise lose, (b) requires no context on the server, and (c) lets the wire encoding evolve independently of the human name. Parsing SNI back into an identity buys nothing and costs the kind.
+
+### Why exact SAN match survives load balancing
+
+Relaxing the gate to a hierarchical match (`service/<svc>` accepting `service/*/<svc>`) would weaken it. Instead the load-balanced identity is a first-class rete-wide SVID that instances present, and node-scope stays addressing-only — keeping the tightest possible gate while admitting both balancer architectures. This also keeps placement (an orchestration concern) out of network identity.
+
+## Consequences
+
+### Benefits
+
+- Dotted, SPIFFE-standard trust domains work from day one; interop is preserved.
+- Single-rete C0 stays trivial (context = the local trust domain) yet the seam — a Name Service — is multi-rete- and Internet-ready with no rework of the identity layer.
+- The wire routing hint can evolve (opaque/private SNI, alternative labels) without touching identities or user-facing names.
+- `render` is infallible; illegal `connect` targets are unrepresentable via `Dialable`.
+- Load balancing (both shapes) is reachable without changing the SAN gate or the `publish`/registry model.
+
+### Trade-offs
+
+- Name resolution is no longer a pure string function; it needs context (a trust domain now, a Name Service later). Cross-rete names cannot be resolved purely locally — by design.
+- A user-facing name and a wire routing hint coexist conceptually even though they are the same string in C0; the seam adds a small indirection (`sni_for`).
+- ADR-0006's SNI/`dns::parse` mechanism is amended; the `dns::format` / `dns::parse` helpers become `render` / `resolve` over `Dialable`.
+
+### Evolution
+
+- A **Name Service** replaces local `resolve` for federation; the context argument widens from `&TrustDomain` to a namespace/resolver abstraction. The call site (ingress) is the only consumer, so widening is cheap.
+- **Multi-rete:** cross-rete names carry the remote rete identifier; trust flows through shared or federated bundles, which ADR-0005's multi-authority trust set already supports.
+- **Post-IP / Internet-scale:** the SPIFFE ID is the durable core; `.rete` is DNS-compatibility glue that can thin out; resolution and the wire hint are the replaceable layers. We do not design that namespace now — we keep the seams that let it arrive without breaking identities.
+
+[^istio-spiffe]: Istio encodes workload identity as a SPIFFE URI — `spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>`, default trust domain `cluster.local` — in the certificate SAN, and authenticates peers by SAN match. See [Istio: Security concepts](https://istio.io/latest/docs/concepts/security/) and [Teleport: How to secure microservices with SPIFFE and Istio](https://goteleport.com/blog/how-to-secure-microservices-spiffe-istio/).
+[^istio-auto-passthrough]: [Istio DestinationRule — `AUTO_PASSTHROUGH` TLS mode](https://istio.io/latest/docs/reference/config/networking/destination-rule/#ClientTLSSettings-TLSmode-AUTO_PASSTHROUGH): the gateway routes by SNI **without terminating TLS**, preserving end-to-end mTLS — the mechanism multi-cluster east-west gateways use.
+[^istio-deployment-models]: [Istio: Deployment Models](https://istio.io/latest/docs/ops/deployment/deployment-models/) — cross-cluster services are reached location-transparently via endpoint discovery, not by encoding a specific cluster identifier in the app-facing name.
+[^quic-lb]: [QUIC-LB: Generating Routable QUIC Connection IDs](https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/) — connection-ID routing lets a non-terminating coordinator steer flows without entering the mTLS session.
