@@ -1,7 +1,8 @@
 {
     "pages": [
         "c0-tended-tunnels",
-        "c1-manual-mesh"
+        "c1-manual-mesh",
+        "b1-cloud-control"
     ],
     "defaultOpen": false
 }

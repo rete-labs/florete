@@ -1,0 +1,182 @@
+---
+title: Coordinator
+description: Forward sketch of the rete Coordinator, grounding the config-model decision
+---
+
+The **Coordinator** is the rete's network control plane: the entity that keeps a rete operational within the bounds and objectives an operator declares. Its full design is a B1+ concern. This page sketches only as much of it as is needed *now*, at C0, to make one decision honestly: **what shape our configs should take** — chosen against the real needs of the thing that will consume them, not an imagined one.
+
+<Callout title="This is a forward sketch, not a committed design">
+Nothing here commits B1's architecture. The Coordinator's true implementation, its consensus model, its optimization algorithms, and its federation protocol are all deferred. What this page *does* commit to is narrow and load-bearing: the **shape of state** the Coordinator consumes and produces — because the C0 config format is the operator-authored slice of that state, and we want to pick it for reasons that survive contact with B1. The rename of today's `config-server` to `Coordinator` is assumed throughout (the C0 component is the Coordinator in its degenerate, store-and-serve form).
+</Callout>
+
+## Functional role
+
+The Coordinator keeps the rete **operational** given operator-provided **bounds** (the allowed space) and **objectives** (the goals). Its duties:
+
+1. **Compute topology and paths** — including reserved/backup ones. This is a constrained optimization, not a lookup. Each node has a *link budget* (bandwidth, or in Edge Mesh a hard radio-resource limit), so a full mesh is never the answer; yet the topology must stay resilient to link and node failure — in particular it must keep **multiple paths to the Coordinator itself**. The working heuristic is a **k-connected m-dominating** backbone[^kcmd] carrying user traffic plus whatever the operator's objectives demand.
+2. **Deliver** the resulting topology, paths, ACLs, and identities to the rete's node agents.
+3. **Monitor** nodes, links, and paths — both to feed (1) and to detect **Byzantine** nodes (failing irregularly, misbehaving, or breaking the rules the Coordinator set).
+4. **Enforce security policy and audit** — resolve RBAC/ACLs and deliver them to agents; produce the audit trail.
+5. **Federate** — peer with *other* Coordinators to establish inter-rete connectivity and organize traffic exchange. (Out of scope for this sketch beyond noting it exists.)
+
+The listed sub-services (Service Directory, PCE/TCE, Load Balancing, Time, Introductor, Monitoring, Arbiter, the operator-ingest service) are decomposed [below](#microservice-decomposition-sketch). First, the question that actually decides the config model.
+
+## Are we limited to Kubernetes-style reconciliation?
+
+No. Kubernetes reconciliation is the **degenerate case** of what the Coordinator does. A K8s controller is `(declarative complete-target spec) × (full-authority controller) → converge actual to target`, level-triggered[^k8s-recon]. The Coordinator generalizes it on three axes, and each axis matters for a real Florete requirement:
+
+1. **Under-specified input → optimization, not convergence.** The operator does *not* hand the Coordinator a finished target ("these exact links, these exact paths"). It hands a **space plus objectives** ("link budget ≤ N per node, keep ≥ 2 disjoint paths to a Coordinator, minimize latency for traffic class X"). The Coordinator must *compute* a good point in that space — a topology/routing optimizer (a Path Computation Element[^pce], extended with topology), not a state-differ. K8s controllers never optimize; they drive toward a point the author already chose.
+2. **Attenuated authority, not full authority.** The Coordinator may only **narrow** the operator's bounds — never broaden them — and its output is *itself a bounded space* for the agents (a "decision space"), not a finished imperative. Agents retain local autonomy within it. This is nested capability attenuation (Macaroons[^macaroons], RPKI/ROA[^rpki]), and Florete already encodes it as the [signed-mgmt-bounds vs. bounded-ctrl-decisions split](../../c1-manual-mesh/ctrl-plane).
+3. **Recursive and degradable, not singular.** There may be several Coordinators (cloud + a robot-group-local one), splitting and joining as connectivity changes; and agents must be able to run **with no Coordinator at all** under network churn too fast for any coordination to converge. K8s has neither property.
+
+So the control model is a chain of **constraint refinement**, the *same operation* applied at every layer:
+
+| Layer | Input | Operation | Output |
+|---|---|---|---|
+| **Operator** (mgmt) | intent | author bounds + objectives, sign | a permitted *space* of rete states |
+| **Coordinator** (ctrl) | space + objectives + observations | optimize within the space, narrow | a per-agent *decision space* (still a space) |
+| **Agent** (fast-path) | decision space + local observations | choose / react locally | concrete local action |
+
+K8s reconciliation falls out of this when the decision space collapses to a single point (a complete spec), there is exactly one controller, and agents have zero autonomy. Florete's general case is an **autonomic control loop**[^mapek] (Monitor → Analyze → Plan → Execute over shared Knowledge) whose *Plan* step is a constrained optimizer, whose authority is attenuated, and which **degrades to fully decentralized** operation. It is the tunable middle of the SDN spectrum the [HLD describes](../../../overview/high-level-design#network-control-plane)[^sdn] — fully-centralized SDN and fully-decentralized self-organization are its two degenerate ends. MAPE-K here is only the loop *topology* — deliberately silent about what fills its Analyze and Plan steps; [Intelligence, prediction, and confinement](#intelligence-prediction-and-confinement) covers how predictive and learning-based methods (and eventually AI) slot into those steps without changing the authority model.
+
+<Callout title="Why this matters for the config model">
+Because the control model is an optimizer over a *space*, the operator's config is not a target state the way a K8s `spec` is. It is **bounds + objectives** — a description of the allowed space and the goals within it. Any object model we choose has to be comfortable expressing *goals and constraints*, not just nouns and access rules. That is the single most important requirement this exercise surfaces, and it is easy to miss if you model only entities and ACLs.
+</Callout>
+
+## The state taxonomy — why one representation can't serve everything
+
+The Coordinator's world has **five categories of state**, and they differ on who authors them, what authority they carry, how fast they churn, who consumes them, and therefore how they should be represented. Conflating them is the trap.
+
+| # | Category | Authored by | Authority | Churn | Natural representation |
+|---|---|---|---|---|---|
+| 1 | **Entities** (nouns: nodes, services, users, …) | operator, *or* admitted within bounds | — | low | declarative addressable object |
+| 2 | **Bounds** (ACLs, allowed links/paths, admission policy, caps) | operator | signed | low | declarative object + *narrowing-closed algebra* |
+| 3 | **Objectives** (connectivity targets, latency/cost goals, reserved capacity) | operator | signed | low | declarative object (a *goal*, not a target state) |
+| 4 | **Decisions** (active topology, paths, labels, forwarding tables, active-peer subsets) | Coordinator | CP-signed, bounded | high | **compiled per-node projection** (the [ctrl artifact](../../c1-manual-mesh/ctrl-plane)) |
+| 5 | **Observations** (metrics, liveness, reported forwarding state) | agents | unsigned, reported | very high | **telemetry stream** (time-series) |
+
+The decisive split:
+
+- **Categories 1–3 are the operator-authored inputs.** They are declarative, identity-bearing, signable, low-churn, and `apply`-able. *This is the config* — the thing we are choosing a format for.
+- **Category 4 is derived output.** It is computed, per-node-sliced, high-churn, signed by the CP not the operator. Florete already represents it correctly as the **ctrl artifact stream**, which is a *compiled projection*, not an authored object you `apply`. (K8s's `status` subresource is a weak, low-churn cousin of categories 4+5 bolted onto the same object; Florete deliberately keeps them on separate streams.)
+- **Category 5 is telemetry.** It is not an object model at all. It is a metrics/event pipeline feeding Monitor and Arbiter.
+
+## Facade vs. consumed model — and the three artifact flows
+
+A point the rest of this sketch must respect: **the operator-facing YAML and what the nodes and Coordinator consume are different layers.** The YAML is a *facade* — authored as a whole mgmt view, compiled by `florctl`, signed, and discarded. The **compiled JSON** is the operational unit: what is stored, served, sliced, reconciled, and watched. Categories 1–3 (the facade) are isomorphic at the data level to `kind`/`name`/`spec`, but operationally they are a whole-view document, not a live object store — see [ADR-0009](../../../contributing/adr/0009-config-compiled-facade).
+
+Introducing the Coordinator changes the *producer/consumer* picture, not the facade. Today `florctl compile` emits only **node-targeted** artifacts; with a Coordinator there are **three flows**:
+
+1. **Per-node mgmt slices** — operator-compiled and **operator-signed**, *relayed* by the Coordinator (store-and-serve; it cannot tamper — nodes verify the operator signature), per-node-filtered so node A never sees node B's ACL rows.
+2. **A rete-wide bounds + objectives artifact** — operator-compiled and operator-signed, consumed by the **Coordinator itself** so it has the global picture to optimize against and need not reassemble it from node slices. The Coordinator **sees all, authors none**: a global view is required to compute topology/paths; authoring those bounds is forbidden.
+3. **Per-node ctrl** — produced by the **Coordinator** within those signed bounds (CP-signed), delivered to agents, verified locally against the mgmt bounds.
+
+So even with a server-based Coordinator, **mgmt authoring and signing stay on the operator's machine** — the safeguard that bounds a hijacked cloud to *DoS, not destruction*. This is far from Kubernetes, where the API server is omnipotent. On-prem deployments may relax it (hand the Coordinator a scoped mgmt key for some operations); cloud deployments do not. It also nuances the [evolution table](../../c0-tended-tunnels/mgmt-plane#evolution): the server becomes source-of-truth for *ctrl + distribution*, while **mgmt source-of-truth stays the operator's local signed compile**.
+
+## What this settles for the C0 config model
+
+The config format models **only categories 1–3** — the operator-authored facade. The decision ([ADR-0009](../../../contributing/adr/0009-config-compiled-facade)) is therefore: **keep the facade Docker Compose-style and whole-view**, and put the object model only on the *consumed* side (compiled artifacts + the Coordinator's resource model), where state is actually stored, sliced, reconciled, and watched. The facade is already `kind`/`name`/`spec` in disguise (top-level key = kind, map key = name, value = spec), so it loses no addressability; what it correctly *omits* is the live-apply / `status` / reconcile machinery — and the `apiVersion`/namespace/selector ceremony — that a compiled-away facade neither has nor should imply. No `florctl apply -f` in the mgmt path: it would advertise a live store the security model forbids.
+
+Two requirements this exercise surfaces are about **content**, not envelope, and carry over to the compose facade unchanged:
+
+1. **Objective/constraint objects are first-class.** The operator authors *goals* — `k-connectivity ≥ 2`, `≥ 2 disjoint paths to a Coordinator`, latency budgets, reserved capacity for a traffic class — not just nouns and allow-lists. Reserve the role now (e.g. a `topology-objectives:` / `path-objectives:` collection) and grow the vocabulary feature-by-feature, as C1 does for bounds — we do not design the objective language at C0. But a facade with nowhere to put an objective would need reshaping later; this one shouldn't.
+2. **Bounds are a narrowing-closed algebra with an authority axis.** The *same bound type* may be authored by the operator (signed) or emitted, narrowed, by the Coordinator (CP-signed) for an agent. The [typed-rule shape already in C1](../../c1-manual-mesh/mgmt-plane) (`{ type: enum, … }`, narrowed to a subset downstream) is exactly this — the shared vocabulary that lets "narrow" be a closed operation across operator → Coordinator → agent, and the part **tailored for Florete** beyond anything Kubernetes offers: it has no notion of a spec that a controller may legally *attenuate into a sub-spec*.
+
+So, directly: the operator authors one whole-view facade (entities + bounds + objectives, compose-style); the Coordinator emits a different representation (per-node ctrl projection); agents report a third (telemetry). The config-model decision is about the first only — and the first is a **compose-style facade over an object-equivalent data model**, not a live object store.
+
+## Microservice decomposition (sketch)
+
+The listed services map cleanly onto the autonomic loop plus admission, ingest, and federation. The right-hand column flags which touch the config object model.
+
+| Service | Loop role | Notes | Touches config model? |
+|---|---|---|---|
+| **Authoring / Ingest** (provisional name; today `florctl publish`) | — | Receives the operator's compiled, signed mgmt view (cats 1–3) and stores/serves it; cannot author or re-sign mgmt. No live `apply` for mgmt. | **Yes — relays cats 1–3** |
+| **Service Directory** | Knowledge | What is published in the rete; fuels Service Discovery. Entities (declared) + instance health (observed). | Reads cat 1 |
+| **Topology Computation Element (TCE)** + **Path Computation Element (PCE)** | Plan | Compute the k-connected m-dominating topology and the label-stack paths within bounds and objectives. Almost certainly **jointly optimized** — topology and routing are coupled. | Consumes cats 2–3, emits cat 4 |
+| **Load Balancing** | Plan | Endpoint/path selection among equivalent options — a *facet* of PCE, not obviously its own element. Tracked as a sub-concern. | Emits cat 4 |
+| **Monitoring** | Monitor | Accumulator of metrics/liveness (cat 5). | No |
+| **Arbiter** | Analyze | Catches *non-local* rule/security violations and Byzantine behaviour by cross-node observation (a node claims to forward label X but its neighbours, if non-Byzantine, reveal it doesn't). | No (consumes cat 5) |
+| **Introductor** | Admission | Admits new/returning nodes — dynamic membership, critical for Edge. **Same attenuation pattern:** the operator authors an *admission policy* (a bound); the Introductor admits *concrete nodes* within it; admitted nodes are cat-1 entities with provenance `admitted`, not `operator-authored`. | Produces cat 1 within cat 2 |
+| **Time** | Knowledge / infra | Synchronization for consensus and for Edge radio links. Cross-cutting infrastructure. | No |
+| **Decision delivery** | Execute | Emits per-node ctrl artifacts (cat 4) to agents. | Emits cat 4 |
+| **Federation** | — | Peers with other Coordinators for inter-rete exchange. | Future |
+
+Some of these will be **external or integrations** (IDS/SIEM, Active Directory/IdP, …) and some may be **rete-wide distributed services** rather than Coordinator-local. The architecture must let a given service be internal, external, or distributed without changing the input object model — another reason to keep that model independent of the Coordinator's internal topology.
+
+## Architecture options and evolution
+
+The candidate architectures are not mutually exclusive:
+
+- **A. Centralized reconciler (K8s-style).** Degenerate special case (single point, single controller, no agent autonomy). Rejected as the *general* model; emerges naturally when the decision space collapses.
+- **B. Centralized SDN controller.** Closer (the HLD says the Coordinator generalizes SDN), but pure centralization is brittle under churn and offers no coordinator-less mode.
+- **C. Autonomic loop (MAPE-K) with a constrained-optimizer Plan.** The descriptive frame adopted here — but as a loop *topology* only. Its Analyze/Plan steps are filled by prediction and learning ([Intelligence, prediction, and confinement](#intelligence-prediction-and-confinement)), and richer loop frames — OODA[^ooda], model-predictive and runtime-assured control — inform what those steps do.
+- **D. Recursive attenuation.** The *authority* architecture: operator → Coordinator(s) → agents, with Coordinators able to nest, split, and join.
+- **E. Decentralized gossip + local optimization.** The fallback under extreme churn; agents gossip[^swim] observations and each optimizes on a partial view.
+
+The synthesis is **C + D, generalizing B, degrading to E, with A as a degenerate case** — which is exactly Florete's recursive ethos: an agent is "a Coordinator for itself with a local view," a Coordinator is "an agent with a wider view and more compute," and the same constraint-refinement operation runs at every scale.
+
+Evolution, matching the stated constraints:
+
+1. **Single workload.** The Coordinator is one workload, published as a rete service; the loop runs in-process, Knowledge in-process. (C0's `config-server` is this, degenerate to store-and-serve — it decides nothing yet.)
+2. **Distributed / HA.** Knowledge gains consensus; Plan can be sharded (regional PCE/TCE). Multiple Coordinator instances, one logical authority.
+3. **Agile / recursive (Edge).** The Coordinator becomes a **distributed service the orchestrator places and may move**, able to split and join — a robot-group-local Coordinator that hands authority up to a cloud Coordinator on connect, and reclaims it on disconnect. Several Coordinators per rete; agents act as local Coordinators in the limit; coordinator-less operation is the extreme.
+
+<Callout title="The invariant that makes the C0 decision safe">
+Across all three stages, the **operator-authored input object model does not change.** It describes bounds and objectives — independent of how many Coordinators compute within them, where they run, or whether any are reachable at all. That invariance is precisely why we can commit to the input object model now, at C0, while leaving the Coordinator itself to B1+. The [compiled per-node artifact stays the stable contract](../../c0-tended-tunnels/mgmt-plane#evolution); the Coordinator is just one more *producer* — and for mgmt a *relay*, never an author: mgmt is compiled and signed by the operator throughout.
+</Callout>
+
+## Intelligence, prediction, and confinement
+
+MAPE-K is a loop *topology*, not a method: it says nothing about what fills Analyze and Plan, and in its vanilla form it is purely reactive. A rete aims higher — predictive, learning, eventually AI-driven in both the Coordinator and the node agents. The architecture absorbs all three **inside the loop's steps and its Knowledge store, never in the authority layer** — and that placement is exactly what keeps them from becoming a source of chaos.
+
+**Prediction (proactive control).** Reserved and backup paths are already proactive provisioning; generalize that to **model-predictive control**[^mpc] — plan over a forecast horizon (a robot about to leave radio range; a diurnal traffic swing) instead of reacting after a link drops. This lives in Plan's optimizer over a Knowledge model of the rete — a network **digital twin**[^ndt] the Coordinator can simulate against.
+
+**Learning.** RL/ML[^rlnet] updates that model and the planning policy from accumulated history, and sharpens the Arbiter with anomaly detection. It typically adds a *slower meta-loop* (learn the policy) above the fast control loop (apply it) — which lands cleanly on the rete's existing **timescale hierarchy** (operator days · CP seconds · agent µs), with the learning loop slower still.
+
+**AI agents, and why they are safe to add.** The Coordinator's Plan and the node agents may eventually be AI-driven. This is where the confinement concern is right — and already satisfied by the design. An arbitrarily smart, or arbitrarily wrong, planner is safe to drop into Plan because **it is untrusted by construction**: every decision is verified locally by each agent against operator-signed bounds, and anything outside the bound is rejected, falling back to last-known-good or to coordinator-less operation. The intelligence picks a *point*; the signed bound defines the *space*; safety comes from the verifiable space, not from trusting the chooser. A hallucinating or hijacked AI Coordinator is precisely the [hijacked-CP case already analyzed](../../c1-manual-mesh/ctrl-plane) — it can pick a bad-but-permitted state (suboptimal routing, DoS) but cannot grant access, mint principals, or escape the envelope. This is the **Simplex / runtime-assurance**[^simplex] pattern (untrusted complex controller + verified safety envelope + switch-to-safe) and safe-RL **shielding**[^shield], expressed in Florete's capability-attenuation terms: **the bound is the shield.**
+
+The design rule that follows is one line: **intelligence goes in the producers (Plan, agents) and the Knowledge store; never in the authority layer.** The operator-signed bounds and the agent-side verifier stay dumb, small, and trustworthy — they are what confine the smart parts.
+
+**Two new representation needs — on the derived side only.** Prediction and learning add (a) a **history / time-series store** (persisted category-5 observations, feeding forecasting and training) and (b) **model artifacts** (learned policies, digital-twin state — possibly large or binary, *trained* not authored). Both are derived Knowledge, not operator config; a learned policy *shipped to an agent* is a category-4-style artifact (Coordinator-produced, bounded, agent-verified) that happens to carry a model instead of a forwarding table. Neither belongs in hand-authored source.
+
+**Net for the config model.** The MAPE-K-versus-modern debate is entirely on the *production* side of the bound. The operator still authors only entities, bounds, and objectives (categories 1–3). If anything, predictive and learning control make the two tailored features *more* central: first-class **objectives** are the goal functions a predictor optimizes and an RL reward is built from, and the **narrowing-closed bounds algebra** now doubles as the **AI-confinement envelope**. Categories 1–3 are unchanged.
+
+## Implications back on C0
+
+Concrete takeaways for the config-model decision being made now:
+
+- **Keep the source facade Docker Compose-style** ([ADR-0009](../../../contributing/adr/0009-config-compiled-facade)) — a whole-view document, isomorphic to `kind`/`name`/`spec` but without the live-apply/`status`/reconcile machinery or the `apiVersion`/namespace/selector ceremony. The object model lives on the *consumed* side (compiled artifacts + Coordinator resource model), where state is stored, sliced, reconciled, and watched. File layout is operator-chosen; the compiler globs and merges.
+- **Reserve a first-class objective/constraint object role** — not just entities and ACLs. Do not design the objective language yet; just leave it a home.
+- **Keep bounds as the typed-rule, narrowing-closed algebra** already in C1 — the shared vocabulary across operator → Coordinator → agent.
+- **Keep derived (ctrl) and observed (telemetry) state out of the source model.** This re-confirms "no `status` in hand-authored files": those are a projection and a stream, not authored objects.
+- **No `florctl apply -f` in the mgmt path.** Mgmt is author → compile → sign → publish locally; the Coordinator stores/serves but cannot author mgmt (the cloud blast-radius safeguard). An `apply`-style verb is reachable later only for *non-mgmt* or on-prem-relaxed paths, and would be format-independent regardless[^apply] — it is not the mgmt model.
+
+## Open questions (deferred)
+
+- PCE/TCE joint vs. split optimization; where Load Balancing sits.
+- Time service: PTP/NTP vs. consensus clock; behaviour over Edge radio.
+- Decentralized-mode algorithm (gossip/CRDT; optimization on a partial view) and the handoff between coordinated and coordinator-less modes.
+- Arbiter's Byzantine-detection model and thresholds; what cross-node evidence is sufficient.
+- Coordinator placement and the split/join protocol (needs the Orchestrator).
+- Federation / inter-rete Coordinator peering.
+- The objective and bounds **policy language** — grown feature-by-feature, not designed up front (same discipline as [C1's deferred bounds-language](../../c1-manual-mesh/ctrl-plane#explicitly-deferred)).
+- **Predictive and learning control** — model-predictive planning, a network digital twin as the Knowledge model, and where the learning meta-loop sits relative to the fast control loop.
+- **Derived Knowledge that is not a forwarding table** — history/time-series stores and (possibly large, binary) learned-model artifacts: their versioning, signing, and delivery to agents.
+- **Formal AI confinement** — the runtime-assurance guarantees an untrusted (possibly AI) planner must satisfy, and the safe-fallback semantics when an agent rejects an out-of-bounds decision.
+- Naming: confirming the `config-server → Coordinator` rename, and a better name than "Operator Service" for the Authoring/Ingest endpoint.
+
+[^kcmd]: A **k-connected m-dominating set** is a virtual-backbone construction from wireless/ad-hoc networking: every node is within reach of ≥ m backbone members, and the backbone stays connected after any k−1 removals. It generalizes the [connected dominating set](https://en.wikipedia.org/wiki/Connected_dominating_set) used as a routing backbone, trading link budget for fault tolerance.
+[^k8s-recon]: Kubernetes [controllers and the reconciliation loop](https://kubernetes.io/docs/concepts/architecture/controller/) drive observed state toward a declared, complete `spec`; they are level-triggered and have full authority within their resource.
+[^pce]: [RFC 4655 — A Path Computation Element (PCE)-Based Architecture](https://datatracker.ietf.org/doc/rfc4655/); stateful extension in [RFC 8231](https://datatracker.ietf.org/doc/rfc8231/). The Coordinator's PCE extends the idea with topology computation.
+[^macaroons]: [Macaroons](https://research.google/pubs/pub41892/) — bearer credentials whose holders may attenuate (never broaden) authority by adding caveats.
+[^rpki]: [RPKI / Route Origin Authorizations](https://en.wikipedia.org/wiki/Resource_Public_Key_Infrastructure) — signed authorizations that bound otherwise-dynamic BGP decisions; the same "sign the bound, let the fast layer act within it" pattern.
+[^mapek]: The **MAPE-K** loop (Monitor, Analyze, Plan, Execute over shared Knowledge) from IBM's [autonomic computing](https://en.wikipedia.org/wiki/Autonomic_computing) blueprint — a more general control frame than single-step reconciliation, but a loop *topology* rather than a method: modern self-adaptive systems fill its steps with predictive and learning-based control.
+[^sdn]: [Software-defined networking](https://en.wikipedia.org/wiki/Software-defined_networking) — fully-centralized control of a dumb data plane. Florete tunes the centralization rather than fixing it at one extreme.
+[^swim]: [SWIM](https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf)-style gossip for scalable failure detection and membership — a candidate substrate for decentralized monitoring.
+[^apply]: Declarative `apply` against a reconciling server needs neither Kubernetes nor its envelope — cf. HashiCorp Nomad (`nomad job run`), Consul (`consul config write`), and Kuma's universal mode (`kumactl apply -f` against its own control plane, on or off K8s). The enabler is a reconciling target, not the file syntax.
+[^mpc]: [Model Predictive Control](https://en.wikipedia.org/wiki/Model_predictive_control) — optimizes actions over a receding prediction horizon using a system model; the proactive counterpart to reactive feedback.
+[^ndt]: A **network digital twin** is a live, synchronized model of the network used for what-if prediction and offline policy training; see [digital twin](https://en.wikipedia.org/wiki/Digital_twin) generally, with network-specific work underway in the IRTF Network Management Research Group.
+[^rlnet]: [Reinforcement learning](https://en.wikipedia.org/wiki/Reinforcement_learning) applied to networking — learned routing, congestion control, and resource allocation.
+[^simplex]: The [Simplex architecture](https://en.wikipedia.org/wiki/Simplex_architecture) (Sha, 2001) — a verified safety controller plus an untrusted high-performance controller, with a decision module that reverts to safe before the safety envelope is violated. Runtime assurance for control systems.
+[^shield]: Safe-RL *shielding* (Alshiekh et al., AAAI 2018) — a runtime monitor that overrides an agent's unsafe actions to enforce a formal safety specification. Florete's agent-side bound-verifier is a shield.
+[^ooda]: The [OODA loop](https://en.wikipedia.org/wiki/OODA_loop) (Boyd) — Observe, Orient, Decide, Act; its "Orient" step (synthesis, prediction, mental models) is richer than MAPE-K's Analyze and is the adversarial-context counterpart.
