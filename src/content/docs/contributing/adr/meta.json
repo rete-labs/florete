@@ -7,6 +7,7 @@
         "0005-use-spiffe-identities",
         "0006-impl-mtls-in-quic-endpoint",
         "0007-decouple-naming-identity-routing",
-        "0008-name-rete-mesh-cluster"
+        "0008-name-rete-mesh-cluster",
+        "0009-config-compiled-facade"
     ]
 }
