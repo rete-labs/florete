@@ -84,8 +84,8 @@ The compiled per-node artifact is the stable public contract. What changes acros
 | Scope             | Service-to-service direct      | Rete mesh, manual paths        | Same rete, derived paths        | Same rete                     |
 | Protocol entities | Users, services, nodes         | + Rete vertices             | Same as C1                      | Same as C1                    |
 | Binaries          | `flor agent` + 1 `flor vertex` | `flor agent` + 2 `flor vertex` | Same as C1                      | Same as C1                    |
-| Source of truth   | YAML in git repo               | YAML in git repo               | Coordination server DB          | Consensus across agents       |
-| Compile           | Local, service-level only      | Local, both layers             | Server-side                     | Any agent / consensus-derived |
+| Source of truth   | YAML in git repo               | YAML in git repo               | Server (ctrl); operator git+compile (mgmt) | Consensus (ctrl); operator git+compile (mgmt) |
+| Compile           | Local, service-level only      | Local, both layers             | mgmt local+signed; ctrl server-side | mgmt local+signed; ctrl consensus-derived |
 | Distribution      | Bundle + config-server fetch   | Bundle + config-server fetch   | Server push (WebSocket/gRPC)    | Gossip + pull                 |
 | Reload            | Restart w/ commit timeout      | Restart w/ commit timeout      | Hot reload                      | Hot reload                    |
 | Consensus         | Operator (1 person)            | Operator (1 person)            | Single-writer server            | Raft / CRDT                   |
@@ -93,6 +93,8 @@ The compiled per-node artifact is the stable public contract. What changes acros
 | State updates     | Atomic (poll config-server)    | Atomic (poll config-server)    | Atomic push                     | Atomic; deltas in B2+         |
 | Decision authority| Operator only (signed mgmt)    | Operator only (signed mgmt)    | + bounded CP (unsigned, within signed policy) | + agent fast-path autonomy (FRR-class) within CP/policy bounds |
 | Artifact streams  | `plane: "mgmt"` (signed)       | `plane: "mgmt"` (signed)       | + `plane: "ctrl"` (unsigned)    | Same                          |
+
+From B1 on, the **Source of truth** and **Compile** rows split by plane: **mgmt** stays authored, compiled, and signed on operator hardware — the coordination server relays it but cannot author it (see [Coordinator](../../b1-cloud-control/coordinator)) — while only **ctrl** moves to the server or to consensus. This bounds a compromised cloud to disruption, not destruction.
 
 **Preserving manual mode as a power mode**: manual configuration (YAML in git + operator-run config-server) is a permanent capability tier, not a stepping stone. Hackers, personal setups, airgapped environments, and disaster-recovery fallback all depend on it. Every higher tier is additive — no C0/C1 capability is removed in B1 or beyond.
 

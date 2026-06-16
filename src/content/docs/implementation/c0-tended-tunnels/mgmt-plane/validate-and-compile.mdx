@@ -7,6 +7,8 @@ description: Validator rules and compile step for producing per-node artifacts i
 
 `flor validate` is the only safety net against hand-edit errors, so it must be strict.
 
+`florctl validate`/`compile` first **discover and merge** the source: starting from `rete.yaml`, they recursively glob `*.yaml`/`*.yml` (skipping `.flor/`, `certs/`, `enrollment.log`, dotfiles; honoring any `include`/`exclude` in `rete.yaml`), then union same-kind collections into one logical view. File layout is operator-chosen (see [Source Layout](../source-layout)); the rules below run on the merged view.
+
 1. **Schema** — every file matches its JSON Schema.
 2. **Cross-references** — every node/service/group/role name referenced exists and is unique across the whole rete.
 3. **Principal registry** — every principal name (users, services, nodes; vertices in C1+) is unique across all principal kinds; no name collision across YAML files. Cross-kind disjointness also keeps the `.rete` DNS namespace unambiguous (see [ADR-0006](../../../../contributing/adr/0006-impl-mtls-in-quic-endpoint) for the `dns::format` mapping): without it, e.g. a service and a vertex sharing a short name on the same node would both render to `<name>.<node>.<rete>.rete`.
@@ -20,6 +22,7 @@ description: Validator rules and compile step for producing per-node artifacts i
 10. **Workload vertex binding** — every workload's host vertex must resolve. For services: `at:` names a known node; `via:` (when present) names a vertex declared on that node. For user device entries: `at:` names a known node; `via:` (when present) names a vertex on that node. For the agent: `agent_via:` (when present) on the node entry names a vertex on that node. The `via:` / `agent_via:` field may be omitted when the target node has exactly one vertex; the compiler picks that vertex automatically. When the node has multiple vertices and the field is absent, validation fails with "specify `via:` to disambiguate among `<list of vertex names>`." (In C0 every node has exactly one vertex, so these fields are always optional.)
 11. **Access consistency** — every principal's role permits only groups defined in `groups.yaml`; every service's `group` is defined; every service with an egress `role` has that role defined.
 12. **Principal role coherence** — services that act as clients (outbound) must have a `role` declared; services without `role` may only appear as targets.
+13. **Source merge integrity** — a duplicate `(kind, name)` across the merged source files (two `services:` entries named `api`, two `nodes:` named `alpha`, …) is a hard error, never last-wins; the `rete` singleton must appear exactly once; an unrecognized top-level collection key (e.g. a typo'd `servies:`) is an error, not a silent skip. This keeps a whole-view facade authored across many files as safe as one authored in a single file.
 
 Cert chain verification happens at runtime during mTLS, not at validate time — the repo doesn't hold individual certs.
 
