@@ -5,9 +5,9 @@ description: Validator rules and compile step for producing per-node artifacts i
 
 ## Validator Rules
 
-`flor validate` is the only safety net against hand-edit errors, so it must be strict.
+`retectl validate` is the only safety net against hand-edit errors, so it must be strict.
 
-`retectl validate`/`compile` first **discover and merge** the source: starting from `rete.yaml`, they recursively glob `*.yaml`/`*.yml` (skipping `.flor/`, `certs/`, `enrollment.log`, dotfiles; honoring any `include`/`exclude` in `rete.yaml`), then union same-kind collections into one logical view. File layout is operator-chosen (see [Source Layout](../source-layout)); the rules below run on the merged view.
+`retectl validate`/`compile` first **discover and merge** the source: they require `rete.yaml` at the repo root, and fail if it is missing or nested elsewhere. From that anchor, they recursively glob `*.yaml`/`*.yml` (skipping `.flor/`, `certs/`, dotfiles; honoring any `include`/`exclude` in `rete.yaml`), then union same-kind collections into one logical view. File layout is operator-chosen (see [Source Layout](../source-layout)); the rules below run on the merged view. When `-f <file|glob>…` is used, discovery is bypassed and the merged view is built from exactly those paths, but at least one selected file must contain the singleton `rete` block.
 
 1. **Schema** — every file matches its JSON Schema.
 2. **Cross-references** — every node/service/group/role name referenced exists and is unique across the whole rete.
