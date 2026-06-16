@@ -1,0 +1,113 @@
+---
+title: "0009: Treat Source Config as a Compiled Facade"
+---
+
+## Status
+
+Accepted
+
+Grounds the source configuration format in [source-layout.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/source-layout) and the C0/C1 mgmt-plane docs. Uses the rete vocabulary of [ADR-0008: Distinguish Rete, Mesh, and Cluster](/docs/contributing/adr/0008-name-rete-mesh-cluster) and the bounds/decisions split of the C1 [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane). The consumer analysis that motivates it is the [Coordinator sketch](/docs/implementation/b1-cloud-control/coordinator).
+
+> **Amendment note.** An earlier draft of this ADR ("Model Rete Configuration as Objects") decided the *source YAML* should be a collection of `kind`/`name`/`spec` objects. That mis-located the object model. Pressure-testing against the real consumer — the Coordinator — showed the source YAML is a **compiled-away facade**, not a live operational store, so the object envelope earns nothing there. The object model belongs on the *consumed* (compiled-JSON / Coordinator) side, where state is actually stored, reconciled, sliced, and watched. This record is amended in place to the corrected decision.
+
+## Context
+
+Florete's source configuration is authored "Docker Compose-style"[^compose]: collections keyed by type (`services:`, `nodes:`, `roles:`, …) mapping named instances. We considered moving to a Kubernetes-style object model[^k8s-obj] and resolved it through three rounds of pressure-testing.
+
+The decisive observation is **what makes a Kubernetes object worth its envelope: the object is the live operational unit** — stored in the API server, individually addressed, incrementally `apply`-ed, reconciled by controllers, versioned, status-bearing. The ceremony pays rent because the object *lives*.
+
+Florete's source YAML is the opposite. It is authored as a **whole view**, compiled by `florctl`, signed, and discarded; the **compiled JSON** — not the YAML — is what is stored, served, and (with a Coordinator) reconciled ([reasoning > Why a two-step pipeline](/docs/implementation/c0-tended-tunnels/mgmt-plane/reasoning)). There is no per-object lifecycle, no incremental apply. And the security posture **forbids** the apply-to-reconciler pattern for management state: the Coordinator (today's `config-server`) must hold no mgmt-authoring authority, so an operator cannot `apply` mgmt to it and have it reconcile — mgmt is compiled and signed on operator hardware. The very thing the object envelope is *for* is prohibited where it would matter.
+
+Two further forces:
+
+- **Identity boundary.** The rete is one trust domain / identity namespace ([ADR-0008](/docs/contributing/adr/0008-name-rete-mesh-cluster)) — it already *is* the namespace.
+- **Multi-product, one spine.** Service Mesh (Kubernetes-native DevOps audience; Helm), Workspace (Tailscale-like; admin UI later), and Edge Mesh (generated config) share one compiled spine. Two parallel *authoring* surfaces were rejected for their doubled documentation, doubled compiler front-ends, and slower adoption.
+
+## Decision
+
+Keep the operator-facing source configuration a **Docker Compose-style, whole-view facade**, and place any object model only where state is operationally live — the compiled artifacts and the Coordinator's resource model.
+
+### The facade stays compose-style and whole-view
+
+Per-type collections (`services:`, `nodes:`, …), authored as a complete mgmt view, compiled to signed JSON. This is *honest*: it mirrors the actual operation — the operator authors the entire view, signs it, compiles it — rather than dressing it up as a stream of independently-applied live objects it is not.
+
+### The compose facade already *is* `kind`/`name`/`spec`
+
+At the data level the two are isomorphic: the top-level key is the kind (`services`), the map key is the name (`api`), the value is the spec. So the choice was never about addressability — compose has it. The choice was about *operational* machinery (live per-object apply, status, reconcile) and *envelope* ceremony, both of which the facade neither needs nor should imply.
+
+```yaml
+# these are equivalent; the facade uses the left form
+services:                 #   kind: Service
+  api:                    #   name: api
+    at: alpha             #   spec:
+    addr: 127.0.0.1:8000  #     at: alpha
+                          #     addr: 127.0.0.1:8000
+```
+
+### File organization is operator-chosen
+
+The one-file-per-kind layout is a scaffolded default, not a requirement. Operators may keep one large file or split freely (e.g. `services/payments.yaml`, `services/web.yaml`). The compiler **globs and merges** the source; merge is a union; a duplicate `(kind, name)` across files is a hard **error** (never last-wins — that preserves determinism and order-independence); singleton kinds (`rete`) must appear exactly once. `rete.yaml` is the fixed entry-point/anchor and may carry `include`/`exclude` globs.
+
+### The object model lives on the consumed side
+
+The compiled per-node artifacts and the Coordinator's internal resource model *are* self-describing, addressable objects — because *there* state is stored, signed, reconciled, sliced per-node, and watched. Self-describing `kind`+`name` helps a uniform store/watch; that value is real on the JSON side, absent on the facade side.
+
+### No `apply -f` in the mgmt authoring path
+
+Mgmt is author → compile → sign → publish, locally. The Coordinator stores and serves mgmt (and can't tamper — nodes verify the operator signature) but cannot author it. Offering `florctl apply -f` for mgmt would advertise a live-object model that does not exist and that the blast-radius design rules out. On-prem deployments may relax this (a scoped mgmt key on the Coordinator); cloud deployments do not.
+
+### Content requirements carried regardless of facade
+
+Two requirements the Coordinator surfaces are about *content*, not envelope, and hold in compose form: **objectives are first-class** (the operator authors goals, not just entities and ACLs — reserve the role, defer the language), and **bounds are a narrowing-closed, typed-rule algebra** (the C1 `{ type: enum, … }` shape, the shared vocabulary that lets authority attenuate operator → Coordinator → agent, and that doubles as the AI-confinement envelope).
+
+### Facades are decoupled and pluggable
+
+Because the compiler normalizes to the same signed JSON, a different facade — an object-style dialect, or in-cluster Kubernetes CRDs reconciled by an operator that calls the local compile path — can be added later as an *additive producer*, without making it the canonical authoring model or giving any cloud component minting authority.
+
+## Rationale
+
+### Why a facade, not live objects
+
+The object envelope earns its keep only when the object is the operational unit. Florete's YAML is compiled away; the JSON is the operational unit. So the envelope buys nothing on the YAML and would mislead — implying an apply/reconcile/status lifecycle the model does not have, and that the security design forbids for mgmt.
+
+### Why compose-style is the honest facade
+
+A whole-view source document is most faithfully a few grouped collections (compose/Terraform[^terraform] style), not a scattered object set, because the operator re-authors and re-signs the whole view on each change. The compose shape mirrors the operation; an object collection would imply incremental per-object mutation that never happens.
+
+### Why the object model still belongs somewhere
+
+It does — on the consumed side. The Coordinator stores, slices, reconciles, and watches state; there, self-describing addressable objects are load-bearing. Relocating the object model (rather than deleting it) keeps the genuine Kubernetes insight where it applies.
+
+### Why de-ceremonied even on the consumed side
+
+Rete = namespace; status lives on telemetry/ctrl streams; single vendor; explicit allow-lists beat selectors for the audit wedge. None of `apiVersion` groups, namespaces, in-object `status`, or label selectors pays rent.
+
+### Why one facade, not a Kubernetes twin
+
+Cosmetic CRD-shaped YAML delivers none of the real Kubernetes value (kubectl/GitOps/admission come from a controller reconciling CRDs *in a cluster*, an adapter, not a syntax) while taxing the Workspace and Edge audiences. Real Kubernetes integration is the additive in-cluster adapter above, not a second authoring grammar.
+
+## Consequences
+
+### Benefits
+
+- One honest, low-ceremony authoring facade across Service Mesh, Workspace, and Edge Mesh; operators organize files as they see fit.
+- The compiled spine and the security model (local mgmt signing; Coordinator can't author mgmt) are unaffected by any facade choice — facades stay pluggable.
+- Preserves audit strength (explicit allow-lists) and the bounded-autonomy confinement envelope.
+- Avoids advertising an `apply`/reconcile lifecycle the design does not (and for mgmt must not) have.
+
+### Trade-offs
+
+- The earlier "objects for source" direction is reversed; this record is amended in place rather than superseded, to avoid same-day lineage churn (per the project's in-place-amendment convention).
+- The compiler gains glob-discovery + merge with duplicate/unknown-key/singleton validation (small, additive).
+- Source-layout docs reframe the per-type files as a *recommended* layout and document the merge/discovery rules.
+
+### Evolution
+
+- A reconciling **Coordinator** consumes a purpose-built rete-wide bounds artifact (sees-all, authors-none) and produces per-node ctrl within signed bounds; mgmt source-of-truth stays the operator's local signed compile even when the Coordinator is server-based — see the [Coordinator sketch](/docs/implementation/b1-cloud-control/coordinator).
+- `florctl apply -f` may appear later for *non-mgmt* or on-prem-relaxed paths once a reconciling target exists; it is not the mgmt model.
+- A Kubernetes-CRD facade / in-cluster operator is an additive producer when a paying customer justifies it.
+- The objective and bounds **policy languages** grow feature-by-feature.
+
+[^compose]: [Compose file reference](https://docs.docker.com/reference/compose-file/) — top-level type keys (`services:`, `networks:`, …) mapping named instances; the shape the facade follows.
+[^k8s-obj]: [Kubernetes objects](https://kubernetes.io/docs/concepts/overview/working-with-objects/) — the `apiVersion`/`kind`/`metadata`/`spec`/`status` envelope, label selectors, and the live apply/reconcile lifecycle that make the object the operational unit.
+[^terraform]: [Terraform](https://developer.hashicorp.com/terraform/language/files) reads and merges all `*.tf` in a directory regardless of file layout, addressing resources by `type.name` — the proven "split however you like, all merged" model for security-sensitive infra-as-code.
