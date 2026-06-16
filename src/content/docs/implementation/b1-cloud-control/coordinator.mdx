@@ -63,7 +63,7 @@ The decisive split:
 
 ## Facade vs. consumed model — and the three artifact flows
 
-A point the rest of this sketch must respect: **the operator-facing YAML and what the nodes and Coordinator consume are different layers.** The YAML is a *facade* — authored as a whole mgmt view, compiled by `retectl`, signed, and discarded. The **compiled JSON** is the operational unit: what is stored, served, sliced, reconciled, and watched. Categories 1–3 (the facade) are isomorphic at the data level to `kind`/`name`/`spec`, but operationally they are a whole-view document, not a live object store — see [ADR-0009](../../../contributing/adr/0009-config-compiled-facade).
+A point the rest of this sketch must respect: **the operator-facing YAML and what the nodes and Coordinator consume are different layers.** The YAML is a *facade* — authored as a whole mgmt view, compiled by `retectl`, signed, and discarded. The **compiled JSON** is the operational unit: what is stored, served, sliced, reconciled, and watched. Categories 1–3 (the facade) are isomorphic at the data level to `kind`/`name`/`spec`, but operationally they are a whole-view document, not a live object store — see [ADR-0009](/docs/implementation/adr/0009-config-compiled-facade).
 
 Introducing the Coordinator changes the *producer/consumer* picture, not the facade. Today `retectl compile` emits only **node-targeted** artifacts; with a Coordinator there are **three flows**:
 
@@ -75,7 +75,7 @@ So even with a server-based Coordinator, **mgmt authoring and signing stay on th
 
 ## What this settles for the C0 config model
 
-The config format models **only categories 1–3** — the operator-authored facade. The decision ([ADR-0009](../../../contributing/adr/0009-config-compiled-facade)) is therefore: **keep the facade Docker Compose-style and whole-view**, and put the object model only on the *consumed* side (compiled artifacts + the Coordinator's resource model), where state is actually stored, sliced, reconciled, and watched. The facade is already `kind`/`name`/`spec` in disguise (top-level key = kind, map key = name, value = spec), so it loses no addressability; what it correctly *omits* is the live-apply / `status` / reconcile machinery — and the `apiVersion`/namespace/selector ceremony — that a compiled-away facade neither has nor should imply. No `retectl apply -f` in the mgmt path: it would advertise a live store the security model forbids.
+The config format models **only categories 1–3** — the operator-authored facade. The decision ([ADR-0009](/docs/implementation/adr/0009-config-compiled-facade)) is therefore: **keep the facade Docker Compose-style and whole-view**, and put the object model only on the *consumed* side (compiled artifacts + the Coordinator's resource model), where state is actually stored, sliced, reconciled, and watched. The facade is already `kind`/`name`/`spec` in disguise (top-level key = kind, map key = name, value = spec), so it loses no addressability; what it correctly *omits* is the live-apply / `status` / reconcile machinery — and the `apiVersion`/namespace/selector ceremony — that a compiled-away facade neither has nor should imply. No `retectl apply -f` in the mgmt path: it would advertise a live store the security model forbids.
 
 Two requirements this exercise surfaces are about **content**, not envelope, and carry over to the compose facade unchanged:
 
@@ -145,7 +145,7 @@ The design rule that follows is one line: **intelligence goes in the producers (
 
 Concrete takeaways for the config-model decision being made now:
 
-- **Keep the source facade Docker Compose-style** ([ADR-0009](../../../contributing/adr/0009-config-compiled-facade)) — a whole-view document, isomorphic to `kind`/`name`/`spec` but without the live-apply/`status`/reconcile machinery or the `apiVersion`/namespace/selector ceremony. The object model lives on the *consumed* side (compiled artifacts + Coordinator resource model), where state is stored, sliced, reconciled, and watched. File layout is operator-chosen; the compiler globs and merges.
+- **Keep the source facade Docker Compose-style** ([ADR-0009](/docs/implementation/adr/0009-config-compiled-facade)) — a whole-view document, isomorphic to `kind`/`name`/`spec` but without the live-apply/`status`/reconcile machinery or the `apiVersion`/namespace/selector ceremony. The object model lives on the *consumed* side (compiled artifacts + Coordinator resource model), where state is stored, sliced, reconciled, and watched. File layout is operator-chosen; the compiler globs and merges.
 - **Reserve a first-class objective/constraint object role** — not just entities and ACLs. Do not design the objective language yet; just leave it a home.
 - **Keep bounds as the typed-rule, narrowing-closed algebra** already in C1 — the shared vocabulary across operator → Coordinator → agent.
 - **Keep derived (ctrl) and observed (telemetry) state out of the source model.** This re-confirms "no `status` in hand-authored files": those are a projection and a stream, not authored objects.

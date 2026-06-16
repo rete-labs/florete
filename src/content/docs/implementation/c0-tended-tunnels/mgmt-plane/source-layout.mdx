@@ -46,7 +46,7 @@ The repo holds **names + ACLs + topology + CA cert + signer pubkeys**. That's wh
 
 ### Source files are a recommended split, not a requirement
 
-The `*.yaml` filenames above are a **recommended default** (scaffolded by `retectl init`), not a fixed schema. The facade is a *whole-view* document — the operator authors the entire mgmt view and the compiler reads it as a whole — so **file boundaries are cosmetic**. Operators may keep everything in one file, or split by team/domain (`services/payments.yaml`, `services/web.yaml`), or group however suits the rete. See [ADR-0009](../../../../contributing/adr/0009-config-compiled-facade) for why the facade is compose-style rather than a collection of Kubernetes-style objects.
+The `*.yaml` filenames above are a **recommended default** (scaffolded by `retectl init`), not a fixed schema. The facade is a *whole-view* document — the operator authors the entire mgmt view and the compiler reads it as a whole — so **file boundaries are cosmetic**. Operators may keep everything in one file, or split by team/domain (`services/payments.yaml`, `services/web.yaml`), or group however suits the rete. See [ADR-0009](/docs/implementation/adr/0009-config-compiled-facade) for why the facade is compose-style rather than a collection of Kubernetes-style objects.
 
 Each top-level collection is, at the data level, exactly `kind`/`name`/`spec`:
 

@@ -6,7 +6,7 @@ title: "0008: Distinguish Rete, Mesh, and Cluster"
 
 Accepted
 
-Establishes the vocabulary that [ADR-0005](/docs/contributing/adr/0005-use-spiffe-identities), [ADR-0006](/docs/contributing/adr/0006-impl-mtls-in-quic-endpoint), and [ADR-0007](/docs/contributing/adr/0007-decouple-naming-identity-routing) (and the C0/C1 implementation docs) were updated in place to use.
+Establishes the vocabulary that [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities), [ADR-0006](/docs/implementation/adr/0006-impl-mtls-in-quic-endpoint), and [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing) (and the C0/C1 implementation docs) were updated in place to use.
 
 ## Context
 
@@ -51,7 +51,7 @@ This vocabulary was applied across the whole corpus — Rust identifiers (`build
 
 This is worth stating outright, because the user-facing form is `<service>.<rete>.rete` and one might worry the rete-in-the-name pins location:
 
-- **Within a rete, the name is not location-pinned.** A rete-scoped service name resolves to instances on **any node** in the rete (and, once node-clusters exist, any cluster). Every instance presents the **rete-wide service SAN** (`spiffe://<rete>/service/<svc>`), so the outbound verifier's **exact SAN match holds regardless of where the instance runs**. Transparent, locality-aware load balancing across the rete is therefore unaffected by the rete being in the name. (Node-scope is an addressing/placement detail, never the client-facing SAN — see [ADR-0007 > Exact SAN match remains the gate](/docs/contributing/adr/0007-decouple-naming-identity-routing).)
+- **Within a rete, the name is not location-pinned.** A rete-scoped service name resolves to instances on **any node** in the rete (and, once node-clusters exist, any cluster). Every instance presents the **rete-wide service SAN** (`spiffe://<rete>/service/<svc>`), so the outbound verifier's **exact SAN match holds regardless of where the instance runs**. Transparent, locality-aware load balancing across the rete is therefore unaffected by the rete being in the name. (Node-scope is an addressing/placement detail, never the client-facing SAN — see [ADR-0007 > Exact SAN match remains the gate](/docs/implementation/adr/0007-decouple-naming-identity-routing).)
 - **Cross-rete transparent load balancing is not a goal.** Different retes are different trust domains — different administrative and security boundaries. One does not transparently balance a single service across two retes; that boundary is **explicit federation** (shared/federated trust bundles per ADR-0005, and explicit cross-rete addressing `<service>.<other-rete>.rete`), exactly as Istio treats multi-mesh — explicit and non-transparent — rather than as one flat balanced pool.[^istio-multimesh]
 - **Net:** putting the rete in the user-facing hostname costs nothing in load-balancing terms. The only place balancing happens (within a rete) is unaffected, and the only place the name would constrain it (across retes) is a boundary we keep explicit by design.
 
@@ -61,6 +61,6 @@ This is worth stating outright, because the user-facing form is `<service>.<rete
 
 ### Evolution
 
-When node-clusters land, "cluster" takes its reserved meaning. Node names may become cluster-scoped (`alpha.cluster1.<rete>.rete`) — additive, resolved by context per [ADR-0007](/docs/contributing/adr/0007-decouple-naming-identity-routing), with the cluster as a locality/addressing axis rather than a separate identity.
+When node-clusters land, "cluster" takes its reserved meaning. Node names may become cluster-scoped (`alpha.cluster1.<rete>.rete`) — additive, resolved by context per [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing), with the cluster as a locality/addressing axis rather than a separate identity.
 
 [^istio-multimesh]: [Istio: Deployment Models — multiple meshes (federation) expose services explicitly across the boundary, with separate trust domains](https://istio.io/latest/docs/ops/deployment/deployment-models/).

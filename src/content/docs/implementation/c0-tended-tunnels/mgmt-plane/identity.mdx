@@ -25,7 +25,7 @@ C0 issues two flavours of SPIFFE principal, distinguished by how the cert is use
 | ManagementPlane | Yes | The operator (separate keypair from their user identity) | Signing mgmt artifacts (envelope `key_id`) |
 | ControlPlane | Reserved | The CP signing authority (operator-held in C1, cloud- or BYO-held in B1+) | Signing ctrl artifacts (introduced in C1) |
 
-All four C0-active and two reserved kinds are recognised from day one — see [ADR-0005](../../../../contributing/adr/0005-use-spiffe-identities). Pre-declaring the reservations means C1 can introduce `Vertex` and `ControlPlane` runtime usage without touching the CLI `--kind` parser, the `Kind` enum, or the cert-extension policy table.
+All four C0-active and two reserved kinds are recognised from day one — see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities). Pre-declaring the reservations means C1 can introduce `Vertex` and `ControlPlane` runtime usage without touching the CLI `--kind` parser, the `Kind` enum, or the cert-extension policy table.
 
 ### Rete CA
 
@@ -83,7 +83,7 @@ Most HTTP clients, gRPC clients, and database drivers support SOCKS5 via environ
 
 Florete identities are **SPIFFE IDs**. The rete `name` is the SPIFFE trust domain; principal kind is the first path segment; the principal's own name follows. This produces real SPIFFE X.509-SVIDs — the certs flor issues interoperate (in principle) with SPIRE, Istio, Linkerd, Vault, and any other SPIFFE consumer.
 
-Two forms are used interchangeably: the **canonical SPIFFE URI** (in certs as SAN, in compiled artifacts, in ACLs) and the **convenience hostname** (for user-facing tooling and shell command-lines) — the latter exists only for services, since users are not things you `curl` or `ssh` to. The on-wire routing hint (QUIC SNI) is a third, separate thing: derived from the identity and resolved by lookup rather than parsed, decoupled from the convenience hostname and free to evolve — see [ADR-0007: Decouple Naming, Identity, and Routing](/docs/contributing/adr/0007-decouple-naming-identity-routing).
+Two forms are used interchangeably: the **canonical SPIFFE URI** (in certs as SAN, in compiled artifacts, in ACLs) and the **convenience hostname** (for user-facing tooling and shell command-lines) — the latter exists only for services, since users are not things you `curl` or `ssh` to. The on-wire routing hint (QUIC SNI) is a third, separate thing: derived from the identity and resolved by lookup rather than parsed, decoupled from the convenience hostname and free to evolve — see [ADR-0007: Decouple Naming, Identity, and Routing](/docs/implementation/adr/0007-decouple-naming-identity-routing).
 
 ### Canonical SPIFFE URI
 
@@ -126,7 +126,7 @@ The `service/` segment is elided in the hostname because services are the only k
 
 `.rete` is the Florete TLD. It's **not registered in public DNS**; only flor agents resolve it (via an in-process resolver or a split-horizon stub that intercepts queries for `.rete` and routes them through the rete). This gives `.rete` hostnames drop-in compatibility with standard tools (`ssh`, `curl`, `psql`, browsers with local resolver) without polluting real DNS.
 
-**Resolution is contextual.** A `.rete` hostname is turned into an identity *with namespace context*, not by self-sufficient parsing. In C0 the context is the caller's rete (its trust domain): an agent strips the known trust-domain suffix, and the residual label count distinguishes rete-scoped (1 label) from node-scoped (2). This is why `<rete>` may be a **dotted** trust domain (e.g. `rete.local`) — there is no single-label requirement, and no short-name↔trust-domain table to maintain. Beyond a single rete, the same step becomes a lookup against a network-aware **Name Service**. See [ADR-0007](/docs/contributing/adr/0007-decouple-naming-identity-routing) for the naming/identity/routing decoupling that makes this work.
+**Resolution is contextual.** A `.rete` hostname is turned into an identity *with namespace context*, not by self-sufficient parsing. In C0 the context is the caller's rete (its trust domain): an agent strips the known trust-domain suffix, and the residual label count distinguishes rete-scoped (1 label) from node-scoped (2). This is why `<rete>` may be a **dotted** trust domain (e.g. `rete.local`) — there is no single-label requirement, and no short-name↔trust-domain table to maintain. Beyond a single rete, the same step becomes a lookup against a network-aware **Name Service**. See [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing) for the naming/identity/routing decoupling that makes this work.
 
 ### Reserved Names
 

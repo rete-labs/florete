@@ -6,11 +6,11 @@ title: "0007: Decouple Naming, Identity, and Routing"
 
 Accepted
 
-Refines the naming/SNI mechanism of [ADR-0006: Implement mTLS in QuicEndpoint](/docs/contributing/adr/0006-impl-mtls-in-quic-endpoint). The *rete* / *mesh* / *cluster* vocabulary this ADR uses is defined in [ADR-0008: Distinguish Rete, Mesh, and Cluster](/docs/contributing/adr/0008-name-rete-mesh-cluster).
+Refines the naming/SNI mechanism of [ADR-0006: Implement mTLS in QuicEndpoint](/docs/implementation/adr/0006-impl-mtls-in-quic-endpoint). The *rete* / *mesh* / *cluster* vocabulary this ADR uses is defined in [ADR-0008: Distinguish Rete, Mesh, and Cluster](/docs/implementation/adr/0008-name-rete-mesh-cluster).
 
 ## Context
 
-[ADR-0006](/docs/contributing/adr/0006-impl-mtls-in-quic-endpoint) settled mTLS and pinned the QUIC SNI to the `.rete` *convenience hostname*: the server was to read SNI, run `dns::parse` to recover a `SpiffeId`, and look up which published cert to present. [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity) defines that hostname as `<service>.<rete>.rete` (rete-scoped) or `<service>.<node>.<rete>.rete` (node-scoped), with `<rete>` standing in for the SPIFFE trust domain.
+[ADR-0006](/docs/implementation/adr/0006-impl-mtls-in-quic-endpoint) settled mTLS and pinned the QUIC SNI to the `.rete` *convenience hostname*: the server was to read SNI, run `dns::parse` to recover a `SpiffeId`, and look up which published cert to present. [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity) defines that hostname as `<service>.<rete>.rete` (rete-scoped) or `<service>.<node>.<rete>.rete` (node-scoped), with `<rete>` standing in for the SPIFFE trust domain.
 
 Implementing it surfaced three coupled problems that the convenience-name-as-SNI framing cannot resolve on its own:
 
@@ -48,7 +48,7 @@ With context, the node-vs-rete shape is unambiguous *even for dotted trust domai
 - flor-internal code builds **either** (it dials vertices for mesh transit);
 - the Endpoint API `connect(caller: &X509Svid, target: &Dialable)` accepts both.
 
-The codec is `render(&Dialable) -> String` (infallible concatenation, `<name>[.<node>].<trust-domain>.rete`, full form including the trust domain) and `resolve(host, ctx_td) -> Result<Dialable>` (strip `.rete`, strip the context trust domain, residual labels decide scope; a non-matching trust-domain suffix is a foreign rete — unsupported in C0). This mirrors the existing [`NodeScopableKind`](/docs/contributing/adr/0005-use-spiffe-identities) discipline of making illegal states unrepresentable, and documents the *dial from anyone, to a service or vertex* asymmetry of `connect`.
+The codec is `render(&Dialable) -> String` (infallible concatenation, `<name>[.<node>].<trust-domain>.rete`, full form including the trust domain) and `resolve(host, ctx_td) -> Result<Dialable>` (strip `.rete`, strip the context trust domain, residual labels decide scope; a non-matching trust-domain suffix is a foreign rete — unsupported in C0). This mirrors the existing [`NodeScopableKind`](/docs/implementation/adr/0005-use-spiffe-identities) discipline of making illegal states unrepresentable, and documents the *dial from anyone, to a service or vertex* asymmetry of `connect`.
 
 ### Dotted trust domains are allowed
 

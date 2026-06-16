@@ -6,7 +6,7 @@ title: "0009: Treat Source Config as a Compiled Facade"
 
 Accepted
 
-Grounds the source configuration format in [source-layout.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/source-layout) and the C0/C1 mgmt-plane docs. Uses the rete vocabulary of [ADR-0008: Distinguish Rete, Mesh, and Cluster](/docs/contributing/adr/0008-name-rete-mesh-cluster) and the bounds/decisions split of the C1 [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane). The consumer analysis that motivates it is the [Coordinator sketch](/docs/implementation/b1-cloud-control/coordinator).
+Grounds the source configuration format in [source-layout.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/source-layout) and the C0/C1 mgmt-plane docs. Uses the rete vocabulary of [ADR-0008: Distinguish Rete, Mesh, and Cluster](/docs/implementation/adr/0008-name-rete-mesh-cluster) and the bounds/decisions split of the C1 [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane). The consumer analysis that motivates it is the [Coordinator sketch](/docs/implementation/b1-cloud-control/coordinator).
 
 > **Amendment note.** An earlier draft of this ADR ("Model Rete Configuration as Objects") decided the *source YAML* should be a collection of `kind`/`name`/`spec` objects. That mis-located the object model. Pressure-testing against the real consumer — the Coordinator — showed the source YAML is a **compiled-away facade**, not a live operational store, so the object envelope earns nothing there. The object model belongs on the *consumed* (compiled-JSON / Coordinator) side, where state is actually stored, reconciled, sliced, and watched. This record is amended in place to the corrected decision.
 
@@ -20,7 +20,7 @@ Florete's source YAML is the opposite. It is authored as a **whole view**, compi
 
 Two further forces:
 
-- **Identity boundary.** The rete is one trust domain / identity namespace ([ADR-0008](/docs/contributing/adr/0008-name-rete-mesh-cluster)) — it already *is* the namespace.
+- **Identity boundary.** The rete is one trust domain / identity namespace ([ADR-0008](/docs/implementation/adr/0008-name-rete-mesh-cluster)) — it already *is* the namespace.
 - **Multi-product, one spine.** Service Mesh (Kubernetes-native DevOps audience; Helm), Workspace (Tailscale-like; admin UI later), and Edge Mesh (generated config) share one compiled spine. Two parallel *authoring* surfaces were rejected for their doubled documentation, doubled compiler front-ends, and slower adoption.
 
 ## Decision
