@@ -7,9 +7,9 @@ import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 
 This milestone inherits the management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/mgmt-plane/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` with commit-timeout, same naming scheme, same atomic-artifact distribution.
 
-C1 is also where the **ctrl-plane artifact stream** appears for the first time, even though no autonomous control-plane service exists yet. In C1 the ctrl artifact is operator-produced via `florctl compile` (degenerate case — every "decision" equals the corresponding bound), but it travels in its own envelope, has its own signature, and is verified separately by each agent against bounds expressed here in mgmt. This page covers the **bounds**; ctrl mechanics and how decisions are derived from them live in [Ctrl Plane](../ctrl-plane/).
+C1 is also where the **ctrl-plane artifact stream** appears for the first time, even though no autonomous control-plane service exists yet. In C1 the ctrl artifact is operator-produced via `retectl compile` (degenerate case — every "decision" equals the corresponding bound), but it travels in its own envelope, has its own signature, and is verified separately by each agent against bounds expressed here in mgmt. This page covers the **bounds**; ctrl mechanics and how decisions are derived from them live in [Ctrl Plane](../ctrl-plane/).
 
-**All source YAMLs in the rete repo author mgmt-plane bounds.** Ctrl-plane decisions are derived: in C1 by `florctl compile`, in B1+ by an autonomous CP service. The authoring surface stays mgmt-shaped throughout — operators never edit ctrl artifacts directly.
+**All source YAMLs in the rete repo author mgmt-plane bounds.** Ctrl-plane decisions are derived: in C1 by `retectl compile`, in B1+ by an autonomous CP service. The authoring surface stays mgmt-shaped throughout — operators never edit ctrl artifacts directly.
 
 What C1 adds is the **mesh layer**: mesh-vertex as a new principal kind (with SPIFFE IDs of the form `spiffe://<rete>/vertex/<node>/<name>`), declared inter-node links, explicit multi-hop paths, and a second flor vertex per node so the recursive stack from [Data Plane](../data-plane/) can run.
 
@@ -52,7 +52,7 @@ my-rete/
 ├── paths.yaml                   # NEW: declared allowed paths (path bound — hop sequences only, no labels)
 ├── .gitignore                   # contains `.flor/compiled/*/ctrl/`
 └── .flor/
-    └── compiled/                # committed (operator runs `florctl compile` then commits)
+    └── compiled/                # committed (operator runs `retectl compile` then commits)
         ├── alpha/
         │   ├── mgmt/            # signed by operator; committed
         │   │   ├── agent.json
@@ -65,7 +65,7 @@ my-rete/
         └── …
 ```
 
-YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is the compiled, signed projection of those bounds. The ctrl subtree alongside it is produced by the same `florctl compile` step in C1 (the ctrl producer becomes a CP service in B1+); it's gitignored because its lifecycle is "runtime state, not authoring artifact." See [Ctrl Plane](../ctrl-plane/) for what's inside `ctrl/`.
+YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is the compiled, signed projection of those bounds. The ctrl subtree alongside it is produced by the same `retectl compile` step in C1 (the ctrl producer becomes a CP service in B1+); it's gitignored because its lifecycle is "runtime state, not authoring artifact." See [Ctrl Plane](../ctrl-plane/) for what's inside `ctrl/`.
 
 ### rete.yaml (additions over C0)
 
@@ -267,8 +267,8 @@ Direct ACLs (`ingress`, `egress`) deliberately *don't* use this shell. They're p
 ## CLI additions
 
 ```
-# operator (florctl) — authoring
-florctl compile --node <name> [--repo <dir>] [--out <dir>]
+# operator (retectl) — authoring
+retectl compile --node <name> [--repo <dir>] [--out <dir>]
                                             # emits <out>/<node>/{agent.json, vertices/*.json}
 
 # node (flor) — runtime
@@ -278,7 +278,7 @@ flor vertex run --config <vertex.json>      # NEW: vertex daemon
 
 `flor agent run --config <agent.json>` keeps its C0 behaviour and CLI shape; it just supervises N vertex instances rather than one. Exactly *how* the agent launches vertex processes — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C1; the runtime API stays simple (a vertex starts when given a config, and the agent makes that happen by whatever means the platform offers).
 
-`florctl ca sign` adds `vertices` to its `--kind` enumeration (already foreshadowed in C0). The vertex's SPIFFE name is derived from `<node>/<vertex-name>`.
+`retectl ca sign` adds `vertices` to its `--kind` enumeration (already foreshadowed in C0). The vertex's SPIFFE name is derived from `<node>/<vertex-name>`.
 
 ## Additional validator rules
 
@@ -301,7 +301,7 @@ On top of C0's:
 
 ## Compile step additions
 
-`florctl compile` produces **two artifact subtrees per node** in C1: a signed mgmt subtree (`<node>/mgmt/`) and a CP-signed ctrl subtree (`<node>/ctrl/`). The mgmt subtree contains one `agent.json` plus one `vertices/<name>.json` per vertex (standard topology: `vertices/public.json` for the link-vertex and `vertices/rete.json` for the mesh-vertex), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
+`retectl compile` produces **two artifact subtrees per node** in C1: a signed mgmt subtree (`<node>/mgmt/`) and a CP-signed ctrl subtree (`<node>/ctrl/`). The mgmt subtree contains one `agent.json` plus one `vertices/<name>.json` per vertex (standard topology: `vertices/public.json` for the link-vertex and `vertices/rete.json` for the mesh-vertex), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
 
 This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelope:
 
@@ -520,9 +520,9 @@ The `node/<name>` principal is the node's identity *within a specific rete's tru
 
 Node-identity vs. mesh-vertex-identity aren't merged because they serve different layers and are held by different vertices — `node/<name>` is for control-plane traffic (agent ↔ config-server), `vertex/<node>/rete` is for hop-by-hop mesh transit mTLS. A node joining multiple Florete retes has one `node/<name>` principal per rete (in each rete's own trust domain) and one flor-agent process per rete acting on its behalf.
 
-Enrollment flow is unchanged: `florctl issue-bundle --node alpha --rete <config-server-url>` packages alpha's node identity *and* alpha's mesh-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/rete` principal for every node in C1 (derived from the rete mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the rete trust domain.
+Enrollment flow is unchanged: `retectl issue-bundle --node alpha --rete <config-server-url>` packages alpha's node identity *and* alpha's mesh-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/rete` principal for every node in C1 (derived from the rete mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the rete trust domain.
 
-CP signing identities are issued separately on the operator's own machine (`florctl ca sign --kind control-plane --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_ctrl_signers` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
+CP signing identities are issued separately on the operator's own machine (`retectl ca sign --kind control-plane --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_ctrl_signers` of the mgmt artifact. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
 
 The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the rete currently runs (which may be richer or simpler than what was bundled).
 
@@ -536,7 +536,7 @@ The foundation — rete scope, per-scope install root, one agent per rete, scope
 
 ## Explicitly deferred (in addition to C0's list)
 
-- `florctl compile --derive-paths` — declarative path derivation from topology + access. Ships post-C1 once the topology model is stable.
+- `retectl compile --derive-paths` — declarative path derivation from topology + access. Ships post-C1 once the topology model is stable.
 - Priority / fallback paths.
 - 3rd-party connection-manager adapters (WireGuard, VLESS, …) and the identity-projection rules they need. Architectural placeholder in [Scope > Link Protocols](../scope#link-protocols) and [Data Plane](../data-plane/); no implementation in C1, but the multi-adapter `connection_manager.adapters[]` shape is exercised by the QUIC + UDP pair so adding a third adapter type is purely additive.
 - Mixed-vertex publication (services in link-flor instead of mesh-flor). Now a corner case rather than a planned optimisation, since UDP links cover the private-network performance story without splitting publication. Schema still allows it; YAML surface and validator rules deferred indefinitely.
@@ -555,10 +555,10 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 - [ ] `authorized_ctrl_signers` field in mgmt rete.json carrying the rete's CP signing pubkeys
 - [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in mesh-flor) implementations, plus the `allowed_peers` typed-rule bound declaring which peer mesh-vertices are reachable through which adapter
 - [ ] Multi-hop forwarder operates uniformly across mixed adapter types
-- [ ] `florctl compile` emitting the per-node mgmt layout (omitting the link-vertex file when no QUIC-type link-vertices are declared). The ctrl subtree is produced by the same `florctl compile` invocation but documented in [Ctrl Plane](../ctrl-plane/).
+- [ ] `retectl compile` emitting the per-node mgmt layout (omitting the link-vertex file when no QUIC-type link-vertices are declared). The ctrl subtree is produced by the same `retectl compile` invocation but documented in [Ctrl Plane](../ctrl-plane/).
 - [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, principal role coherence)
-- [ ] `florctl issue-bundle --node <n>` includes the node's mesh-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
-- [ ] `florctl ca sign --kind control-plane --name <name>` issues a CP signing keypair on operator hardware
+- [ ] `retectl issue-bundle --node <n>` includes the node's mesh-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
+- [ ] `retectl ca sign --kind control-plane --name <name>` issues a CP signing keypair on operator hardware
 - [ ] `flor vertex run --config <vertex.json>` daemon entry point
 - [ ] `flor agent run` supervises vertex instances (mechanism — direct fork, systemd, or future local runtime — left open in C1); fetches mgmt and ctrl artifacts as separate streams from the config-server
 - [ ] Example `my-rete/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
@@ -679,7 +679,7 @@ Both fields (`vertex:` for mesh-vertex disambiguation, `via:` for link disambigu
 
 ### Why labels and forwarding are ctrl-plane, not mgmt
 
-Labels and forwarding tables are intrinsically forwarding-implementation, not security-relevant facts: whether a label is 17 or 42 has no access-control consequence — security comes from the `ingress.allow` check at the target. Tying labels to operator signing cadence forces re-signing on every label change, which is dumb in C1 and impossible in B1+ (where CP changes paths in real time). They belong in the unsigned-but-bounded ctrl stream, even in C1 where the producer is `florctl compile`.
+Labels and forwarding tables are intrinsically forwarding-implementation, not security-relevant facts: whether a label is 17 or 42 has no access-control consequence — security comes from the `ingress.allow` check at the target. Tying labels to operator signing cadence forces re-signing on every label change, which is dumb in C1 and impossible in B1+ (where CP changes paths in real time). They belong in the unsigned-but-bounded ctrl stream, even in C1 where the producer is `retectl compile`.
 
 Treating C1 this way also avoids a schema migration at C1→B1+. See [Ctrl Plane](../ctrl-plane/) for the actual mechanics of how labels are allocated, signed (by CP), and verified.
 

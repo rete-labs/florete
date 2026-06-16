@@ -1,22 +1,22 @@
 ---
 title: CLI Surface
-description: florctl and flor command reference for C0
+description: retectl and flor command reference for C0
 ---
 
 ## CLI Surface
 
 Two binaries, split by audience:
 
-- **`florctl`** — **operator workstation only**. Authors rete state: CA operations, validation, compilation, bundle issuance. Never touches a running agent and never ships to a node.
+- **`retectl`** — **operator workstation only**. Authors rete state: CA operations, validation, compilation, bundle issuance. Never touches a running agent and never ships to a node.
 - **`flor`** — **every node**. The daemon plus the node-local user CLI: enrollment, apply, status. One binary serves end users, server admins, and the system service.
 
-This matches the author-vs-participant split used by `kubectl`/`kubelet`, `terraform`/agent, and similar tooling. An end user installing Florete on their laptop gets `flor` with a small, focused command set; operators additionally install `florctl` on their own machine for rete-authoring work.
+This matches the author-vs-participant split used by `kubectl`/`kubelet`, `terraform`/agent, and similar tooling — and the names mirror the layer each acts on: **`retectl` administers the rete** (the trust domain — not any single `flor`, and not one Coordinator), while **`flor` is the node agent**, exactly as `kubectl` administers the cluster and `kubelet` runs on the node. The `-ctl` suffix names the thing controlled (the rete), which is why it is not `florctl`: the tool never controls a `flor`, it authors rete state. An end user installing Florete on their laptop gets `flor` with a small, focused command set; operators additionally install `retectl` on their own machine for rete-authoring work.
 
-### florctl (operator, authoring)
+### retectl (operator, authoring)
 
 ```
-florctl ca init --out <dir>                 # once per rete: generate CA keypair + ca.crt
-florctl ca sign <csr> --name <name>
+retectl ca init --out <dir>                 # once per rete: generate CA keypair + ca.crt
+retectl ca sign <csr> --name <name>
                       --kind <user|service|node|management-plane|control-plane|vertex>
                       [--scope rete|node]
                                             # sign a CSR; append to enrollment.log.
@@ -25,10 +25,10 @@ florctl ca sign <csr> --name <name>
                                             # at runtime in C0 (see ADR-0005).
                                             # `management-plane` is how the rete's
                                             # mgmt-envelope signer is minted in C0 — e.g.
-                                            #   florctl ca sign --kind management-plane \
+                                            #   retectl ca sign --kind management-plane \
                                             #                   --name primary
-                                            # produces the keypair `florctl publish` signs with.
-florctl issue-bundle --node <node-name> --rete <config-server-url>
+                                            # produces the keypair `retectl publish` signs with.
+retectl issue-bundle --node <node-name> --rete <config-server-url>
                      [--csr <csr-bundle>] [--validity <duration>] [--out <bundle>]
                                             # per-node enrollment bundle: CA cert, node
                                             # identity, and every workload identity
@@ -36,12 +36,12 @@ florctl issue-bundle --node <node-name> --rete <config-server-url>
                                             # on this node, plus config-server bootstrap.
                                             # Flow B: consume `flor id create` CSR bundle.
 
-florctl validate [--repo <dir>] [-f <file|glob>…]
+retectl validate [--repo <dir>] [-f <file|glob>…]
                                             # schema + cross-ref + access consistency
-florctl compile [--node <name>] [--repo <dir>] [--out <dir>] [-f <file|glob>…]
+retectl compile [--node <name>] [--repo <dir>] [--out <dir>] [-f <file|glob>…]
                                             # compile all nodes (or one); write to
                                             # <repo>/.flor/compiled/ by default
-florctl publish [--repo <dir>] [--target <config-server-url>]
+retectl publish [--repo <dir>] [--target <config-server-url>]
                                             # push compiled artifacts to the rete
                                             # config-server (see Config-server)
 ```
@@ -49,12 +49,12 @@ florctl publish [--repo <dir>] [--target <config-server-url>]
 Notes:
 
 - **Source discovery.** With no `-f`, `validate`/`compile` start from `rete.yaml` and recursively glob `*.yaml`/`*.yml` under `--repo` (skipping `.flor/`, `certs/`, `enrollment.log`, dotfiles; honoring `include`/`exclude` in `rete.yaml`), then merge same-kind collections into one whole-view before compiling. File layout is operator-chosen — see [Source Layout](../source-layout). `-f <file|glob>…` (repeatable) overrides discovery for partial or CI compiles.
-- `florctl ca init` runs **once per rete**. CA private key never leaves operator's secure storage.
-- `florctl ca sign` is the low-level primitive; `florctl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and config-server bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
+- `retectl ca init` runs **once per rete**. CA private key never leaves operator's secure storage.
+- `retectl ca sign` is the low-level primitive; `retectl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and config-server bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
 - `--kind` on `ca sign` selects the SPIFFE path namespace and the X.509 extension policy applied to the resulting cert. All six kinds are accepted from day one (`user`, `service`, `node`, `management-plane`, `control-plane`, `vertex`); `vertex` and `control-plane` aren't exercised at runtime in C0 but the CLI surface is stable. TLS-capable kinds (`user`, `service`, `node`, `vertex`) get `keyUsage: digitalSignature, keyEncipherment` + `extKeyUsage: serverAuth, clientAuth`; signing-only kinds (`management-plane`, `control-plane`) get `keyUsage: digitalSignature` only, no `extKeyUsage` — see [ADR-0005](../../../../contributing/adr/0005-use-spiffe-identities) for the rationale.
-- `florctl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (with `agent.json` and `vertices/flor.json` per node). Artifacts contain only **scope-relative** path references (bare filenames like `ca.crt`, `alpha.crt`) — the agent resolves them against the rete install root at startup. No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
-- `florctl publish` uploads the current `.flor/compiled/` tree to the rete's config-server; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
-- Nothing in `florctl` affects running agents directly. It reads and writes the rete repo plus operator-local CA material, and talks to the config-server over the rete's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.
+- `retectl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (with `agent.json` and `vertices/flor.json` per node). Artifacts contain only **scope-relative** path references (bare filenames like `ca.crt`, `alpha.crt`) — the agent resolves them against the rete install root at startup. No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the config-server (see [Config-server](../config-server)).
+- `retectl publish` uploads the current `.flor/compiled/` tree to the rete's config-server; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
+- Nothing in `retectl` affects running agents directly. It reads and writes the rete repo plus operator-local CA material, and talks to the config-server over the rete's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.
 
 ### flor (node, daemon + user CLI)
 

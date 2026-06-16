@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-Florete uses SPIFFE IDs as rete-internal principal identities (see [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity)). The `flor` crate has no Rust types for these yet — the QUIC endpoint runs on a self-signed cert with a trust-all client verifier. Before we can implement mTLS, certificate operations in `florctl`, or any of the management/control-plane artifact flows, we need a typed identity model and a CA primitive.
+Florete uses SPIFFE IDs as rete-internal principal identities (see [identity.mdx](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity)). The `flor` crate has no Rust types for these yet — the QUIC endpoint runs on a self-signed cert with a trust-all client verifier. Before we can implement mTLS, certificate operations in `retectl`, or any of the management/control-plane artifact flows, we need a typed identity model and a CA primitive.
 
 Several decisions in this area shape downstream code substantially:
 
@@ -72,7 +72,7 @@ pub fn kind_of(id: &SpiffeId) -> Result<Kind, KindError>;
 pub fn scope_of(id: &SpiffeId) -> Result<Scope, ScopeError>;
 ```
 
-`SpiffeId` stays the canonical name throughout the codebase; `Kind` and `Scope` are computed at points where they matter (e.g. `Ca::sign_csr` deciding the X.509 extension policy, `florctl ca sign` validating `--kind` matches the constructed URI).
+`SpiffeId` stays the canonical name throughout the codebase; `Kind` and `Scope` are computed at points where they matter (e.g. `Ca::sign_csr` deciding the X.509 extension policy, `retectl ca sign` validating `--kind` matches the constructed URI).
 
 `Scope::Node` carries a bare `String` — the node-name segment from the SPIFFE path, not a derived `SpiffeId` for the `node/<name>` principal. The string is already validated as a SPIFFE path component (the `spiffe` crate enforced charset/syntax when parsing the parent SPIFFE ID). Synthesizing the host-node SPIFFE ID is a higher-layer concern (ACL, manifest validator) — `Scope` carries what the path *encodes*, not what it *refers to*.
 
@@ -159,7 +159,7 @@ The C1 milestone introduces `Kind::Vertex` for mesh-vertices. The control-plane 
 
 - the cost of an unused variant is nil,
 - post-hoc additions force `kind_of` and CLI `--kind` parsers to grow, and `match` arms in `Ca::sign_csr` to gain a new branch — touching every call site,
-- `florctl ca sign --kind control-plane` should work in C0 even though no envelope signing happens yet, because the CLI is the user-visible contract and adding a flag value later is more disruptive than starting wide.
+- `retectl ca sign --kind control-plane` should work in C0 even though no envelope signing happens yet, because the CLI is the user-visible contract and adding a flag value later is more disruptive than starting wide.
 
 ### Why singular everywhere
 

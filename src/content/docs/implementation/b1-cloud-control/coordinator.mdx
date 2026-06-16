@@ -63,9 +63,9 @@ The decisive split:
 
 ## Facade vs. consumed model — and the three artifact flows
 
-A point the rest of this sketch must respect: **the operator-facing YAML and what the nodes and Coordinator consume are different layers.** The YAML is a *facade* — authored as a whole mgmt view, compiled by `florctl`, signed, and discarded. The **compiled JSON** is the operational unit: what is stored, served, sliced, reconciled, and watched. Categories 1–3 (the facade) are isomorphic at the data level to `kind`/`name`/`spec`, but operationally they are a whole-view document, not a live object store — see [ADR-0009](../../../contributing/adr/0009-config-compiled-facade).
+A point the rest of this sketch must respect: **the operator-facing YAML and what the nodes and Coordinator consume are different layers.** The YAML is a *facade* — authored as a whole mgmt view, compiled by `retectl`, signed, and discarded. The **compiled JSON** is the operational unit: what is stored, served, sliced, reconciled, and watched. Categories 1–3 (the facade) are isomorphic at the data level to `kind`/`name`/`spec`, but operationally they are a whole-view document, not a live object store — see [ADR-0009](../../../contributing/adr/0009-config-compiled-facade).
 
-Introducing the Coordinator changes the *producer/consumer* picture, not the facade. Today `florctl compile` emits only **node-targeted** artifacts; with a Coordinator there are **three flows**:
+Introducing the Coordinator changes the *producer/consumer* picture, not the facade. Today `retectl compile` emits only **node-targeted** artifacts; with a Coordinator there are **three flows**:
 
 1. **Per-node mgmt slices** — operator-compiled and **operator-signed**, *relayed* by the Coordinator (store-and-serve; it cannot tamper — nodes verify the operator signature), per-node-filtered so node A never sees node B's ACL rows.
 2. **A rete-wide bounds + objectives artifact** — operator-compiled and operator-signed, consumed by the **Coordinator itself** so it has the global picture to optimize against and need not reassemble it from node slices. The Coordinator **sees all, authors none**: a global view is required to compute topology/paths; authoring those bounds is forbidden.
@@ -75,7 +75,7 @@ So even with a server-based Coordinator, **mgmt authoring and signing stay on th
 
 ## What this settles for the C0 config model
 
-The config format models **only categories 1–3** — the operator-authored facade. The decision ([ADR-0009](../../../contributing/adr/0009-config-compiled-facade)) is therefore: **keep the facade Docker Compose-style and whole-view**, and put the object model only on the *consumed* side (compiled artifacts + the Coordinator's resource model), where state is actually stored, sliced, reconciled, and watched. The facade is already `kind`/`name`/`spec` in disguise (top-level key = kind, map key = name, value = spec), so it loses no addressability; what it correctly *omits* is the live-apply / `status` / reconcile machinery — and the `apiVersion`/namespace/selector ceremony — that a compiled-away facade neither has nor should imply. No `florctl apply -f` in the mgmt path: it would advertise a live store the security model forbids.
+The config format models **only categories 1–3** — the operator-authored facade. The decision ([ADR-0009](../../../contributing/adr/0009-config-compiled-facade)) is therefore: **keep the facade Docker Compose-style and whole-view**, and put the object model only on the *consumed* side (compiled artifacts + the Coordinator's resource model), where state is actually stored, sliced, reconciled, and watched. The facade is already `kind`/`name`/`spec` in disguise (top-level key = kind, map key = name, value = spec), so it loses no addressability; what it correctly *omits* is the live-apply / `status` / reconcile machinery — and the `apiVersion`/namespace/selector ceremony — that a compiled-away facade neither has nor should imply. No `retectl apply -f` in the mgmt path: it would advertise a live store the security model forbids.
 
 Two requirements this exercise surfaces are about **content**, not envelope, and carry over to the compose facade unchanged:
 
@@ -90,7 +90,7 @@ The listed services map cleanly onto the autonomic loop plus admission, ingest, 
 
 | Service | Loop role | Notes | Touches config model? |
 |---|---|---|---|
-| **Authoring / Ingest** (provisional name; today `florctl publish`) | — | Receives the operator's compiled, signed mgmt view (cats 1–3) and stores/serves it; cannot author or re-sign mgmt. No live `apply` for mgmt. | **Yes — relays cats 1–3** |
+| **Authoring / Ingest** (provisional name; today `retectl publish`) | — | Receives the operator's compiled, signed mgmt view (cats 1–3) and stores/serves it; cannot author or re-sign mgmt. No live `apply` for mgmt. | **Yes — relays cats 1–3** |
 | **Service Directory** | Knowledge | What is published in the rete; fuels Service Discovery. Entities (declared) + instance health (observed). | Reads cat 1 |
 | **Topology Computation Element (TCE)** + **Path Computation Element (PCE)** | Plan | Compute the k-connected m-dominating topology and the label-stack paths within bounds and objectives. Almost certainly **jointly optimized** — topology and routing are coupled. | Consumes cats 2–3, emits cat 4 |
 | **Load Balancing** | Plan | Endpoint/path selection among equivalent options — a *facet* of PCE, not obviously its own element. Tracked as a sub-concern. | Emits cat 4 |
@@ -149,7 +149,7 @@ Concrete takeaways for the config-model decision being made now:
 - **Reserve a first-class objective/constraint object role** — not just entities and ACLs. Do not design the objective language yet; just leave it a home.
 - **Keep bounds as the typed-rule, narrowing-closed algebra** already in C1 — the shared vocabulary across operator → Coordinator → agent.
 - **Keep derived (ctrl) and observed (telemetry) state out of the source model.** This re-confirms "no `status` in hand-authored files": those are a projection and a stream, not authored objects.
-- **No `florctl apply -f` in the mgmt path.** Mgmt is author → compile → sign → publish locally; the Coordinator stores/serves but cannot author mgmt (the cloud blast-radius safeguard). An `apply`-style verb is reachable later only for *non-mgmt* or on-prem-relaxed paths, and would be format-independent regardless[^apply] — it is not the mgmt model.
+- **No `retectl apply -f` in the mgmt path.** Mgmt is author → compile → sign → publish locally; the Coordinator stores/serves but cannot author mgmt (the cloud blast-radius safeguard). An `apply`-style verb is reachable later only for *non-mgmt* or on-prem-relaxed paths, and would be format-independent regardless[^apply] — it is not the mgmt model.
 
 ## Open questions (deferred)
 

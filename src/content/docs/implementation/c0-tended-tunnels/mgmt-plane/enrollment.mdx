@@ -11,26 +11,26 @@ Goal: Tailscale-grade onboarding with minimal backend. The operator owns the YAM
 
 Once per rete:
 
-1. `florctl ca init` — generate the rete's root CA keypair. The public cert is committed to the repo at `certs/ca.crt`; the CA private key stays on the operator's laptop. This command does *only* CA generation — no principal certs are issued here.
-2. `florctl ca sign --kind management-plane --name primary` — mint the rete's mgmt-envelope signing keypair from the CA. The private key stays on operator hardware (file-backed, alongside the CA key). The public cert is committed to the repo at `certs/management-planes/primary.crt` and the operator adds it to `rete.yaml` under `signers.mgmt.keys`. From there the compiler will embed its pubkey into every mgmt artifact's `authorized_mgmt_signers` list so agents can verify subsequent fetches. The name `primary` is the convention (mirrors `control-plane/primary` in C1); the identity is not derived from any user. At this point the operator holds **three keys** in total: CA root, mgmt-signer (`management-plane/primary`), and — issued by step 6 below — their own `user/<op>` TLS keypair.
+1. `retectl ca init` — generate the rete's root CA keypair. The public cert is committed to the repo at `certs/ca.crt`; the CA private key stays on the operator's laptop. This command does *only* CA generation — no principal certs are issued here.
+2. `retectl ca sign --kind management-plane --name primary` — mint the rete's mgmt-envelope signing keypair from the CA. The private key stays on operator hardware (file-backed, alongside the CA key). The public cert is committed to the repo at `certs/management-planes/primary.crt` and the operator adds it to `rete.yaml` under `signers.mgmt.keys`. From there the compiler will embed its pubkey into every mgmt artifact's `authorized_mgmt_signers` list so agents can verify subsequent fetches. The name `primary` is the convention (mirrors `control-plane/primary` in C1); the identity is not derived from any user. At this point the operator holds **three keys** in total: CA root, mgmt-signer (`management-plane/primary`), and — issued by step 6 below — their own `user/<op>` TLS keypair.
 3. Create the private git repo for YAML source-of-truth (GitHub, GitLab, Gitea, self-hosted). Only the operator needs write access; nodes never pull from it. Seed it with the rete template: `rete.yaml`, reserved entries in `groups.yaml` and `roles.yaml`, empty `nodes.yaml`/`services.yaml`/`users.yaml` scaffolds, the operator's own `users.yaml` entry (`fyodor: { role: operator, nodes: [fyodor-laptop] }`) — this grants `fyodor` the `operator` role so they can call `config-publisher`, just like any other user gets a role grant.
 4. Designate a management node (`mgmt01` by convention) with an Internet-reachable UDP address. Declare it in `nodes.yaml`, publish `config-server` + `config-publisher` + `metrics` on it (copy from the template), and commit.
-5. **Bootstrap `mgmt01` manually** (pre-Florete): issue its bundle with `florctl issue-bundle --node mgmt01`, run `florctl compile`, SSH to the machine, install the bundle (which already includes mgmt01's `agent.json` and `vertices/flor.json`), start `flor agent run`. Once it's up, the config-server and config-publisher services are reachable over Florete.
-6. **Bootstrap the operator's own machine** (the first Florete participant): issue `florctl issue-bundle --node fyodor-laptop`, install it (the bundle carries fyodor-laptop's compiled artifacts; same pre-Florete route, since publish isn't available yet), start `flor agent run`. This is where the operator's `user/fyodor` TLS keypair is minted — exactly the same flow as any other user gets in [Per-Node Enrollment](#per-node-enrollment) below. The operator now runs as the `fyodor` user principal with `role: operator`, and `florctl` auto-discovers the operator's SOCKS5 port via the local agent socket (see [florctl local wiring](#florctl-local-wiring) below).
-7. Run `florctl publish` for the first time — this is the first Florete-over-Florete call (via `fyodor`'s SOCKS5 → config-publisher on mgmt01). From this point on, the config-server is authoritative and all further state changes flow through it.
+5. **Bootstrap `mgmt01` manually** (pre-Florete): issue its bundle with `retectl issue-bundle --node mgmt01`, run `retectl compile`, SSH to the machine, install the bundle (which already includes mgmt01's `agent.json` and `vertices/flor.json`), start `flor agent run`. Once it's up, the config-server and config-publisher services are reachable over Florete.
+6. **Bootstrap the operator's own machine** (the first Florete participant): issue `retectl issue-bundle --node fyodor-laptop`, install it (the bundle carries fyodor-laptop's compiled artifacts; same pre-Florete route, since publish isn't available yet), start `flor agent run`. This is where the operator's `user/fyodor` TLS keypair is minted — exactly the same flow as any other user gets in [Per-Node Enrollment](#per-node-enrollment) below. The operator now runs as the `fyodor` user principal with `role: operator`, and `retectl` auto-discovers the operator's SOCKS5 port via the local agent socket (see [retectl local wiring](#retectl-local-wiring) below).
+7. Run `retectl publish` for the first time — this is the first Florete-over-Florete call (via `fyodor`'s SOCKS5 → config-publisher on mgmt01). From this point on, the config-server is authoritative and all further state changes flow through it.
 8. Publish a static landing page (GitHub Pages or equivalent) with generic platform one-liners for end users to install `flor`. No secrets on it.
 
 Steps 5–7 are the only pre-Florete operations in the rete's lifetime. Everything thereafter — adding nodes, users, services — goes through the normal bundle+publish+sync flow.
 
-#### florctl local wiring
+#### retectl local wiring
 
-`florctl` is a Florete client; `florctl publish` talks to `config-publisher` over the rete's own mTLS. It doesn't need its own config file: it auto-discovers context from the local `flor` agent.
+`retectl` is a Florete client; `retectl publish` talks to `config-publisher` over the rete's own mTLS. It doesn't need its own config file: it auto-discovers context from the local `flor` agent.
 
-- `florctl` derives the rete scope from the `--repo` directory's `rete.yaml` (the `rete.name` field). It then looks up `~/.flor/retes/<scope>/agent.sock` (the per-rete control socket that `flor agent status` uses) and asks it: "which local SOCKS5 listener is bound to a principal with the `operator` role?" The agent answers `127.0.0.1:NNNN`, and `florctl` uses that as its HTTP client's SOCKS5 proxy.
+- `retectl` derives the rete scope from the `--repo` directory's `rete.yaml` (the `rete.name` field). It then looks up `~/.flor/retes/<scope>/agent.sock` (the per-rete control socket that `flor agent status` uses) and asks it: "which local SOCKS5 listener is bound to a principal with the `operator` role?" The agent answers `127.0.0.1:NNNN`, and `retectl` uses that as its HTTP client's SOCKS5 proxy.
 - The config-publisher's URL (`https://config-publisher.<rete>.rete` or the SPIFFE ID form) is read from `rete.yaml` in the checked-out repo.
-- Fallback if the agent isn't running or the operator prefers not to depend on it: `florctl --socks5 127.0.0.1:NNNN --as fyodor publish`. No persistent state required.
+- Fallback if the agent isn't running or the operator prefers not to depend on it: `retectl --socks5 127.0.0.1:NNNN --as fyodor publish`. No persistent state required.
 
-This keeps `rete.yaml` rete-wide (no per-operator fields) and avoids a second config file. The coupling is shallow: `florctl` only needs the rete-scope `agent.sock` (derived from `rete.yaml`) and the repo path.
+This keeps `rete.yaml` rete-wide (no per-operator fields) and avoids a second config file. The coupling is shallow: `retectl` only needs the rete-scope `agent.sock` (derived from `rete.yaml`) and the repo path.
 
 ### Per-Node Enrollment
 
@@ -39,13 +39,13 @@ Bundles are **per node**, not per principal. A bundle enrolls a machine and ever
 **Flow A — operator-generated keypair (convenient, default):**
 
 1. Operator edits YAML so the new node and its principals are declared. For a user: add `alice` to `users.yaml` with `nodes: [alice-laptop]`, and add `alice-laptop` to `nodes.yaml`.
-2. Operator: `florctl issue-bundle --node alice-laptop --rete <config-server-url> --validity 30d --out alice-laptop.bundle`.
+2. Operator: `retectl issue-bundle --node alice-laptop --rete <config-server-url> --validity 30d --out alice-laptop.bundle`.
    - Looks up every principal that runs on `alice-laptop` (here: `alice` user + the `alice-laptop` node itself).
    - Generates keypairs for each on the operator's machine; signs each cert.
    - Packages: `ca.crt`, node cert + key, per-principal cert + key, config-server URL, expected config-server SPIFFE ID, plus a current `agent.json` and `vertices/flor.json` for alice-laptop.
    - Encrypts with a one-time symmetric key; produces a short-lived personalized URL.
    - Appends one sign-event per signed cert to `enrollment.log`.
-3. Operator runs `florctl compile && florctl publish` to push the new state.
+3. Operator runs `retectl compile && retectl publish` to push the new state.
 4. Operator sends the URL to alice via Telegram/email: _"Run `curl <url> | sh`. Expires in 24h."_
 5. Alice runs the one-liner. The installer downloads `flor` and runs `flor enroll alice-laptop.bundle`, which writes `~/.flor/retes/rete-lovers/{ca.crt, alice-laptop.crt, alice-laptop.key, alice.crt, alice.key}` plus the bundled `agent.json` and `vertices/flor.json` into that rete scope, then starts `flor agent run`. The agent brings up the vertex and immediately runs `flor agent sync` once to pick up any newer state from the config-server.
 6. The agent is live; alice can connect to her permitted services immediately.
@@ -55,14 +55,14 @@ Bundles are **per node**, not per principal. A bundle enrolls a machine and ever
 1. Alice (or a server admin) installs `flor` via the generic landing page.
 2. `flor id create --node alice-laptop --principal user/alice --out alice-laptop-csr.bundle` — generates keypairs locally for the node and each named principal, packages the CSRs.
 3. Principal sends `alice-laptop-csr.bundle` to the operator (any channel; CSRs are public).
-4. Operator: `florctl issue-bundle --node alice-laptop --csr alice-laptop-csr.bundle --rete <config-server-url> --out alice-laptop-signed.bundle`. Every CSR is signed; the resulting bundle contains only signed certs + config-server bootstrap (no private keys).
-5. Operator runs `florctl compile && florctl publish`.
+4. Operator: `retectl issue-bundle --node alice-laptop --csr alice-laptop-csr.bundle --rete <config-server-url> --out alice-laptop-signed.bundle`. Every CSR is signed; the resulting bundle contains only signed certs + config-server bootstrap (no private keys).
+5. Operator runs `retectl compile && retectl publish`.
 6. Operator sends the signed bundle back to alice.
 7. `flor enroll alice-laptop-signed.bundle` — same two-step bootstrap as Flow A, except the private keys were on alice's machine the whole time.
 
 Both flows produce the same final state. Flow A is for non-technical users; Flow B is for security-conscious users and server admins who refuse to have private keys generated elsewhere.
 
-**Server nodes** use the same command — `florctl issue-bundle --node alpha` bundles the node identity plus every service that `services.yaml` places at `alpha`. The operator runs `flor enroll` on the server over SSH (initial provisioning) or bakes the bundle into a VM image.
+**Server nodes** use the same command — `retectl issue-bundle --node alpha` bundles the node identity plus every service that `services.yaml` places at `alpha`. The operator runs `flor enroll` on the server over SSH (initial provisioning) or bakes the bundle into a VM image.
 
 ### Revocation
 
@@ -70,9 +70,9 @@ Operator:
 
 1. Removes the principal from YAML (`users.yaml` / `services.yaml`).
 2. Appends a revoke-event to `enrollment.log` (records cert fingerprint, timestamp, operator identity).
-3. `florctl compile && florctl publish`.
+3. `retectl compile && retectl publish`.
 4. Nodes pick up the change on their next `flor agent sync` (automatic on a timer, or operator-triggered).
 
 The revoked principal's SPIFFE ID no longer appears in any `ingress.allow` anywhere, so even a still-live private key holder can't pass the mTLS handshake on any peer. (Post-C0 hardening: include the cert fingerprint alongside the SPIFFE ID in `allow` entries so a rogue CA-signed cert for the same ID is also rejected — see [Open Follow-ups](../#open-follow-ups).) Since distribution is via the config-server (not git + deploy keys), there is no pull-credential to rotate: compromising the bundle compromises one principal's cert, which is already handled by removing it from the YAML. If the leak predates any compile, the principal never reached the published state in the first place.
 
-Operator-principal revocation (e.g. operator's laptop is lost) is handled the same way for the `user/<op>` TLS identity: remove the operator from `users.yaml`, publish, and the config-server's `/publish` endpoint will reject further uploads from that cert. The `management-plane/primary` signing key is independent and is *not* tied to the user entry — if it's also compromised, the operator mints a fresh one (`florctl ca sign --kind management-plane --name primary-v2`, optionally rolling the name) and re-issues bundles so nodes pick up the new signer pubkey at the next enrollment / artifact-bundle delivery. Finer-grained signer-rotation tooling is deferred to B1+.
+Operator-principal revocation (e.g. operator's laptop is lost) is handled the same way for the `user/<op>` TLS identity: remove the operator from `users.yaml`, publish, and the config-server's `/publish` endpoint will reject further uploads from that cert. The `management-plane/primary` signing key is independent and is *not* tied to the user entry — if it's also compromised, the operator mints a fresh one (`retectl ca sign --kind management-plane --name primary-v2`, optionally rolling the name) and re-issues bundles so nodes pick up the new signer pubkey at the next enrollment / artifact-bundle delivery. Finer-grained signer-rotation tooling is deferred to B1+.

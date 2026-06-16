@@ -26,7 +26,7 @@ Alternatives considered and rejected for the authoring workspace:
 - **Distributed KV (etcd, Consul)** — that *is* a control plane; violates the premise of C0/C1's manual mode.
 - **scp/rsync from operator** — works, but zero audit trail.
 
-Future upgrade worth considering early: require **signed commits** (or signed tags) for `florctl publish` to accept them. Trivial to add; big supply-chain-security win aligned with the Zero Trust posture.
+Future upgrade worth considering early: require **signed commits** (or signed tags) for `retectl publish` to accept them. Trivial to add; big supply-chain-security win aligned with the Zero Trust posture.
 
 ## Why YAML (not JSON5, TOML, or plain JSON)
 
@@ -45,7 +45,7 @@ The full list of motivators:
 2. **Agent simplicity** — pre-resolved data. No schema validation at runtime. Smaller attack surface.
 3. **Denormalization for performance** — access matrix is pre-computed; the hot path does table lookups, not graph walks.
 4. **Stable boundary** — we can restructure YAML sources freely as long as the compiled schema is stable. Agent code decouples from operator ergonomics.
-5. **Validation before distribution** — a bad edit fails `florctl validate` locally; it never reaches nodes.
+5. **Validation before distribution** — a bad edit fails `retectl validate` locally; it never reaches nodes.
 6. **Determinism** — same-input same-output across machines; two operators independently compiling produce identical artifacts, detectable by diff.
 7. **Committed artifacts = inspectable, auditable shipments.** "What config did alpha actually get?" = `git log .flor/compiled/alpha/`. No need to reconstruct from YAML. Artifacts contain only path references (no secrets), so committing them is safe. The config-server is the live wire path; git is the audit trail.
 
@@ -185,8 +185,8 @@ The agent consumes a compiled artifact regardless of who produced it. This stays
 
 | Stage                    | Producer                     | Distribution                     |
 |--------------------------|------------------------------|----------------------------------|
-| C0 Tended Tunnels        | `florctl compile` (local)    | bundle + config-server fetch     |
-| C1 Manual Mesh           | `florctl compile` (local)    | bundle + config-server fetch     |
+| C0 Tended Tunnels        | `retectl compile` (local)    | bundle + config-server fetch     |
+| C1 Manual Mesh           | `retectl compile` (local)    | bundle + config-server fetch     |
 | B1 Cloud Control         | Central server, push         | WebSocket / gRPC stream          |
 | Distributed control      | Any agent, consensus-derived | Gossip + pull                    |
 
@@ -230,7 +230,7 @@ C0/C1 are the degenerate case of the model: empty CP, empty agent autonomy, full
 
 ## Why cert rotation stays manual in C0/C1, and the B1+ shape
 
-Identity issuance in C0/C1 is **operator-driven and offline**: `florctl issue-bundle` runs on the operator's machine, mints certs from the offline CA, delivers them out-of-band. Validity is 90 days; renewal = the operator runs the same command before expiry. There's no automation because automation needs an online signer, and the whole zero-trust-cloud posture rests on "no online signing key."
+Identity issuance in C0/C1 is **operator-driven and offline**: `retectl issue-bundle` runs on the operator's machine, mints certs from the offline CA, delivers them out-of-band. Validity is 90 days; renewal = the operator runs the same command before expiry. There's no automation because automation needs an online signer, and the whole zero-trust-cloud posture rests on "no online signing key."
 
 This is fine at pilot scale (handful of principals, weekly cadence) and fits C0/C1's manual-mode framing. It becomes untenable at B1+ scale (hundreds of workloads, ephemeral instances), so a path forward is needed.
 
@@ -260,12 +260,12 @@ This is **What You See Is What You Sign (WYSIWYS)**: the signature must cover th
 So the rule for B1+ authoring UX:
 
 - **Read-only views can live in the cloud.** Rete status, who's connected, mgmt-plane history, ctrl-plane state, metrics, audit log of past signing operations. Even if the cloud lies, it can mislead but cannot make the operator sign anything.
-- **Authoring + signing stay local.** `florctl` is the primary surface; a desktop GUI (Tauri/Electron, or `florctl serve` on localhost) can be added later without changing the trust model. This is how 1Password Desktop, HashiCorp Vault Enterprise authoring tools, and serious wallet apps work — local app, cloud-synced data.
-- **"Draft in cloud, sign locally" handoff** recovers most of the cloud-UI ergonomics without compromising trust: cloud UI proposes a change (renders the canonical to-be-signed payload, generates a signing ticket); operator pulls the ticket into local `florctl`, which **independently re-canonicalizes the payload, displays it, and signs**. The signature covers the canonical form, not whatever the cloud displayed. Cosign / Sigstore container-image signing already works this way.
+- **Authoring + signing stay local.** `retectl` is the primary surface; a desktop GUI (Tauri/Electron, or `retectl serve` on localhost) can be added later without changing the trust model. This is how 1Password Desktop, HashiCorp Vault Enterprise authoring tools, and serious wallet apps work — local app, cloud-synced data.
+- **"Draft in cloud, sign locally" handoff** recovers most of the cloud-UI ergonomics without compromising trust: cloud UI proposes a change (renders the canonical to-be-signed payload, generates a signing ticket); operator pulls the ticket into local `retectl`, which **independently re-canonicalizes the payload, displays it, and signs**. The signature covers the canonical form, not whatever the cloud displayed. Cosign / Sigstore container-image signing already works this way.
 
 What we should *not* build: "sign with browser extension," "sign with cloud-stored key," or "delegate signing to a cloud agent." Those failure modes have a long, embarrassing history.
 
-What we do **now** in C0/C1: nothing UI-related (`florctl` is the only authoring surface anyway). One choice we lock in that keeps every UI option open later: **canonical-form-based signing** — the signature covers a deterministic serialization of the envelope, and the envelope carries a `key_id` so any UI surface can independently re-derive and re-display "what is being signed." That property alone keeps cloud-UI, local-GUI, mobile, hardware-token, and quorum-co-signing flows reachable without re-cutting the artifact format.
+What we do **now** in C0/C1: nothing UI-related (`retectl` is the only authoring surface anyway). One choice we lock in that keeps every UI option open later: **canonical-form-based signing** — the signature covers a deterministic serialization of the envelope, and the envelope carries a `key_id` so any UI surface can independently re-derive and re-display "what is being signed." That property alone keeps cloud-UI, local-GUI, mobile, hardware-token, and quorum-co-signing flows reachable without re-cutting the artifact format.
 
 ## Why SPIFFE IDs (not a bespoke `flor://` scheme)
 
@@ -282,7 +282,7 @@ Path-kind namespacing (`user/`, `service/`, `node/`, `vertex/<node>/`) is layere
 
 `.rete` is unregistered. It's not a good DNS citizen in the strict sense (RFC 6761 reserves specific names, not this one), but Florete's stub resolver intercepts before the OS resolver sees it, so queries never leave the host. Alternatives like `.rete.test` or URI-only were considered; `.rete` won on ergonomics. Can be revisited if IETF registers something better.
 
-## Why two binaries (`flor` + `florctl`)
+## Why two binaries (`flor` + `retectl`)
 
 Two audiences with non-overlapping needs:
 
@@ -294,7 +294,7 @@ This is the same split as `kubectl`/`kubelet`, `terraform`/agent, `salt-master`/
 Concrete wins:
 
 - **Smaller node surface.** The node binary ships without CA code paths, signing primitives, or rete-repo schema. Fewer attack surfaces on every pilot machine.
-- **Clearer docs and UX.** `flor --help` on a user's laptop shows only what that user can do. `florctl --help` is the operator's reference.
+- **Clearer docs and UX.** `flor --help` on a user's laptop shows only what that user can do. `retectl --help` is the operator's reference.
 - **Independent release cadence possible later.** CA and compiler changes don't force a daemon rollout.
 
 Cost is modest: two `main.rs` shims sharing a workspace of library crates. Both binaries reuse identical schema, crypto, and artifact-format code.
