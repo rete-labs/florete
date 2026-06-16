@@ -19,7 +19,7 @@ my-rete/
 ├── users.yaml            # user identity names, home-node, role
 ├── enrollment.log        # append-only operator sign events (auditable)
 └── .flor/
-    └── compiled/                # committed; operator runs `florctl compile` then commits
+    └── compiled/                # committed; operator runs `retectl compile` then commits
         ├── mgmt01/              # management node — bootstrap-applied manually (see Config-server)
         │   └── mgmt/
         │       ├── agent.json
@@ -46,7 +46,7 @@ The repo holds **names + ACLs + topology + CA cert + signer pubkeys**. That's wh
 
 ### Source files are a recommended split, not a requirement
 
-The `*.yaml` filenames above are a **recommended default** (scaffolded by `florctl init`), not a fixed schema. The facade is a *whole-view* document — the operator authors the entire mgmt view and the compiler reads it as a whole — so **file boundaries are cosmetic**. Operators may keep everything in one file, or split by team/domain (`services/payments.yaml`, `services/web.yaml`), or group however suits the rete. See [ADR-0009](../../../../contributing/adr/0009-config-compiled-facade) for why the facade is compose-style rather than a collection of Kubernetes-style objects.
+The `*.yaml` filenames above are a **recommended default** (scaffolded by `retectl init`), not a fixed schema. The facade is a *whole-view* document — the operator authors the entire mgmt view and the compiler reads it as a whole — so **file boundaries are cosmetic**. Operators may keep everything in one file, or split by team/domain (`services/payments.yaml`, `services/web.yaml`), or group however suits the rete. See [ADR-0009](../../../../contributing/adr/0009-config-compiled-facade) for why the facade is compose-style rather than a collection of Kubernetes-style objects.
 
 Each top-level collection is, at the data level, exactly `kind`/`name`/`spec`:
 
@@ -60,7 +60,7 @@ so a single resource can live in its own file if desired — the equivalence is 
 
 How the compiler reads source:
 
-- **Discovery.** `florctl compile`/`validate` find `rete.yaml` (the fixed anchor — it names the rete and holds CA/signer policy), then recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, `enrollment.log`, and dotfiles. `rete.yaml` may carry a `source:` block with `include`/`exclude` globs to override discovery precisely (useful in a shared repo); `florctl compile -f <file|glob>…` overrides discovery entirely for partial/CI compiles.
+- **Discovery.** `retectl compile`/`validate` find `rete.yaml` (the fixed anchor — it names the rete and holds CA/signer policy), then recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, `enrollment.log`, and dotfiles. `rete.yaml` may carry a `source:` block with `include`/`exclude` globs to override discovery precisely (useful in a shared repo); `retectl compile -f <file|glob>…` overrides discovery entirely for partial/CI compiles.
 - **Merge = union.** Collections of the same kind across files are unioned into one logical view before validation, so cross-references (a role naming a group, a service naming a node) resolve regardless of file layout.
 - **Duplicates are errors.** A duplicate `(kind, name)` across files is a hard validation error, never last-wins — silent override in a security source-of-truth is unacceptable, and erroring also makes the compile order-independent and [deterministic](../validate-and-compile).
 - **Singletons are exactly-one.** The `rete` block must appear exactly once (error on zero or two).
@@ -79,7 +79,7 @@ The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`,
 
 Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `vertices/flor.json` (read by the single `flor vertex run` instance the agent supervises in C0). C1 adds a second vertex artifact under `vertices/`; the agent.json shape is stable across both.
 
-The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `florctl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
+The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `retectl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
 
 ### rete.yaml
 
@@ -114,7 +114,7 @@ rete:
 
 The rete `name` doubles as the SPIFFE trust domain: every principal in this rete has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
 
-**Source discovery (`source.include` / `source.exclude`).** Optional, shapes *which files* the compiler treats as rete source. Omitted, the compiler uses its default: recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, `enrollment.log`, and dotfiles (see [Source files are a recommended split](#source-files-are-a-recommended-split-not-a-requirement) above). `include` **replaces** that default glob set with an explicit, repo-relative list; `exclude` is applied **after** `include` to subtract paths — a `vendor/`/`examples/` subtree, or YAML that isn't rete source. `rete.yaml` is always read regardless of these globs (it is the anchor). Reach for this when the rete repo shares space with unrelated YAML, or when you want discovery to be explicit rather than implicit. `florctl compile -f <file|glob>…` bypasses `source` entirely and compiles exactly the given paths.
+**Source discovery (`source.include` / `source.exclude`).** Optional, shapes *which files* the compiler treats as rete source. Omitted, the compiler uses its default: recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, `enrollment.log`, and dotfiles (see [Source files are a recommended split](#source-files-are-a-recommended-split-not-a-requirement) above). `include` **replaces** that default glob set with an explicit, repo-relative list; `exclude` is applied **after** `include` to subtract paths — a `vendor/`/`examples/` subtree, or YAML that isn't rete source. `rete.yaml` is always read regardless of these globs (it is the anchor). Reach for this when the rete repo shares space with unrelated YAML, or when you want discovery to be explicit rather than implicit. `retectl compile -f <file|glob>…` bypasses `source` entirely and compiles exactly the given paths.
 
 **Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (rete lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validity_days` slot; the field is optional and falls back to the compiler default if omitted. Smaller retes can leave the policy fields out entirely and just declare cert paths.
 
@@ -266,9 +266,9 @@ users:
 
 `nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice. Each entry is `{at: <node>, via: <vertex>}` naming the host node and the vertex that holds the user's identity. In C0 every node has exactly one vertex, so `via:` may be omitted and the compiler picks that vertex automatically. In C1 `via:` is required (multiple vertices per node).
 
-**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `florctl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
+**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `retectl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
 
-The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `florctl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *rete*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
+The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `retectl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *rete*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
 
 **Multi-device users**: list all the user's devices. The same key material is installed on each device (one bundle issued and applied to each, or one bundle copied). Revoking alice revokes all her devices at once.
 

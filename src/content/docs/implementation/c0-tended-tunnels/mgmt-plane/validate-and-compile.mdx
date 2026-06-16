@@ -7,7 +7,7 @@ description: Validator rules and compile step for producing per-node artifacts i
 
 `flor validate` is the only safety net against hand-edit errors, so it must be strict.
 
-`florctl validate`/`compile` first **discover and merge** the source: starting from `rete.yaml`, they recursively glob `*.yaml`/`*.yml` (skipping `.flor/`, `certs/`, `enrollment.log`, dotfiles; honoring any `include`/`exclude` in `rete.yaml`), then union same-kind collections into one logical view. File layout is operator-chosen (see [Source Layout](../source-layout)); the rules below run on the merged view.
+`retectl validate`/`compile` first **discover and merge** the source: starting from `rete.yaml`, they recursively glob `*.yaml`/`*.yml` (skipping `.flor/`, `certs/`, `enrollment.log`, dotfiles; honoring any `include`/`exclude` in `rete.yaml`), then union same-kind collections into one logical view. File layout is operator-chosen (see [Source Layout](../source-layout)); the rules below run on the merged view.
 
 1. **Schema** — every file matches its JSON Schema.
 2. **Cross-references** — every node/service/group/role name referenced exists and is unique across the whole rete.
@@ -28,7 +28,7 @@ Cert chain verification happens at runtime during mTLS, not at validate time —
 
 ## Compile Step
 
-`florctl compile` produces **two artifacts per node** in C0 — `agent.json` (consumed by `flor agent run`) and `vertices/flor.json` (consumed by `flor vertex run`) — placed under `<repo>/.flor/compiled/<node>/mgmt/`. The per-node `mgmt/` subdirectory is the only output tree in C0; C1+ adds a sibling `ctrl/` (see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/)). Both artifacts share a common envelope:
+`retectl compile` produces **two artifacts per node** in C0 — `agent.json` (consumed by `flor agent run`) and `vertices/flor.json` (consumed by `flor vertex run`) — placed under `<repo>/.flor/compiled/<node>/mgmt/`. The per-node `mgmt/` subdirectory is the only output tree in C0; C1+ adds a sibling `ctrl/` (see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/)). Both artifacts share a common envelope:
 
 **Paths in compiled artifacts are scope-relative.** `ca_cert_path`, `cert_path`, and `priv_path` values are bare filenames (`ca.crt`, `alpha.crt`, …). The agent resolves them against the rete install root (`retes/<scope>/`) at startup. This keeps artifacts portable: the same compiled JSON is valid regardless of what the operator named the rete scope locally, and a node joining multiple retes can hold each rete's artifacts in separate roots without any path collisions.
 
@@ -62,7 +62,7 @@ Field semantics:
 - `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs. (C1 keeps the same envelope shape and reuses `kind: vertex` for both of its per-node vertex artifacts.)
 - `version` — **monotonic per-compilation number**. Lets future delta-based distribution ask "what version do you have?" without re-sending the full tree, and lets agents reject older-than-current artifacts (rollback-attack defense).
 - `authorized_mgmt_signers` — the rete's currently-authorized mgmt-envelope signer set, derived by the compiler from `rete.yaml`'s `signers.mgmt.keys` list. Each entry pairs the signer's SPIFFE URI with its ed25519 pubkey. Agents accept an artifact only if `signature.key_id` matches one of these entries and the signature verifies against the corresponding pubkey. The bootstrap snapshot of this list also ships in the enrollment bundle; thereafter the list lives in every fetched artifact, so signer rotation propagates via the normal `flor agent sync` flow (operator adds the new signer to `rete.yaml`, publishes, agents sync, then operator switches to signing with the new key — standard overlap-window rotation).
-- `signature` — operator signature over the canonical-form envelope minus the `signature` field itself. `key_id` is the SPIFFE URI of the **management-plane signing principal** (e.g. `spiffe://<rete>/management-plane/primary`) — a sign-only identity, issued independently from any user entry via `florctl ca sign --kind management-plane`. See [ADR-0005](../../../../contributing/adr/0005-use-spiffe-identities) for the kind separation. The signing key never leaves operator hardware.
+- `signature` — operator signature over the canonical-form envelope minus the `signature` field itself. `key_id` is the SPIFFE URI of the **management-plane signing principal** (e.g. `spiffe://<rete>/management-plane/primary`) — a sign-only identity, issued independently from any user entry via `retectl ca sign --kind management-plane`. See [ADR-0005](../../../../contributing/adr/0005-use-spiffe-identities) for the kind separation. The signing key never leaves operator hardware.
 
 In B1+, a parallel `plane: "ctrl"` envelope (unsigned) will carry CP decisions and reference the mgmt `version` it obeys; agents will refuse a ctrl artifact whose claimed mgmt version is older than what the agent already holds. C0/C1 do not produce ctrl artifacts.
 
@@ -248,6 +248,6 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 - **The agent's `node/<node>` principal is also a workload.** It lives in the vertex payload like any other principal, with a SOCKS5 inbound that the agent dials when it needs to talk to config-server. No special-casing in the runtime.
 - **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's vertex and the target service's vertex. The compiler pre-resolves only (a) which remote peers may initiate to this node's services (`ingress`) and (b) where this node's principals may initiate to (`egress`).
 - **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's vertex can dial the correct UDP address and fail fast on disallowed SOCKS5 requests. A compromised initiator could ignore its own egress table; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a dialing table with a local convenience filter.
-- **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `florctl compile` + push — no cert reissuance needed, no role-resolution at runtime on the vertex hot path.
-- **Deterministic** — same `florctl compile --repo X` produces identical output on any machine given identical inputs.
+- **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `retectl compile` + push — no cert reissuance needed, no role-resolution at runtime on the vertex hot path.
+- **Deterministic** — same `retectl compile --repo X` produces identical output on any machine given identical inputs.
 - **Per-node filtering** — each node's directory contains only the identity material and ACL rows relevant to its own local workloads.

@@ -16,7 +16,7 @@ Florete's source configuration is authored "Docker Compose-style"[^compose]: col
 
 The decisive observation is **what makes a Kubernetes object worth its envelope: the object is the live operational unit** — stored in the API server, individually addressed, incrementally `apply`-ed, reconciled by controllers, versioned, status-bearing. The ceremony pays rent because the object *lives*.
 
-Florete's source YAML is the opposite. It is authored as a **whole view**, compiled by `florctl`, signed, and discarded; the **compiled JSON** — not the YAML — is what is stored, served, and (with a Coordinator) reconciled ([reasoning > Why a two-step pipeline](/docs/implementation/c0-tended-tunnels/mgmt-plane/reasoning)). There is no per-object lifecycle, no incremental apply. And the security posture **forbids** the apply-to-reconciler pattern for management state: the Coordinator (today's `config-server`) must hold no mgmt-authoring authority, so an operator cannot `apply` mgmt to it and have it reconcile — mgmt is compiled and signed on operator hardware. The very thing the object envelope is *for* is prohibited where it would matter.
+Florete's source YAML is the opposite. It is authored as a **whole view**, compiled by `retectl`, signed, and discarded; the **compiled JSON** — not the YAML — is what is stored, served, and (with a Coordinator) reconciled ([reasoning > Why a two-step pipeline](/docs/implementation/c0-tended-tunnels/mgmt-plane/reasoning)). There is no per-object lifecycle, no incremental apply. And the security posture **forbids** the apply-to-reconciler pattern for management state: the Coordinator (today's `config-server`) must hold no mgmt-authoring authority, so an operator cannot `apply` mgmt to it and have it reconcile — mgmt is compiled and signed on operator hardware. The very thing the object envelope is *for* is prohibited where it would matter.
 
 Two further forces:
 
@@ -54,7 +54,7 @@ The compiled per-node artifacts and the Coordinator's internal resource model *a
 
 ### No `apply -f` in the mgmt authoring path
 
-Mgmt is author → compile → sign → publish, locally. The Coordinator stores and serves mgmt (and can't tamper — nodes verify the operator signature) but cannot author it. Offering `florctl apply -f` for mgmt would advertise a live-object model that does not exist and that the blast-radius design rules out. On-prem deployments may relax this (a scoped mgmt key on the Coordinator); cloud deployments do not.
+Mgmt is author → compile → sign → publish, locally. The Coordinator stores and serves mgmt (and can't tamper — nodes verify the operator signature) but cannot author it. Offering `retectl apply -f` for mgmt would advertise a live-object model that does not exist and that the blast-radius design rules out. On-prem deployments may relax this (a scoped mgmt key on the Coordinator); cloud deployments do not.
 
 ### Content requirements carried regardless of facade
 
@@ -104,7 +104,7 @@ Cosmetic CRD-shaped YAML delivers none of the real Kubernetes value (kubectl/Git
 ### Evolution
 
 - A reconciling **Coordinator** consumes a purpose-built rete-wide bounds artifact (sees-all, authors-none) and produces per-node ctrl within signed bounds; mgmt source-of-truth stays the operator's local signed compile even when the Coordinator is server-based — see the [Coordinator sketch](/docs/implementation/b1-cloud-control/coordinator).
-- `florctl apply -f` may appear later for *non-mgmt* or on-prem-relaxed paths once a reconciling target exists; it is not the mgmt model.
+- `retectl apply -f` may appear later for *non-mgmt* or on-prem-relaxed paths once a reconciling target exists; it is not the mgmt model.
 - A Kubernetes-CRD facade / in-cluster operator is an additive producer when a paying customer justifies it.
 - The objective and bounds **policy languages** grow feature-by-feature.
 

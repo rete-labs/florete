@@ -16,7 +16,7 @@ services:
     at: mgmt01
     addr: 127.0.0.1:9000
     groups: [config-read]         # reserved group; read-access for `node` role
-  config-publisher:               # write: accepts new compiled trees from florctl
+  config-publisher:               # write: accepts new compiled trees from retectl
     at: mgmt01
     addr: 127.0.0.1:9001          # same process as config-server, different port+endpoint
     groups: [config-write]        # reserved group; write-access for `operator` role
@@ -51,10 +51,10 @@ This split doesn't give per-node isolation of *reads* — every `node` principal
 **Wire protocol (C0).** Both services speak plain HTTP over the Florete mTLS tunnel.
 
 - `config-server: GET /artifact/<node>?version=<n>` — returns the node's compiled directory (an `agent.json` + the vertex configs under `vertices/`) packaged as a single response if the caller passed the `config-read` ingress gate. (No path/identity cross-check in C0; see note above.)
-- `config-publisher: POST /tree` — accepts a new compiled tree from `florctl`. Only reachable by callers with `operator` role.
+- `config-publisher: POST /tree` — accepts a new compiled tree from `retectl`. Only reachable by callers with `operator` role.
 
 The caller of `GET /artifact/<node>` is the node's `flor-agent`, acting as the `node/<node>` principal via the local vertex's SOCKS5 listener. C0 doesn't need anything more elaborate — no streaming, no deltas, no watch. Agents poll on their own cadence via `flor agent sync`.
 
-**Management-node bootstrap (chicken-and-egg).** The config-server can't fetch its own artifacts from itself before it's running. Resolution: the management node is bootstrapped manually. The operator runs `florctl compile`, the enrollment bundle for mgmt01 carries that node's compiled `agent.json` and `vertices/flor.json`, and the operator starts `flor agent run` against that local material. Once it's up (with the config-server service listening on `127.0.0.1:9000` via Florete), the operator runs `florctl publish` and from then on `mgmt01` refreshes itself via the normal `flor agent sync` flow. The manual step is genuinely one-shot per management node.
+**Management-node bootstrap (chicken-and-egg).** The config-server can't fetch its own artifacts from itself before it's running. Resolution: the management node is bootstrapped manually. The operator runs `retectl compile`, the enrollment bundle for mgmt01 carries that node's compiled `agent.json` and `vertices/flor.json`, and the operator starts `flor agent run` against that local material. Once it's up (with the config-server service listening on `127.0.0.1:9000` via Florete), the operator runs `retectl publish` and from then on `mgmt01` refreshes itself via the normal `flor agent sync` flow. The manual step is genuinely one-shot per management node.
 
 **Availability.** Config-server downtime doesn't break running traffic — nodes keep running their last installed artifact. The only thing that fails is publishing new state. HA (two management nodes with replicated state) is a post-C0 concern; pilots can tolerate short outages.

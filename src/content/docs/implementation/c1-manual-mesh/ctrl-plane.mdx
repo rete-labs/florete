@@ -5,7 +5,7 @@ description: Control plane artifact stream introduced in C1 Manual Mesh
 
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 
-C1 introduces the **ctrl-plane artifact stream** — a parallel, separately-signed delivery channel that carries the dynamic decisions an autonomous control plane will make in B1+. C1 itself has no autonomous CP yet: in C1 the ctrl artifact is produced by `florctl compile` (operator-side), every "decision" equals the corresponding [mgmt bound](../mgmt-plane/), and the framework runs in its degenerate mode. The point of landing the framework in C1 is to lock in the **shape** — envelope, signature, distribution, agent-side verification — before the producer changes in B1+.
+C1 introduces the **ctrl-plane artifact stream** — a parallel, separately-signed delivery channel that carries the dynamic decisions an autonomous control plane will make in B1+. C1 itself has no autonomous CP yet: in C1 the ctrl artifact is produced by `retectl compile` (operator-side), every "decision" equals the corresponding [mgmt bound](../mgmt-plane/), and the framework runs in its degenerate mode. The point of landing the framework in C1 is to lock in the **shape** — envelope, signature, distribution, agent-side verification — before the producer changes in B1+.
 
 Read [Mgmt Plane](../mgmt-plane/) first. The bounds described there are what every ctrl decision is verified against; this page assumes you know what's signed by the operator and what's left for ctrl to fill in.
 
@@ -89,10 +89,10 @@ If an operator wants to record a snapshot of ctrl state for audit (e.g., "what f
 
 ## Compile step (in C1)
 
-The same `florctl compile` invocation that produces mgmt artifacts also produces ctrl artifacts in C1. There's no separate command — they're emitted from the same source-of-truth YAMLs in one pass:
+The same `retectl compile` invocation that produces mgmt artifacts also produces ctrl artifacts in C1. There's no separate command — they're emitted from the same source-of-truth YAMLs in one pass:
 
 ```
-florctl compile --node alpha --repo my-rete/
+retectl compile --node alpha --repo my-rete/
 # emits:
 #   .flor/compiled/alpha/mgmt/agent.json
 #   .flor/compiled/alpha/mgmt/vertices/public.json
@@ -102,12 +102,12 @@ florctl compile --node alpha --repo my-rete/
 
 The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl artifact is signed with the operator's CP signing key. In C0/C1 both keys live on the operator's workstation — same machine, separate files (`~/.flor/operator-mgmt.key` and `~/.flor/control-planes/primary.key`). They are *not* the same key; conflating them would couple mgmt-signing-authority lifecycle with CP-signing-authority lifecycle, which becomes painful as soon as B1+ wants to put the CP key on a different host (managed cloud or BYO on-prem).
 
-`florctl publish` pushes both subtrees:
+`retectl publish` pushes both subtrees:
 
 - Mgmt artifacts go to `POST /publish/mgmt` on the config-server.
 - Ctrl artifacts go to `POST /publish/ctrl`.
 
-Authentication for the publish side is via the existing `config-write` group (operator role). Internally the config-server stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`), both gated by `config-read`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `florctl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
+Authentication for the publish side is via the existing `config-write` group (operator role). Internally the config-server stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`), both gated by `config-read`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `retectl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
 
 ## Label allocation
 
@@ -115,11 +115,11 @@ The label allocator is a ctrl-plane concern in B1+. In C1 it runs at compile tim
 
 - Per-link counter; for each path, walk hop-by-hop and assign the next unused labels for forward and backward directions.
 - The full label map for the rete is implicit — each node's ctrl artifact carries only its local slice (forwarding rows where this node is the transit, label bindings where this node hosts the initiator or target).
-- `florctl compile --repo X` produces identical output on any machine given identical inputs (same deterministic walk order as the rest of compile).
+- `retectl compile --repo X` produces identical output on any machine given identical inputs (same deterministic walk order as the rest of compile).
 
 In B1+ the allocator runs continuously inside the CP and re-runs whenever active paths change. The wire format is the same; only the producer changes.
 
-The validator surfaces label infeasibility (per-link label space exhausted) at `florctl compile` time in C1 — not during mgmt validation, since label feasibility is intrinsically a function of the chosen path set, not the bound.
+The validator surfaces label infeasibility (per-link label space exhausted) at `retectl compile` time in C1 — not during mgmt validation, since label feasibility is intrinsically a function of the chosen path set, not the bound.
 
 ## Agent-side verification
 
@@ -161,7 +161,7 @@ This tradeoff is intrinsic to "global path coherence is a non-local property and
 
 ## Explicitly deferred
 
-- Autonomous CP service. C1's ctrl producer is `florctl compile`; B1+ replaces it with a CP service.
+- Autonomous CP service. C1's ctrl producer is `retectl compile`; B1+ replaces it with a CP service.
 - Multi-CP coexistence (multiple `authorized_ctrl_signers` entries, regional CP, A/B rollouts). Schema permits it from day one; orchestration is post-C1.
 - CP key rotation tooling and policy refresh on schedule.
 - Hot reload of ctrl-only changes (path failover with no mgmt change). Today every ctrl change still goes through `flor agent sync`'s restart-with-commit-timeout path, like mgmt.
@@ -179,7 +179,7 @@ Captured rationale for the C1-specific ctrl-plane decisions. The broader "why bo
 
 The shape of the artifact stream — envelope, signature scheme, distribution endpoints, agent-side verification — is the public contract that every C1 deployment commits to. Pushing the split to B1+ would mean changing that contract once it's already deployed; even at pilot scale (handful of retes) that's a flag-day migration we don't need to take.
 
-By landing the stream in C1 with a degenerate producer (`florctl compile`) we exercise:
+By landing the stream in C1 with a degenerate producer (`retectl compile`) we exercise:
 
 - the dual-stream fetch and verification logic in agents,
 - the `obeys_mgmt_version` cross-reference,
@@ -187,7 +187,7 @@ By landing the stream in C1 with a degenerate producer (`florctl compile`) we ex
 - the `authorized_ctrl_signers` issuance and rotation surface,
 - the `mgmt/` + `ctrl/` directory layout in operator workflows.
 
-All of these are forward-compatible with B1+, where only the *producer* changes (operator-machine `florctl` → CP service). No schema migration. No flag-day. The cost is moderate (extra plumbing in compile, publish, fetch, verify), but it's strictly less than the cost of changing the schema later.
+All of these are forward-compatible with B1+, where only the *producer* changes (operator-machine `retectl` → CP service). No schema migration. No flag-day. The cost is moderate (extra plumbing in compile, publish, fetch, verify), but it's strictly less than the cost of changing the schema later.
 
 ### Why the CP signing identity is its own SPIFFE kind (not collapsed with config-server or operator)
 
