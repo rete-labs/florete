@@ -18,12 +18,11 @@ The C1 ctrl artifact for mesh-flor:
 ```json
 {
   "schema_version": "1.0",
-  "plane": "ctrl",
+  "plane": { "ctrl": { "obeys_mgmt_version": 42 } },
   "kind": "vertex",
   "version": 17,
-  "obeys_mgmt_version": 42,
   "node": "alpha",
-  "vertex": "rete",
+  "name": "rete",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "active_links": [ "beta", "gamma" ],
@@ -56,7 +55,7 @@ The C1 ctrl artifact for mesh-flor:
 
 Field semantics:
 
-- **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)) with three additions: `plane: "ctrl"`, the `vertex` claim, and `obeys_mgmt_version`. The last pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
+- **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)), including the generic `name` claim (here the vertex name). The one difference is the `plane`: ctrl artifacts carry `plane: { "ctrl": { "obeys_mgmt_version": … } }` where mgmt artifacts carry the bare `plane: "mgmt"`. `obeys_mgmt_version` rides on the ctrl plane itself (it's a ctrl-plane fact, common to every ctrl artifact) and pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
 - **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against a pubkey in the agent's `trust.authorized_ctrl_signers` (carried in `agent.json`, not in this artifact — see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)); ctrl signed by an unauthorized key is rejected.
 - **`active_links`** — the subset of mgmt's `links` bound (the per-node projection of `allowed_links`) this mesh-flor should currently bring up. In C1 this equals the full set produced by `links`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the rete-wide topology information a per-node agent ever sees — it knows its own links, nothing else.
 - **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries, each an `in: {link, label}` → `out: {link, label}` swap. **Labels are per-link** (per-interface significance), so each is paired with its link name; the agent verifies that each `in.link`/`out.link` is in `active_links` and that every `(in.link, in.label)` is unique.
