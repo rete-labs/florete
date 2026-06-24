@@ -32,7 +32,27 @@ Cert chain verification happens at runtime during mTLS, not at validate time —
 
 **Paths in compiled artifacts are scope-relative.** `ca_cert_path`, `cert_path`, and `priv_path` values are bare filenames (`ca.crt`, `alpha.crt`, …). The agent resolves them against the rete install root (`retes/<scope>/`) at startup. This keeps artifacts portable: the same compiled JSON is valid regardless of what the operator named the rete scope locally, and a node joining multiple retes can hold each rete's artifacts in separate roots without any path collisions.
 
-The install root is **flat**: the bundle delivers `ca.crt` (and the per-principal cert+key files) directly into `retes/<scope>/`, regardless of how the repo organises them under `certs/`. The repo's `certs/management-planes/<name>.crt` shape is for human/audit organisation; the runtime sees only the flat install root, with mgmt-signer pubkeys delivered via the artifact's `authorized_mgmt_signers` field rather than as on-disk files.
+The install root is **flat**: the bundle delivers `ca.crt` (and the per-principal cert+key files) directly into `retes/<scope>/`, regardless of how the repo organises them under `certs/`. The repo's `certs/management-planes/<name>.crt` shape is for human/audit organisation; the runtime sees only the flat install root, with mgmt-signer pubkeys delivered via `agent.json`'s `trust.authorized_mgmt_signers` rather than as on-disk files.
+
+### Node runtime layout
+
+Everything `flor` reads at a node resolves against a **single rete root** — `retes/<scope>/` — so there is one base path, not several:
+
+```
+retes/<scope>/
+├── ca.crt                     # plus per-principal <name>.crt / <name>.key (flat)
+├── alpha.crt
+├── alpha.key
+├── mgmt/
+│   ├── agent.json
+│   └── vertices/
+│       └── <name>.json        # one per vertex (e.g. flor.json)
+└── ctrl/                      # added in C1; absent in C0
+    └── vertices/
+        └── <name>.json        # only vertices with ctrl state (mesh)
+```
+
+Identity files (`ca_cert_path`, `cert_path`, `priv_path`) are bare filenames at the root. Per-vertex configs are **not referenced by path** — the agent locates them by the vertex `name` from `agent.json`, at the fixed convention `mgmt/vertices/<name>.json` (signed) and, from C1, `ctrl/vertices/<name>.json` (CP-signed). So `agent.json` lists only `{ name, kind }` per vertex: one root, one convention, nothing resolved against a second base.
 
 ```json
 {
@@ -43,10 +63,6 @@ The install root is **flat**: the bundle delivers `ca.crt` (and the per-principa
   "node": "alpha",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": { ... },
-  "authorized_mgmt_signers": [
-    { "spiffe_id": "spiffe://rete-lovers/management-plane/primary",
-      "pubkey":    "<base64-ed25519-pubkey>" }
-  ],
   "signature": {
     "alg": "ed25519",
     "key_id": "spiffe://rete-lovers/management-plane/primary",
@@ -59,9 +75,9 @@ Field semantics:
 
 - `schema_version` — semver of the compiled-artifact public contract.
 - `plane` — `"mgmt"` for everything in C0/C1. Reserved: `"ctrl"` for the unsigned control-plane decision stream that lands in B1+ (carried in a separate envelope, not inside this one). Discriminating now keeps the envelope schema stable across the split.
-- `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs. (C1 keeps the same envelope shape and reuses `kind: vertex` for both of its per-node vertex artifacts.)
+- `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs. Vertex artifacts also carry a `vertex` claim (the vertex name, so identity is path-independent) and a payload `kind` of `"link"` or `"mesh"` that selects the engine. (C0 has a single `link` vertex per node; C1 adds `mesh`.)
 - `version` — **monotonic per-compilation number**. Lets future delta-based distribution ask "what version do you have?" without re-sending the full tree, and lets agents reject older-than-current artifacts (rollback-attack defense).
-- `authorized_mgmt_signers` — the rete's currently-authorized mgmt-envelope signer set, derived by the compiler from `rete.yaml`'s `signers.mgmt.keys` list. Each entry pairs the signer's SPIFFE URI with its ed25519 pubkey. Agents accept an artifact only if `signature.key_id` matches one of these entries and the signature verifies against the corresponding pubkey. The bootstrap snapshot of this list also ships in the enrollment bundle; thereafter the list lives in every fetched artifact, so signer rotation propagates via the normal `flor agent sync` flow (operator adds the new signer to `rete.yaml`, publishes, agents sync, then operator switches to signing with the new key — standard overlap-window rotation).
+- **Trust roots** — the CA path and the authorized mgmt-signer set are **not** repeated in every envelope; they live in a `trust` block in `agent.json`'s payload, where the agent — the sole verifier — reads them. The agent accepts an artifact only if its `signature.key_id` is in that set and the signature verifies. The bootstrap snapshot ships in the enrollment bundle; rotation follows the vouched-successor rule (add a new signer with an artifact signed by a current one, switch to it, then retire the old). See [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for placement and [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust) for the full bootstrap and rotation semantics.
 - `signature` — operator signature over the canonical-form envelope minus the `signature` field itself. `key_id` is the SPIFFE URI of the **management-plane signing principal** (e.g. `spiffe://<rete>/management-plane/primary`) — a sign-only identity, issued independently from any user entry via `retectl ca sign --kind management-plane`. See [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) for the kind separation. The signing key never leaves operator hardware.
 
 In B1+, a parallel `plane: "ctrl"` envelope (unsigned) will carry CP decisions and reference the mgmt `version` it obeys; agents will refuse a ctrl artifact whose claimed mgmt version is older than what the agent already holds. C0/C1 do not produce ctrl artifacts.
@@ -70,8 +86,8 @@ In B1+, a parallel `plane: "ctrl"` envelope (unsigned) will carry CP decisions a
 
 The payload uses two pairs of terms consistently, both from **flor's point of view** at the network boundary:
 
-- **ingress** / **egress** — peer-to-local and local-to-peer QUIC sessions respectively. `ingress` lists which remote principals may connect to our local principals; `egress` lists which of our local principals may connect to a given remote target, along with how to dial that target.
-- **inbound** / **outbound** (in `workloads[].io[].direction`) — the two ways a workload is wired into flor locally. `inbound` means the workload connects *into* flor here (flor accepts traffic and originates outgoing connections on its behalf — the workload acts as a **principal**). `outbound` means flor connects *out* to the workload here (flor delivers incoming connections — the workload acts as a **target**, i.e. a service). A workload can have both kinds of `io` channels if it acts as principal and target. `bidirectional` is reserved for FlorIO between recursive flor layers (not used in C0).
+- **ingress** / **egress** — peer-to-local and local-to-peer QUIC sessions respectively. `ingress` lists which remote principals may connect to our local principals; `egress` lists which of our local principals may connect to a given remote target. How to *dial* each target lives in the vertex's `links` table, not in `egress`.
+- **inbound** / **outbound** — the two ways a workload is wired into flor locally, **determined by the `io` channel's `kind`**, not a separate field. An inbound kind (`socks5`) means the workload connects *into* flor here (flor accepts traffic and originates outgoing connections on its behalf — the workload acts as a **principal**). An outbound kind (`tcp`) means flor connects *out* to the workload here (flor delivers incoming connections — the workload acts as a **target**, i.e. a service). A workload can have both kinds of `io` channels if it acts as principal and target. FlorIO (`florio`) is bidirectional — reserved for recursive flor layers (not used in C0).
 
 Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound calls is an `inbound` channel of `kind: socks5`; the loopback `127.0.0.1:port` upstream a service binds to is an `outbound` channel of `kind: tcp`. (These replace C0's earlier `socks5_proxy` / `upstream_addr` pair.)
 
@@ -86,24 +102,28 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
   "node": "alice-laptop",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
-    "ca_cert_path": "ca.crt",
+    "trust": {
+      "ca_cert_path": "ca.crt",
+      "authorized_mgmt_signers": [
+        { "spiffe_id": "spiffe://rete-lovers/management-plane/primary", "pubkey": "<base64-ed25519-pubkey>" }
+      ]
+    },
     "vertices": [
-      { "name": "flor", "config": "vertices/flor.json" }
+      { "name": "flor", "kind": "link" }
     ],
     "control_plane": {
       "principal":     "spiffe://rete-lovers/node/alice-laptop",
-      "config_server": "spiffe://rete-lovers/service/config-server"
+      "config_server": "spiffe://rete-lovers/service/config-server",
+      "via":           { "kind": "socks5", "addr": "127.0.0.1:1081" }
     }
   },
-  "authorized_mgmt_signers": [
-    { "spiffe_id": "spiffe://rete-lovers/management-plane/primary",
-      "pubkey":    "<base64-ed25519-pubkey>" }
-  ],
   "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
 }
 ```
 
-The agent reads its supervised vertices' configs to find the SOCKS5 port for its own `node/alice-laptop` principal — that's how it dials the config-server.
+The `trust` block holds the rete's CA and authorized mgmt-signer set (C0 has no ctrl signers yet); the agent is the sole verifier and checks every artifact against it. `control_plane.via` is the local flor inbound the agent dials — acting as `principal` — to reach `config_server` (the same "conduit to the target" sense as a link's `via`); it is typed (`{ kind, addr }`) so a new inbound protocol is a new `kind`, not a schema change. Carrying it here keeps `flor agent` **independent of vertex payloads**: the agent verifies a vertex artifact's signature and hands the file to `flor vertex run`, but never parses its contents.
+
+The agent locates each vertex's configs by its `name` (see [Node runtime layout](#node-runtime-layout)) — `mgmt/vertices/<name>.json` always, plus `ctrl/vertices/<name>.json` for vertices that carry ctrl state — verifies both, then supervises with `flor vertex run`. `agent.json` therefore lists only `{ name, kind }` per vertex, never a path.
 
 ### Example: vertex payload (user node)
 
@@ -116,59 +136,52 @@ A user device initiates connections only — no `listen_udp`-served services. Th
   "kind": "vertex",
   "version": 42,
   "node": "alice-laptop",
+  "vertex": "flor",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
+    "kind": "link",
     "ca_cert_path": "ca.crt",
     "transport_endpoint": { "type": "quic" },
-    "connection_manager": { "adapter": "udp" },
+    "connection_manager": { "adapters": [ { "name": "wire", "type": "udp" } ] },
     "workloads": [
       {
         "spiffe_id": "spiffe://rete-lovers/node/alice-laptop",
         "identity":  { "cert_path": "alice-laptop.crt", "priv_path": "alice-laptop.key" },
         "io": [
-          { "kind": "socks5", "listen": "127.0.0.1:1081", "direction": "inbound" }
+          { "kind": "socks5", "listen": "127.0.0.1:1081" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/user/alice",
         "identity":  { "cert_path": "alice.crt", "priv_path": "alice.key" },
         "io": [
-          { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
+          { "kind": "socks5", "listen": "127.0.0.1:1080" }
+        ]
+      }
+    ],
+    "links": [
+      {
+        "type": "enum",
+        "members": [
+          { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "adapter": "wire", "udp_peer": "9.10.11.12:4433" } },
+          { "name": "api",           "peer": "spiffe://rete-lovers/service/api",           "via": { "adapter": "wire", "udp_peer": "1.2.3.4:4433" } },
+          { "name": "kafka",         "peer": "spiffe://rete-lovers/service/kafka",         "via": { "adapter": "wire", "udp_peer": "5.6.7.8:4433" } }
         ]
       }
     ],
     "egress": [
-      {
-        "target_spiffe_id": "spiffe://rete-lovers/service/config-server",
-        "target_node": "mgmt01",
-        "target_udp": "9.10.11.12:4433",
-        "allow": ["spiffe://rete-lovers/node/alice-laptop"]
-      },
-      {
-        "target_spiffe_id": "spiffe://rete-lovers/service/api",
-        "target_node": "alpha",
-        "target_udp": "1.2.3.4:4433",
-        "allow": ["spiffe://rete-lovers/user/alice"]
-      },
-      {
-        "target_spiffe_id": "spiffe://rete-lovers/service/kafka",
-        "target_node": "beta",
-        "target_udp": "5.6.7.8:4433",
-        "allow": ["spiffe://rete-lovers/user/alice"]
-      }
+      { "target_spiffe_id": "spiffe://rete-lovers/service/config-server", "allow": ["spiffe://rete-lovers/node/alice-laptop"] },
+      { "target_spiffe_id": "spiffe://rete-lovers/service/api",           "allow": ["spiffe://rete-lovers/user/alice"] },
+      { "target_spiffe_id": "spiffe://rete-lovers/service/kafka",         "allow": ["spiffe://rete-lovers/user/alice"] }
     ]
   },
-  "authorized_mgmt_signers": [
-    { "spiffe_id": "spiffe://rete-lovers/management-plane/primary",
-      "pubkey":    "<base64-ed25519-pubkey>" }
-  ],
   "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
 }
 ```
 
 ### Example: vertex payload (server node)
 
-A server node hosts services and accepts inbound QUIC on a UDP listen address (set via `connection_manager.listen`). Services with a `role` also appear as initiators (`api` calls `mongodb`, producing an egress row). `ssh` binds `0.0.0.0:22` because of the emergency-access exception — the outbound `tcp` upstream just mirrors whatever `services.yaml` declared.
+A server node hosts services and accepts inbound QUIC on a UDP listen address (set via the adapter's `listen`). Services with a `role` also appear as initiators (`api` calls `mongodb`, producing an egress row). `ssh` binds `0.0.0.0:22` because of the emergency-access exception — the outbound `tcp` upstream just mirrors whatever `services.yaml` declared.
 
 ```json
 {
@@ -177,32 +190,34 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
   "kind": "vertex",
   "version": 42,
   "node": "alpha",
+  "vertex": "flor",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
+    "kind": "link",
     "ca_cert_path": "ca.crt",
     "transport_endpoint": { "type": "quic" },
-    "connection_manager": { "adapter": "udp", "listen": "0.0.0.0:4433" },
+    "connection_manager": { "adapters": [ { "name": "wire", "type": "udp", "listen": "0.0.0.0:4433" } ] },
     "workloads": [
       {
         "spiffe_id": "spiffe://rete-lovers/node/alpha",
         "identity":  { "cert_path": "alpha.crt", "priv_path": "alpha.key" },
         "io": [
-          { "kind": "socks5", "listen": "127.0.0.1:1080", "direction": "inbound" }
+          { "kind": "socks5", "listen": "127.0.0.1:1080" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/service/api",
         "identity":  { "cert_path": "api.crt", "priv_path": "api.key" },
         "io": [
-          { "kind": "tcp",    "upstream": "127.0.0.1:8000",  "direction": "outbound" },
-          { "kind": "socks5", "listen":   "127.0.0.1:18000", "direction": "inbound"  }
+          { "kind": "tcp",    "upstream": "127.0.0.1:8000" },
+          { "kind": "socks5", "listen":   "127.0.0.1:18000" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/service/alpha/ssh",
         "identity":  { "cert_path": "ssh.crt", "priv_path": "ssh.key" },
         "io": [
-          { "kind": "tcp", "upstream": "0.0.0.0:22", "direction": "outbound" }
+          { "kind": "tcp", "upstream": "0.0.0.0:22" }
         ]
       }
     ],
@@ -219,25 +234,20 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
         "allow": ["spiffe://rete-lovers/user/bob"]
       }
     ],
-    "egress": [
+    "links": [
       {
-        "target_spiffe_id": "spiffe://rete-lovers/service/config-server",
-        "target_node": "mgmt01",
-        "target_udp": "9.10.11.12:4433",
-        "allow": ["spiffe://rete-lovers/node/alpha"]
-      },
-      {
-        "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
-        "target_node": "beta",
-        "target_udp": "5.6.7.8:4433",
-        "allow": ["spiffe://rete-lovers/service/api"]
+        "type": "enum",
+        "members": [
+          { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "adapter": "wire", "udp_peer": "9.10.11.12:4433" } },
+          { "name": "mongodb",       "peer": "spiffe://rete-lovers/service/mongodb",       "via": { "adapter": "wire", "udp_peer": "5.6.7.8:4433" } }
+        ]
       }
+    ],
+    "egress": [
+      { "target_spiffe_id": "spiffe://rete-lovers/service/config-server", "allow": ["spiffe://rete-lovers/node/alpha"] },
+      { "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",       "allow": ["spiffe://rete-lovers/service/api"] }
     ]
   },
-  "authorized_mgmt_signers": [
-    { "spiffe_id": "spiffe://rete-lovers/management-plane/primary",
-      "pubkey":    "<base64-ed25519-pubkey>" }
-  ],
   "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
 }
 ```
@@ -246,8 +256,8 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 
 - **One workloads list per vertex.** A workload is a **principal** if it has at least one `inbound` io channel, a **target** if it has at least one `outbound` io channel, both if both. The schema doesn't privilege users vs services — they're all just workloads with different SPIFFE-ID kinds and io shapes.
 - **The agent's `node/<node>` principal is also a workload.** It lives in the vertex payload like any other principal, with a SOCKS5 inbound that the agent dials when it needs to talk to config-server. No special-casing in the runtime.
-- **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's vertex and the target service's vertex. The compiler pre-resolves only (a) which remote peers may initiate to this node's services (`ingress`) and (b) where this node's principals may initiate to (`egress`).
-- **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's vertex can dial the correct UDP address and fail fast on disallowed SOCKS5 requests. A compromised initiator could ignore its own egress table; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a dialing table with a local convenience filter.
+- **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's vertex and the target service's vertex. The `links` table *is* the (degenerate, 1-1) routing: each entry maps a target service to its wire `udp_peer`. The compiler pre-resolves (a) which remote peers may initiate to this node's services (`ingress`), (b) which local principals may initiate to which remote target (`egress`), and (c) how to dial each target (`links`).
+- **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's vertex can fail fast on disallowed SOCKS5 requests; the UDP address it dials lives in `links`. A compromised initiator could ignore its own egress filter; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a local convenience filter over the `links` dialing table.
 - **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `retectl compile` + push — no cert reissuance needed, no role-resolution at runtime on the vertex hot path.
 - **Deterministic** — same `retectl compile --repo X` produces identical output on any machine given identical inputs.
 - **Per-node filtering** — each node's directory contains only the identity material and ACL rows relevant to its own local workloads.
