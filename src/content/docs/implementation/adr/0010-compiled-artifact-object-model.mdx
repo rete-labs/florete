@@ -67,8 +67,8 @@ mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisa
 
 ```json
 {
-  "schema_version": "1.0", "plane": "ctrl", "kind": "vertex",
-  "version": 17, "obeys_mgmt_version": 42, "node": "alpha", "vertex": "rete",
+  "schema_version": "1.0", "plane": { "ctrl": { "obeys_mgmt_version": 42 } }, "kind": "vertex",
+  "version": 17, "node": "alpha", "name": "rete",
   "payload": {
     "active_links": [ "beta-pub", "gamma" ],
     "label_bindings": [
@@ -116,7 +116,7 @@ The two artifact-signer sets live in a `trust` block in `agent.json` — `ca_cer
 
 ### Envelope naming
 
-Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`), with an explicit `vertex` claim on vertex artifacts so identity is `(node, plane, kind, vertex)`, never path-derived.
+Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`) and **payload-agnostic**: rather than a `vertex`-specific claim it carries a generic `name` — the artifact's name within its `(node, kind)` space (the vertex name for a vertex artifact, `agent` for the single agent) — so identity is `(node, plane, kind, name)`, never path-derived. The envelope is a closed, `schema_version`-gated schema (unknown fields rejected): it evolves by adding an explicit field under a `schema_version` bump, never an open extension bag. Per-plane metadata rides on the `plane` discriminator itself — `plane` is a tagged value, `"mgmt"` or `{ "ctrl": { "obeys_mgmt_version": … } }` — so a ctrl-only field needs no optional envelope claim, and a payload's per-`kind` data stays in `payload`.
 
 ## Rationale
 

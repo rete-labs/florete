@@ -61,6 +61,7 @@ Identity files (`ca_cert_path`, `cert_path`, `priv_path`) are bare filenames at 
   "kind": "agent",
   "version": 42,
   "node": "alpha",
+  "name": "agent",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": { ... },
   "signature": {
@@ -75,7 +76,8 @@ Field semantics:
 
 - `schema_version` — semver of the compiled-artifact public contract.
 - `plane` — `"mgmt"` for everything in C0/C1. Reserved: `"ctrl"` for the unsigned control-plane decision stream that lands in B1+ (carried in a separate envelope, not inside this one). Discriminating now keeps the envelope schema stable across the split.
-- `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs. Vertex artifacts also carry a `vertex` claim (the vertex name, so identity is path-independent) and a payload `kind` of `"link"` or `"mesh"` that selects the engine. (C0 has a single `link` vertex per node; C1 adds `mesh`.)
+- `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs.
+- `name` — the artifact's name within its `(node, kind)` space, so identity is `(node, plane, kind, name)`, path-independent: the vertex name for a vertex artifact, `"agent"` for the single agent. Vertex artifacts additionally carry a payload `kind` of `"link"` or `"mesh"` that selects the engine. (C0 has a single `link` vertex per node; C1 adds `mesh`.)
 - `version` — **monotonic per-compilation number**. Lets future delta-based distribution ask "what version do you have?" without re-sending the full tree, and lets agents reject older-than-current artifacts (rollback-attack defense).
 - **Trust roots** — the CA path and the authorized mgmt-signer set are **not** repeated in every envelope; they live in a `trust` block in `agent.json`'s payload, where the agent — the sole verifier — reads them. The agent accepts an artifact only if its `signature.key_id` is in that set and the signature verifies. The bootstrap snapshot ships in the enrollment bundle; rotation follows the vouched-successor rule (add a new signer with an artifact signed by a current one, switch to it, then retire the old). See [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for placement and [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust) for the full bootstrap and rotation semantics.
 - `signature` — operator signature over the canonical-form envelope minus the `signature` field itself. `key_id` is the SPIFFE URI of the **management-plane signing principal** (e.g. `spiffe://<rete>/management-plane/primary`) — a sign-only identity, issued independently from any user entry via `retectl ca sign --kind management-plane`. See [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) for the kind separation. The signing key never leaves operator hardware.
@@ -100,6 +102,7 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
   "kind": "agent",
   "version": 42,
   "node": "alice-laptop",
+  "name": "agent",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "trust": {
@@ -136,7 +139,7 @@ A user device initiates connections only — no `listen_udp`-served services. Th
   "kind": "vertex",
   "version": 42,
   "node": "alice-laptop",
-  "vertex": "flor",
+  "name": "flor",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "kind": "link",
@@ -190,7 +193,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
   "kind": "vertex",
   "version": 42,
   "node": "alpha",
-  "vertex": "flor",
+  "name": "flor",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "kind": "link",
