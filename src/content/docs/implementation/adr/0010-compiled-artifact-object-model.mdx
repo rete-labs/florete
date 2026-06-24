@@ -1,0 +1,156 @@
+---
+title: "0010: Shape the Compiled Artifacts for flor Consumers"
+---
+
+## Status
+
+Accepted
+
+Realises, concretely, the "object model on the consumed side" that [ADR-0009: Treat Source Config as a Compiled Facade](/docs/implementation/adr/0009-config-compiled-facade) placed but did not shape. Uses the rete/mesh vocabulary of [ADR-0008](/docs/implementation/adr/0008-name-rete-mesh-cluster) and the identity-as-key discipline of [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing). Grounds and amends the artifact schemas in the C0 [Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) and C1 [Mgmt Plane](/docs/implementation/c1-manual-mesh/mgmt-plane) / [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane) docs. Signer-set placement is decided here but its semantics live in [ADR-0011: Bootstrap and Rotate Signer Trust](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust).
+
+## Context
+
+ADR-0009 settled that the operator authors a compose-style facade and that the **object model lives on the consumed side** — the compiled artifacts and the Coordinator's resource model. It did not pin the *shape* of those compiled artifacts. Implementing `flor`'s JSON parser (greenfield: no `serde` yet, the first target is `flor vertex`) forced the question, and inspection of the C0/C1 examples surfaced four warts that would each bite a typed parser:
+
+1. **`kind: vertex` is not a real discriminator.** It covers both link-flor and mesh-flor, which need different forwarding engines; the kind was reconstructed by sniffing optional-field presence (`allowed_peers`?). Fragile, and silently broken by the link↔mesh cycle the schema is told not to forbid.
+2. **`connection_manager` had three shapes** (C0 singular `adapter`, C1 link singular, C1 mesh `adapters[]`).
+3. **`via` was polymorphic across three contexts** (`{udp_peer}`, `{adapter, udp_peer}`, `{first_hop}`), an untagged-union guessing game for a *signed* artifact.
+4. **`allowed_peers` was double-purposed** (a CP-narrowable bound *and* dial config), and the mgmt↔ctrl relationship was an expand-and-match rather than a clean join.
+
+A framing correction underlies the fix. ADR-0009's "self-describing, addressable objects" can be misread as "make the artifact a generic `kind`/`name` object store." It is not one. The per-node artifact is a **typed projection delivered to a single consumer** that reads it whole, once; the *store* is the Coordinator's resource model. The addressability the object model wants is already carried by the **SPIFFE ID**, used as the key for every entity (`workloads[].spiffe_id`, `ingress/egress[].target_spiffe_id`, `links[].peer`) — with a local link `name` as the one additional, deliberately non-identity key the forwarding plane needs. Building a generic object decoder would re-import on the consumed side exactly the envelope ceremony ADR-0009 rejected on the facade side.
+
+## Decision
+
+### The artifact is a typed per-consumer projection, keyed by SPIFFE ID
+
+`flor`'s parser is plain typed deserialization (`serde` structs / internally-tagged enums), not a generic object engine. Every entity is addressed by its SPIFFE ID; that is the join key within and across artifacts. The container is typed; the *entities* are addressable — that is the object-model benefit without the ceremony.
+
+### Three orthogonal axes; one vocabulary
+
+The envelope already treats `plane` and `kind` as orthogonal. The link/mesh distinction is a third orthogonal axis, in the **payload**:
+
+| Axis | Question | Values | Location |
+|---|---|---|---|
+| `plane` | Whose authority signed this? | `mgmt` / `ctrl` | envelope |
+| `kind` | Which process consumes this? | `agent` / `vertex` | envelope |
+| `kind` (vertex) | Which engine does the vertex run? | `link` / `mesh` | payload |
+
+Naming is fixed by two words used identically in YAML and JSON: **`kind` = the category of an object** (artifact: `agent`/`vertex`; vertex: `link`/`mesh`), **`type` = the variant within a context** (transport: `quic`; adapter: `udp`/`florio`/`wg`; bound rule: `enum`). No YAML change: the YAML already uses `kind: link|mesh` and `type: quic`. The two-level `kind` is consistent ("the kind of *this* object"), not a collision. Because the unified `links` / `egress` / `ingress` / `connection_manager` shapes (below) make the mgmt payload field-identical for both vertex kinds, `kind` is a **plain discriminator field**, not a tagged union with per-variant data; it selects the forwarding engine, gates validation, and decides whether a ctrl artifact is consumed.
+
+### One connection-manager shape
+
+`connection_manager` is always `{ "adapters": [ { "name", "type", … } ] }`. The link/C0 case is a one-element list. An adapter is a local transport mechanism (a FlorIO socket, a UDP socket); a single adapter may carry several links, so a link references its adapter by `name`.
+
+### `links` — the in-layer adjacency bound, keyed by named link
+
+A vertex reaches each **peer** (adjacent vertex) over one or more **links**, and two peers may be joined by *several* parallel links (dual-ethernet, or a QUIC link plus a private-LAN UDP link). The adjacency table is therefore keyed by a local **link name**, not by peer — a peer may appear in more than one entry. It is the connection manager's table for **every** vertex (replacing mesh's `allowed_peers` and link-flor's dial-bearing `egress`) and keeps the typed-rule bound shape (CP-narrowable; ctrl's `active_links` ⊆ `links`):
+
+```json
+"links": [
+  { "type": "enum", "members": [
+    { "name": "beta-pub",  "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "adapter": "via-link" } },
+    { "name": "beta-eth1", "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "adapter": "eth1", "udp_peer": "10.0.1.6:5544" } },
+    { "name": "gamma",     "peer": "spiffe://rete-lovers/vertex/gamma/rete", "via": { "adapter": "internal", "udp_peer": "10.0.0.7:5544" } }
+  ] }
+]
+```
+
+Each link carries a local `name` (the forwarding handle — `beta-pub` and `beta-eth1` are two links to the *same* peer), its `peer` (the remote mesh-vertex identity, for link-layer mTLS), and exactly one `via` — `{ "adapter": <name>, …adapter-specific dial }`. A delegating adapter (FlorIO) carries no address (it hands dialing to the layer below); a wire adapter (UDP) carries `udp_peer` (it terminates the wire), so the recursion boundary stays legible: the address surfaces at whichever layer owns the wire. `via` lives **only** here; the compiler assigns stable link names, and an operator's `paths.yaml` hop `via:` (the source-side link selector) compiles down to a link `name`.
+
+### `ingress`/`egress` are pure flat allow-lists
+
+Both are `[{ "target_spiffe_id", "allow": [ <principal-spiffe-id>… ] }]` — operator authority, **not** bounds (the CP cannot narrow them, so no typed-rule shell). `egress` drops `target_node` (derivable from the peer's node-scoped SPIFFE ID), `target_udp` (moved to `links`), and `via`/`first_hop` (moved to ctrl). `egress` is now identical in shape to `ingress`.
+
+### Routing realisation is ctrl; the mgmt↔ctrl join is a zip
+
+mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisation. **Labels are per-link, not per-peer or per-node** (MPLS per-interface semantics): a label is only meaningful in the label space of the link it travels on, and parallel links to the same peer have *distinct* spaces — so every label is paired with its **link name**. Each entry is an `in → out` mapping where each side is either a link-label (a transit hop) or a local workload (origination/delivery, named by `target`+`principal`):
+
+```json
+{
+  "schema_version": "1.0", "plane": "ctrl", "kind": "vertex",
+  "version": 17, "obeys_mgmt_version": 42, "node": "alpha", "vertex": "rete",
+  "payload": {
+    "active_links": [ "beta-pub", "gamma" ],
+    "label_bindings": [
+      { "scope": "ingress", "target_spiffe_id": "spiffe://rete-lovers/service/api",
+        "principal": "spiffe://rete-lovers/user/alice",
+        "in":  { "link": "beta-pub", "label": 9 } },
+      { "scope": "egress",  "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
+        "principal": "spiffe://rete-lovers/service/api",
+        "out": { "link": "beta-pub", "label": 11 } }
+    ],
+    "forwarding_table": [
+      { "in":  { "link": "beta-pub", "label": 17 },
+        "out": { "link": "gamma",    "label": 42 } }
+    ]
+  },
+  "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/control-plane/primary", "value": "<base64>" }
+}
+```
+
+An ingress binding is `link-label → local` (the `out` is the local workload, given by scope); an egress binding is `local → link-label` (its `out.link` is the first hop — a *specific* link to the first-hop peer, which is what a `paths.yaml` hop's link selection resolves to); a `forwarding_table` row is `link-label → link-label`. The three differ only in whether each endpoint is a link or a local workload, leaving room to fold them into one table later — deferred, not done here.
+
+The two join keys are the **link name** (ctrl `active_links` and every `in.link`/`out.link` ⊆ the mgmt `links` table) and the **flow tuple `(scope, target_spiffe_id, principal_spiffe_id)`** (ctrl `label_bindings` ⊆ the mgmt `ingress`/`egress` allow-set, expanded once). The agent verifies, before applying:
+
+1. `active_links` ⊆ ⋃ `links` rules (dispatch on `type`); each link's `peer` is dialed via its `via` adapter.
+2. every `in.link` / `out.link` ∈ `active_links`.
+3. every `label_bindings (scope, target, principal)` ∈ the expanded mgmt allow-set.
+4. each `(in.link, in.label)` is unique across `forwarding_table` ∪ ingress bindings (per-link in-label uniqueness; out-labels live in the neighbour's space and are not checked locally).
+5. `obeys_mgmt_version` ≥ the held mgmt `version`.
+
+In C1 only the **mesh** vertex has a ctrl artifact; the link vertex's `links` table *is* its (degenerate, 1-1) routing. This is a C1 fact, not a permanent invariant — B1+ link liveness is slated to arrive as link ctrl.
+
+Complete, worked per-artifact examples (`agent.json`, link and mesh vertex configs, and ctrl) live in the C0/C1 mgmt- and ctrl-plane docs this ADR amends; the snippets here are illustrative.
+
+### `io` direction is intrinsic to the channel kind
+
+A workload's `io` channels carry no `direction` field: each `kind` fixes its direction — `socks5` inbound, `tcp` outbound, `florio` bidirectional (reinforced by whether the entry carries `listen`, `upstream`, or `socket`). A new direction is a new `kind` (e.g. a future `socks5_out`), never a `{ kind, direction }` combination — which keeps illegal pairings (an inbound `tcp`) unrepresentable. The parser derives direction from `kind` to populate its inbound/outbound/bidirectional registries.
+
+### The agent inventory carries the vertex kind, and paths use one root
+
+`agent.json` lists `vertices: [ { "name", "kind" } ]`, so the (soon-to-be-smarter) agent has a typed inventory of what it supervises without parsing vertex payloads. The kind is duplicated (inventory + vertex config) but compiler-guaranteed consistent; each consumer stays self-sufficient. There is **no per-vertex config path**: everything resolves against a single rete root (`retes/<scope>/`), and the agent locates a vertex's configs by `name` at the fixed `mgmt/vertices/<name>.json` and `ctrl/vertices/<name>.json` convention — one base, never a second resolution root. Supervision metadata — name, kind, and how the agent reaches the Coordinator (`control_plane.via`, a typed `{ kind, addr }` so a new inbound protocol doesn't change the schema) — belongs in `agent.json`; engine internals stay in the vertex config.
+
+### `agent.json` carries the trust roots
+
+The two artifact-signer sets live in a `trust` block in `agent.json` — `ca_cert_path`, `authorized_mgmt_signers`, and `authorized_ctrl_signers` — and every other artifact's envelope carries only its own `signature`. This removes the C0/C1 inconsistency (mgmt signers in every envelope, ctrl signers buried in the mesh vertex payload) and places the rete-wide trust roots once, where the sole verifier reads them. Their verification and rotation *semantics* are owned by [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust); this record fixes only their *placement*.
+
+### Envelope naming
+
+Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`), with an explicit `vertex` claim on vertex artifacts so identity is `(node, plane, kind, vertex)`, never path-derived.
+
+## Rationale
+
+**Why a typed projection, not a generic object store.** The envelope ceremony pays rent only where state is stored, sliced, reconciled, and watched — the Coordinator's resource model. The per-node artifact is read whole by one process; a generic decoder there is the consumed-side mirror of the facade ceremony ADR-0009 rejected. SPIFFE-ID keying already gives clean projection from the Coordinator's store.
+
+**Why `kind` as a plain tag.** Unifying `links`/`egress`/`ingress`/`connection_manager` across kinds leaves no *structural* mgmt difference between link and mesh — only behaviour (star vs label-switched forwarding) and whether ctrl applies. A single discriminator tagging the differing behaviour beats splitting the whole payload by kind, and it is the honest expression of "link is the degenerate mesh."
+
+**Why `links` is a bound but `ingress`/`egress` are not.** `links` is precisely the surface a CP attenuates (`active_links` ⊆ `links`); the typed-rule shell is the extension point for the narrowing-closed algebra. `ingress`/`egress` are operator authority the CP may not narrow; a bound shell there would be cargo-cult. This is the load-bearing distinction between the two state categories the Coordinator consumes.
+
+**Why `first_hop` moves to ctrl.** A first hop is a routing *decision*, bounded by `allowed_paths`. Putting it in ctrl alongside the label hands *all* routing to ctrl and makes mgmt `egress` the pure ACL it is described as — which is what turns the mgmt↔ctrl relationship into a zip. The direct/star case (link, C0) needs no `first_hop`; C0, which has no ctrl stream, is fine precisely because it is all-direct.
+
+**Why `payload`, not `spec`.** The artifact is a JWT/COSE-shaped signed container; `payload` is the conventional term, and `spec` would conflate the compiled projection with the operator-authored facade.
+
+## Consequences
+
+### Benefits
+
+- The parser is a total `match` on `kind`, with one `connection_manager` shape and one internally-tagged `via`; illegal states (a link carrying mesh routing) are unrepresentable.
+- The agent's "combine mgmt + ctrl" step is a zip on link names and identities, not an expand-and-match.
+- The agent gets a typed supervision inventory without cracking vertex payloads.
+- Typed-rule `links` and the explicit `kind`/`type` vocabulary are additively forward-compatible (new adapters, parallel links, new bound types, link ctrl) without a schema migration.
+
+### Trade-offs
+
+- For star vertices (link, C0) a target identity appears both as a link's `peer` (dial) and in `egress` (ACL) — mild redundancy, the price of one uniform shape.
+- `first_hop` moves mgmt → ctrl, a real change from the current C1 docs (which must be amended), and `authorized_*_signers` move to `agent.json` (see ADR-0011).
+- Three nesting levels carry a `kind`/`type` field; consistent, but readers must hold the "category vs variant-in-context" rule.
+
+### Evolution
+
+- B1+ swaps the ctrl *producer* (`retectl compile` → Coordinator) with no wire change; the join and verification rules are unchanged.
+- Link ctrl (liveness/up-down) slots into the existing ctrl envelope; the agent already dispatches "has ctrl" per vertex.
+- New `links` rule types and first-class objective objects grow under the typed-rule shape, feature-by-feature.
+
+[^jwt]: [JSON Web Token](https://datatracker.ietf.org/doc/html/rfc7519) and [COSE](https://datatracker.ietf.org/doc/html/rfc8152) — the header/claims + payload + signature container shape the envelope follows, where the signature covers a canonical encoding of the payload.
+[^serde]: [serde internally-tagged enums](https://serde.rs/enum-representations.html#internally-tagged) — the representation backing the `type`-discriminated `via` and bound rules, and the `kind`-discriminated vertex payload.
+[^k8s]: [Kubernetes objects](https://kubernetes.io/docs/concepts/overview/working-with-objects/) — the `apiVersion`/`metadata`/`spec`/`status` envelope and live apply/reconcile lifecycle deliberately *not* imported here; the artifact is a projection, not a live object.
