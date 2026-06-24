@@ -91,11 +91,11 @@ This also maps cleanly to the HLD's [Execution Plane Agent concept](../../../ove
 
 How the agent actually launches a vertex — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C0. The runtime contract is just "a vertex starts when given its config"; the rest is platform detail. The shape resembles kubelet's relationship to its container runtime; that analogy is intentional, but the WRI design is deferred.
 
-## Why one `workloads` list with directional `io[]`
+## Why one `workloads` list with typed `io[]` channels
 
 An earlier draft of the per-node payload had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated principal-vs-target with workload kind, and started straining as soon as a second flor binary (link-flor in C1) needed to carry an entry that's both principal and target on a single FlorIO channel.
 
-Unifying to `workloads[].io[].direction` resolves the asymmetry: a workload is a principal if it has at least one `inbound` channel, a target if it has at least one `outbound` channel, both if both. Users, services, the agent's `node/<node>` principal, and (in C1) mesh-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
+Unifying to `workloads[].io[]` resolves the asymmetry: each channel's direction is intrinsic to its `kind` — `socks5` inbound, `tcp` outbound, `florio` bidirectional — so a workload is a principal if it has any inbound-kind channel, a target if it has any outbound-kind channel, both if both. Users, services, the agent's `node/<node>` principal, and (in C1) mesh-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. There is no separate `direction` field (it would be redundant with `kind`, and would admit illegal pairings like an inbound `tcp`); a new direction is a new kind. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
 
 ## Why per-service SOCKS5 outbound (no container namespaces)
 

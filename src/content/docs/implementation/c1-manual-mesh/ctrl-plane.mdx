@@ -23,29 +23,26 @@ The C1 ctrl artifact for mesh-flor:
   "version": 17,
   "obeys_mgmt_version": 42,
   "node": "alpha",
+  "vertex": "rete",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
-    "active_peers": [
-      "spiffe://rete-lovers/vertex/beta/rete",
-      "spiffe://rete-lovers/vertex/gamma/rete"
-    ],
+    "active_links": [ "beta", "gamma" ],
     "forwarding_table": [
-      { "in_label": 17, "out_peer": "spiffe://rete-lovers/vertex/beta/rete",  "out_label": 42 },
-      { "in_label": 23, "out_peer": "spiffe://rete-lovers/vertex/gamma/rete", "out_label": 71 }
+      { "in": { "link": "beta",  "label": 17 }, "out": { "link": "gamma", "label": 42 } },
+      { "in": { "link": "gamma", "label": 23 }, "out": { "link": "beta",  "label": 71 } }
     ],
     "label_bindings": [
       {
         "scope": "ingress",
         "target_spiffe_id": "spiffe://rete-lovers/service/api",
         "principal": "spiffe://rete-lovers/user/alice",
-        "local_label": 9
+        "in": { "link": "beta", "label": 9 }
       },
       {
         "scope": "egress",
         "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
         "principal": "spiffe://rete-lovers/service/api",
-        "local_label": 11,
-        "out_label": 11
+        "out": { "link": "beta", "label": 11 }
       }
     ]
   },
@@ -59,11 +56,11 @@ The C1 ctrl artifact for mesh-flor:
 
 Field semantics:
 
-- **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)) with two additions: `plane: "ctrl"` and `obeys_mgmt_version`. The latter pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
-- **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against the pubkey listed in mgmt's `authorized_ctrl_signers`; ctrl signed by an unauthorized key is rejected.
-- **`active_peers`** — the subset of mgmt's `allowed_peers` that this mesh-flor should currently dial / accept inbound from. In C1 this equals the full set produced by `allowed_peers`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the rete-wide topology information a per-node agent ever sees — it knows its own peers, nothing else.
-- **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries. In-label uniqueness is enforced by the producer; the agent verifies that each `out_peer` is in `active_peers`.
-- **`label_bindings`** — binds each accepted (initiator, target) pair from the mgmt allow lists to a local label. Each binding's (scope, target_spiffe_id, principal) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
+- **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)) with three additions: `plane: "ctrl"`, the `vertex` claim, and `obeys_mgmt_version`. The last pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
+- **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against a pubkey in the agent's `trust.authorized_ctrl_signers` (carried in `agent.json`, not in this artifact — see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)); ctrl signed by an unauthorized key is rejected.
+- **`active_links`** — the subset of mgmt's `links` bound (the per-node projection of `allowed_links`) this mesh-flor should currently bring up. In C1 this equals the full set produced by `links`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the rete-wide topology information a per-node agent ever sees — it knows its own links, nothing else.
+- **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries, each an `in: {link, label}` → `out: {link, label}` swap. **Labels are per-link** (per-interface significance), so each is paired with its link name; the agent verifies that each `in.link`/`out.link` is in `active_links` and that every `(in.link, in.label)` is unique.
+- **`label_bindings`** — binds each accepted (initiator, target) flow from the mgmt allow lists to a per-link label: an **ingress** binding is `in: {link, label}` → local delivery; an **egress** binding is local origin → `out: {link, label}` (the first hop). Each binding's (scope, target_spiffe_id, principal) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
 
 **No `active_paths` field.** Per-node agents have no use for the rete-wide path enumeration: a flor vertex can only act on packets it actually sees, which means its own forwarding rows and label bindings. Knowing that label 17 globally corresponds to "alice → alpha → beta → kafka" buys nothing operationally — the vertex doesn't process the path, it processes labels. Keeping path enumeration out of per-node ctrl artifacts also matches the practical limit of local verifiability (see "What hijacked CP can and cannot do" below).
 
@@ -126,16 +123,16 @@ The validator surfaces label infeasibility (per-link label space exhausted) at `
 Each agent fetches both streams and verifies them locally before applying. The flow on every sync:
 
 1. **Fetch mgmt** for this node from `/artifact/mgmt/<node>`.
-2. **Verify mgmt signature** against the pinned operator pubkey (delivered with `ca.crt` at enrollment).
+2. **Verify mgmt signature** against the agent's trusted mgmt-signer set — pinned at enrollment, carried in `agent.json`'s `trust` block, and rotated by the vouched-successor rule (see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)).
 3. **Fetch ctrl** for this node from `/artifact/ctrl/<node>`.
-4. **Verify ctrl signature** against one of the pubkeys listed in mgmt's `authorized_ctrl_signers`. Reject if signed by a key not in the authorized list, or if the mgmt artifact lists no authorized CP at all.
+4. **Verify ctrl signature** against one of the pubkeys in `agent.json`'s `trust.authorized_ctrl_signers`. Reject if signed by a key not in the authorized list, or if no authorized CP is listed at all.
 5. **Verify `obeys_mgmt_version`** ≥ the version of the mgmt artifact just verified. Reject if ctrl is older than mgmt (the CP hasn't caught up yet — wait for the next ctrl push).
 6. **Verify ctrl-vs-mgmt structural rules**:
-   - Every entry in `active_peers` is in the set produced by mgmt's `allowed_peers` (dispatch on each rule's `type`; for `enum` that's literal list membership).
-   - Every `forwarding_table.out_peer` is in `active_peers`.
+   - Every entry in `active_links` is in the set produced by mgmt's `links` bound (dispatch on each rule's `type`; for `enum` that's literal membership).
+   - Every `forwarding_table` `in.link`/`out.link` is in `active_links`.
    - Every `label_bindings` entry's (scope, target_spiffe_id, principal) appears in the corresponding flat `ingress.allow` or `egress.allow` list.
-   - Every `label_bindings.local_label` is referenced exactly once across the forwarding table and label-bindings list (no collisions).
-7. **Apply** — combine mgmt's identities, allow lists, and adapter config with ctrl's `active_peers`, `forwarding_table`, and `label_bindings` to derive the runtime state.
+   - Every `(in.link, in.label)` is unique across the forwarding table and ingress bindings (per-link in-label uniqueness; out-labels live in the neighbour's space).
+7. **Apply** — combine mgmt's identities, allow lists, and link/adapter config with ctrl's `active_links`, `forwarding_table`, and `label_bindings` to derive the runtime state.
 
 If any step fails, the agent retains its previous (last-known-good) state and surfaces the failure to the operator (status, logs).
 
@@ -151,8 +148,8 @@ This deserves to be named explicitly because it's a real and inherent tradeoff o
 
 **Can:**
 
-- **Steer traffic through unintended hops within declared peerings.** Each agent can verify that its local forwarding rows reference *its* declared peers, and that label bindings reference *its* allowed (initiator, target) pairs. But labels are opaque at the local level — node alpha doesn't know whether label 17 came from a path that, end-to-end, traverses only operator-allowed nodes. A hijacked CP can rewire forwarding rows on intermediate nodes within their respective declared peer sets, so traffic flows through different (still-allowed) hops than the operator intended.
-- **Black-hole or drop traffic** — a CP that omits forwarding rows or shrinks `active_peers` causes connections to fail. DoS class.
+- **Steer traffic through unintended hops within declared links.** Each agent can verify that its local forwarding rows reference *its* declared links, and that label bindings reference *its* allowed (initiator, target) pairs. But labels are opaque at the local level — node alpha doesn't know whether label 17 came from a path that, end-to-end, traverses only operator-allowed nodes. A hijacked CP can rewire forwarding rows on intermediate nodes within their respective declared link sets, so traffic flows through different (still-allowed) hops than the operator intended.
+- **Black-hole or drop traffic** — a CP that omits forwarding rows or shrinks `active_links` causes connections to fail. DoS class.
 - **Manipulate latency or do traffic analysis** — by routing through observers along permissible paths.
 
 **Class-level summary:** access (confidentiality, integrity, authentication) survives a hijacked CP. Availability and traffic-pattern privacy don't. For customers who can't accept that tradeoff, the **BYO on-prem CP** deployment tier (planned for B1+) keeps the CP signing key out of any cloud control. For customers who can, the managed CP tier offers the convenience of cloud-hosted bounded-CP and accepts the residual blast radius.
