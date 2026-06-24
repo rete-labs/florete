@@ -1,0 +1,102 @@
+---
+title: "0011: Bootstrap and Rotate Signer Trust"
+---
+
+## Status
+
+Accepted
+
+Makes precise the artifact-signing trust model gestured at in the C0 [Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) (`authorized_mgmt_signers`, the enrollment bundle) and the C1 [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane) (`authorized_ctrl_signers`, agent-side verification). Uses the `management-plane` / `control-plane` signing-identity kinds of [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities). The signer-set *placement* (a `trust` block in `agent.json`) is fixed in [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model); this record owns its *semantics*.
+
+## Context
+
+C0/C1 establish that compiled artifacts are signed and that agents verify them, that the bootstrap signer snapshot ships in the enrollment bundle, and that rotation "propagates via the normal sync flow." They do **not** specify the parts a correct implementation depends on:
+
+- What guarantees the bootstrap signer set against tampering, and what is simply *assumed*.
+- The exact rule by which a new authorized-signer list is adopted (the chain that prevents a key from authorising itself).
+- The defence against replaying an old artifact to resurrect a retired signer.
+- What an agent must persist for any of this to survive a restart.
+- Whether the mgmt and ctrl signer sets are symmetric (they are not, and treating them as such opens a hole).
+
+This is load-bearing security behaviour that `flor`'s agent will otherwise implement implicitly and inconsistently. Pin it before the parser does.
+
+## Decision
+
+### The agent is the sole verifier
+
+The **agent** fetches every artifact and verifies signatures and the mgmt↔ctrl cross-rules; the **vertex** consumes already-verified configs handed to it by the agent. This matches the threat model: an artifact signature protects the **distribution path** (config-server, network MITM, a tampered relay), not local-filesystem integrity — anyone who can rewrite `vertices/rete.json` on the node can equally rewrite the `flor` binary, so re-verifying inside the vertex guards nothing the signature is for. Local integrity is the node's own concern. (Vertex re-verification remains available as defence-in-depth; it is not the boundary.)
+
+### Both signer sets live in `agent.json`, and they are not symmetric
+
+Per the placement fixed in [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model), the agent's `agent.json` carries a `trust` block; every other artifact's envelope carries only `signature { alg, key_id, value }`:
+
+```json
+"trust": {
+  "ca_cert_path": "ca.crt",
+  "authorized_mgmt_signers": [ { "spiffe_id": "spiffe://rete-lovers/management-plane/primary", "pubkey": "<base64>" } ],
+  "authorized_ctrl_signers": [ { "spiffe_id": "spiffe://rete-lovers/control-plane/primary",    "pubkey": "<base64>" } ]
+}
+```
+
+The two sets have **different trust roots**:
+
+- `authorized_mgmt_signers` is the **anchor** — pinned at enrollment, self-carried thereafter for rotation propagation.
+- `authorized_ctrl_signers` is **delegated** — it is only ever trustworthy because it rides inside operator-signed mgmt.
+
+A `plane: ctrl` envelope must therefore **never** carry its own authorized-signer list. If it did, a hijacked Coordinator would list its own key and self-authorise — the exact escape the bounded-CP model forbids. Delegating ctrl-signer authority from mgmt is what bounds a compromised CP to *DoS, not destruction*.
+
+### Enrollment is the out-of-band trust anchor
+
+The enrollment bundle (`ca.crt` + the initial `authorized_mgmt_signers` snapshot + per-principal certs/keys, optionally a first `agent.json`) is delivered over a channel the operator already trusts (secure copy, USB, or an enrollment server with its own pinned identity). Its integrity is an **assumption, not a guarantee the protocol provides** — as for every PKI's root delivery. If enrollment is tampered, security is void; this is the irreducible root, and it is stated rather than hidden.
+
+### mgmt-signer rotation: the current trusted set vouches for its successor
+
+The agent verifies `agent.json` against its **pinned/persisted** mgmt set (never against `agent.json`'s own embedded list — that would be circular). It then adopts the embedded list **only if that artifact's signature verifies against the current (pre-update) trusted set**. A key is always introduced by an already-trusted key; nothing bootstraps itself.
+
+| Step | Signs with | `authorized_mgmt_signers` | Trusted set after |
+|---|---|---|---|
+| start | — | — | `{key1}` (pinned at enrollment) |
+| add | **key1** | `[key1, key2]` | `{key1, key2}` |
+| switch | **key2** | `[key1, key2]` | `{key1, key2}` |
+| retire | **key2** | `[key2]` | `{key2}` |
+
+Two supporting guards:
+
+- **Rollback defence.** The envelope's monotonic `version` is the high-water-mark; the agent rejects any artifact with `version` below what it holds. This blocks replaying an old `[key1, key2]` artifact to resurrect a retired `key1`.
+- **Persistence.** The agent durably persists `(trusted mgmt set, trusted ctrl set, version high-water-mark)`. Without it, a restart re-pins from enrollment and silently loses rotation, reopening the replay window.
+
+### ctrl-signer rotation: ordinary mgmt authority
+
+Because `authorized_ctrl_signers` lives in operator-signed mgmt, rotating it is just a mgmt change: the operator edits `rete.yaml`'s `signers.ctrl`, recompiles, signs `agent.json` with the **mgmt** key, and publishes. The agent updates its ctrl set from the freshly-verified mgmt. No TOFU chain is needed — mgmt always vouches for ctrl — and a compromised CP cannot rotate its own authority because it cannot author mgmt.
+
+## Rationale
+
+The vouched-successor rule plus a monotonic version is the established pattern for distributing trust without an online authority: **TUF**[^tuf] root rotation, SSH `known_hosts` **trust-on-first-use**[^tofu], and **RPKI/ROA**[^rpki] all sign the successor with the predecessor and rely on a freshness/sequence guard against rollback. Florete's mgmt anchor is the TUF case; its ctrl delegation is the "sign the bound, let the fast layer act within it" case (RPKI's authorisation-bounded BGP).
+
+Agent-only verification follows from where the trust boundary actually is. The signature exists to authenticate the *producer across a distribution path*; once the agent has verified an artifact, the local handoff to the vertex is inside the node's own integrity domain, which the signature was never meant to defend. Centralising both signer sets in `agent.json` (rather than duplicating `authorized_mgmt_signers` in every envelope and burying `authorized_ctrl_signers` in one vertex payload, as C0/C1 did) puts the rete-wide trust facts once, where the sole verifier reads them.
+
+The asymmetry is not incidental tidiness — it is the containment property. Self-asserted ctrl signers would let a single CP compromise escalate from "pick a bad-but-permitted route" to "mint new trust," collapsing the blast-radius boundary the whole bounded-CP design rests on.
+
+## Consequences
+
+### Benefits
+
+- A compromised Coordinator is bounded to availability/traffic-pattern effects; it can neither grant access nor authorise a new signer.
+- Revocation is a clean primitive: drop a key from the list, sign with a surviving key, bump the version — agents stop accepting the revoked key on next sync, no code change.
+- Rete-wide trust roots are stated once; the per-artifact envelope shrinks to a bare `signature`.
+
+### Trade-offs
+
+- The agent must maintain durable, integrity-protected local state (trusted sets + version high-water-mark); losing it degrades to the enrollment anchor and loses rotation.
+- The enrollment channel is an irreducible out-of-band root: the protocol cannot make first contact safe, only everything after it.
+- mgmt-signer rotation requires an overlap window (add-switch-retire) and operator discipline; a single-key operator who loses the key must re-enroll nodes.
+
+### Evolution
+
+- B1+ moves the CP signing key to a separate host (managed cloud or BYO on-prem); because ctrl trust was always mgmt-delegated and CP-identity always its own SPIFFE kind, this is "the CP key now runs elsewhere," not a trust-model change.
+- Multiple `authorized_ctrl_signers` entries (regional CPs, A/B, quorum) are already permitted; each is a delegated key the operator adds via mgmt.
+- An HSM- or KMS-backed mgmt signing key, and a transparency log for signer-set changes, slot in without altering the vouched-successor rule.
+
+[^tuf]: [The Update Framework (TUF)](https://theupdateframework.io/) — root keys rotate by having the current root sign the new root key set; clients adopt the new set only via a signature chained to the trusted one.
+[^tofu]: [Trust on first use](https://en.wikipedia.org/wiki/Trust_on_first_use) — the SSH `known_hosts` model: pin on first contact, then require continuity; Florete pins at enrollment and requires the vouched-successor chain thereafter.
+[^rpki]: [RPKI / Route Origin Authorizations](https://en.wikipedia.org/wiki/Resource_Public_Key_Infrastructure) — signed authorisations that bound otherwise-dynamic routing decisions; the "sign the bound, let the fast layer act within it" pattern mirrored by mgmt-delegated ctrl signers.
