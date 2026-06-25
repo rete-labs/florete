@@ -372,7 +372,7 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
         {
           "name": "beta",
           "peer": "spiffe://rete-lovers/vertex/beta/rete",
-          "via": { "adapter": "wire", "udp_peer": "5.6.7.8:4433" }
+          "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" }
         }
       ]
     }
@@ -397,7 +397,7 @@ Things worth pointing out about this shape:
 - **The cert+key are link-flor's loaded material, not its identity.** `vertex/alpha/rete` is a workload entry that link-flor serves and acts on behalf of. From link-flor's perspective it's just a service name with a bidirectional FlorIO channel — link-flor has no idea what a mesh-vertex semantically is. The structural mirror to C0 flor holding alice's cert+key is exact.
 - **No top-level `florio` block.** FlorIO sockets are properties of individual workloads' `io` entries, derived from the vertex name. The socket path `/run/flor/<rete>/vertices/<vertex-name>.sock` is a compiler convention, not a config field.
 - **`ingress`/`egress` are pure ACL, just like C0's.** The link layer has the same access-control shape as the mesh layer; flor doesn't distinguish which mTLS layer it's enforcing. Dial info lives in `links`, never in `egress`.
-- **`links` is the star.** The link-vertex's `links` table maps each peer mesh-vertex to its wire `udp_peer` — its entire (degenerate, 1-1) routing. No `forwarding_table`, no labels, no paths: multi-hop forwarding lives entirely in mesh-flor. (Here `public` carries only the QUIC peering to `beta`; alpha↔gamma is a direct-UDP mesh link with no link-flor — see `rete.json` below.)
+- **`links` is the star.** The link-vertex's `links` table maps each peer mesh-vertex to its wire `addr` (a `udp` `via`) — its entire (degenerate, 1-1) routing. No `forwarding_table`, no labels, no paths: multi-hop forwarding lives entirely in mesh-flor. (Here `public` carries only the QUIC peering to `beta`; alpha↔gamma is a direct-UDP mesh link with no link-flor — see `rete.json` below.)
 
 Mixed-topology case (publishing a regular service in link-flor for private-network use): the service's workload entry simply moves from `rete.json` into the link-vertex's config file (`public.json` in the standard topology), with no schema change. The compiler decides placement based on the service's `via:` field.
 
@@ -421,12 +421,12 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
         {
           "name": "beta",
           "peer": "spiffe://rete-lovers/vertex/beta/rete",
-          "via": { "adapter": "via-link" }
+          "via": { "type": "florio", "adapter": "via-link" }
         },
         {
           "name": "gamma",
           "peer": "spiffe://rete-lovers/vertex/gamma/rete",
-          "via": { "adapter": "internal", "udp_peer": "10.0.0.7:5544" }
+          "via": { "type": "udp", "adapter": "internal", "addr": "10.0.0.7:5544" }
         }
       ]
     }
