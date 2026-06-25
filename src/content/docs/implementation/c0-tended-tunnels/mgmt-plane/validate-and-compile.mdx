@@ -166,9 +166,9 @@ A user device initiates connections only — no `listen_udp`-served services. Th
       {
         "type": "enum",
         "members": [
-          { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "adapter": "wire", "udp_peer": "9.10.11.12:4433" } },
-          { "name": "api",           "peer": "spiffe://rete-lovers/service/api",           "via": { "adapter": "wire", "udp_peer": "1.2.3.4:4433" } },
-          { "name": "kafka",         "peer": "spiffe://rete-lovers/service/kafka",         "via": { "adapter": "wire", "udp_peer": "5.6.7.8:4433" } }
+          { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
+          { "name": "api",           "peer": "spiffe://rete-lovers/service/api",           "via": { "type": "udp", "adapter": "wire", "addr": "1.2.3.4:4433" } },
+          { "name": "kafka",         "peer": "spiffe://rete-lovers/service/kafka",         "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }
         ]
       }
     ],
@@ -241,8 +241,8 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
       {
         "type": "enum",
         "members": [
-          { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "adapter": "wire", "udp_peer": "9.10.11.12:4433" } },
-          { "name": "mongodb",       "peer": "spiffe://rete-lovers/service/mongodb",       "via": { "adapter": "wire", "udp_peer": "5.6.7.8:4433" } }
+          { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
+          { "name": "mongodb",       "peer": "spiffe://rete-lovers/service/mongodb",       "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }
         ]
       }
     ],
@@ -259,7 +259,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 
 - **One workloads list per vertex.** A workload is a **principal** if it has at least one `inbound` io channel, a **target** if it has at least one `outbound` io channel, both if both. The schema doesn't privilege users vs services — they're all just workloads with different SPIFFE-ID kinds and io shapes.
 - **The agent's `node/<node>` principal is also a workload.** It lives in the vertex payload like any other principal, with a SOCKS5 inbound that the agent dials when it needs to talk to config-server. No special-casing in the runtime.
-- **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's vertex and the target service's vertex. The `links` table *is* the (degenerate, 1-1) routing: each entry maps a target service to its wire `udp_peer`. The compiler pre-resolves (a) which remote peers may initiate to this node's services (`ingress`), (b) which local principals may initiate to which remote target (`egress`), and (c) how to dial each target (`links`).
+- **No forwarding table, no labels** — every tunnel in C0 is a direct QUIC connection between the initiator's vertex and the target service's vertex. The `links` table *is* the (degenerate, 1-1) routing: each entry maps a target service to its wire `addr` (a `udp` `via`). The compiler pre-resolves (a) which remote peers may initiate to this node's services (`ingress`), (b) which local principals may initiate to which remote target (`egress`), and (c) how to dial each target (`links`).
 - **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's vertex can fail fast on disallowed SOCKS5 requests; the UDP address it dials lives in `links`. A compromised initiator could ignore its own egress filter; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a local convenience filter over the `links` dialing table.
 - **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `retectl compile` + push — no cert reissuance needed, no role-resolution at runtime on the vertex hot path.
 - **Deterministic** — same `retectl compile --repo X` produces identical output on any machine given identical inputs.

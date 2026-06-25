@@ -48,14 +48,14 @@ A vertex reaches each **peer** (adjacent vertex) over one or more **links**, and
 ```json
 "links": [
   { "type": "enum", "members": [
-    { "name": "beta-pub",  "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "adapter": "via-link" } },
-    { "name": "beta-eth1", "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "adapter": "eth1", "udp_peer": "10.0.1.6:5544" } },
-    { "name": "gamma",     "peer": "spiffe://rete-lovers/vertex/gamma/rete", "via": { "adapter": "internal", "udp_peer": "10.0.0.7:5544" } }
+    { "name": "beta-pub",  "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "type": "florio", "adapter": "via-link" } },
+    { "name": "beta-eth1", "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "type": "udp", "adapter": "eth1", "addr": "10.0.1.6:5544" } },
+    { "name": "gamma",     "peer": "spiffe://rete-lovers/vertex/gamma/rete", "via": { "type": "udp", "adapter": "internal", "addr": "10.0.0.7:5544" } }
   ] }
 ]
 ```
 
-Each link carries a local `name` (the forwarding handle — `beta-pub` and `beta-eth1` are two links to the *same* peer), its `peer` (the remote mesh-vertex identity, for link-layer mTLS), and exactly one `via` — `{ "adapter": <name>, …adapter-specific dial }`. A delegating adapter (FlorIO) carries no address (it hands dialing to the layer below); a wire adapter (UDP) carries `udp_peer` (it terminates the wire), so the recursion boundary stays legible: the address surfaces at whichever layer owns the wire. `via` lives **only** here; the compiler assigns stable link names, and an operator's `paths.yaml` hop `via:` (the source-side link selector) compiles down to a link `name`.
+Each link carries a local `name` (the forwarding handle — `beta-pub` and `beta-eth1` are two links to the *same* peer), its `peer` (the remote mesh-vertex identity, for link-layer mTLS), and exactly one `via`, internally tagged on `type` — `{ "type": <adapter-type>, "adapter": <name>, …type-specific dial }`. A delegating adapter (FlorIO) carries no address (it hands dialing to the layer below); a UDP adapter carries `addr` (it terminates the wire), so the recursion boundary stays legible: the address surfaces at whichever layer owns the wire. The `via` `type` mirrors the referenced adapter's type (compiler-guaranteed consistent, validator-checked). `via` lives **only** here; the compiler assigns stable link names, and an operator's `paths.yaml` hop `via:` (the source-side link selector) compiles down to a link `name`.
 
 ### `ingress`/`egress` are pure flat allow-lists
 
