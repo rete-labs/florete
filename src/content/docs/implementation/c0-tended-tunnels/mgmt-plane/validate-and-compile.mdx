@@ -86,10 +86,11 @@ In B1+, a parallel `plane: "ctrl"` envelope (unsigned) will carry CP decisions a
 
 ### Terminology
 
-The payload uses two pairs of terms consistently, both from **flor's point of view** at the network boundary:
+The payload uses these terms consistently, all from **flor's point of view** at the network boundary. A **workload** is a [TLS principal](../identity#types-of-principal) wired into the vertex (it holds an SVID and speaks mTLS); *initiator*/*target* below are the **roles** a workload plays, not what makes it a principal — both are principals.
 
-- **ingress** / **egress** — peer-to-local and local-to-peer QUIC sessions respectively. `ingress` lists which remote principals may connect to our local principals; `egress` lists which of our local principals may connect to a given remote target. How to *dial* each target lives in the vertex's `links` table, not in `egress`.
-- **inbound** / **outbound** — the two ways a workload is wired into flor locally, **determined by the `io` channel's `kind`**, not a separate field. An inbound kind (`socks5`) means the workload connects *into* flor here (flor accepts traffic and originates outgoing connections on its behalf — the workload acts as a **principal**). An outbound kind (`tcp`) means flor connects *out* to the workload here (flor delivers incoming connections — the workload acts as a **target**, i.e. a service). A workload can have both kinds of `io` channels if it acts as principal and target. FlorIO (`florio`) is bidirectional — reserved for recursive flor layers (not used in C0).
+- **initiator** / **target** — the two roles a workload plays in a flow. An **initiator** originates a connection (flor dials on its behalf); a **target** serves one (flor delivers to it). A workload can be both (e.g. a service that calls another service and is itself called). Determined by the workload's `io` channel kinds — see *inbound*/*outbound*.
+- **ingress** / **egress** — peer-to-local and local-to-peer QUIC sessions respectively. `ingress` lists which remote principals may initiate to a local target; `egress` lists which local principals may initiate to a given remote target. How to *dial* each target lives in the vertex's `links` table, not in `egress`.
+- **inbound** / **outbound** — the two ways a workload is wired into flor locally, **determined by the `io` channel's `kind`**, not a separate field. An inbound kind (`socks5`) means the workload connects *into* flor here (flor accepts traffic and originates outgoing connections on its behalf — the workload acts as an **initiator**). An outbound kind (`tcp`) means flor connects *out* to the workload here (flor delivers incoming connections — the workload acts as a **target**, i.e. a service). A workload can have both kinds of `io` channels if it is both initiator and target. FlorIO (`florio`) is bidirectional — reserved for recursive flor layers (not used in C0).
 
 Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound calls is an `inbound` channel of `kind: socks5`; the loopback `127.0.0.1:port` upstream a service binds to is an `outbound` channel of `kind: tcp`. (These replace C0's earlier `socks5_proxy` / `upstream_addr` pair.)
 
@@ -173,9 +174,9 @@ A user device initiates connections only — no `listen_udp`-served services. Th
       }
     ],
     "egress": [
-      { "target_spiffe_id": "spiffe://rete-lovers/service/config-server", "allow": ["spiffe://rete-lovers/node/alice-laptop"] },
-      { "target_spiffe_id": "spiffe://rete-lovers/service/api",           "allow": ["spiffe://rete-lovers/user/alice"] },
-      { "target_spiffe_id": "spiffe://rete-lovers/service/kafka",         "allow": ["spiffe://rete-lovers/user/alice"] }
+      { "target": "spiffe://rete-lovers/service/config-server", "allow": ["spiffe://rete-lovers/node/alice-laptop"] },
+      { "target": "spiffe://rete-lovers/service/api",           "allow": ["spiffe://rete-lovers/user/alice"] },
+      { "target": "spiffe://rete-lovers/service/kafka",         "allow": ["spiffe://rete-lovers/user/alice"] }
     ]
   },
   "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
@@ -226,14 +227,14 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
     ],
     "ingress": [
       {
-        "target_spiffe_id": "spiffe://rete-lovers/service/api",
+        "target": "spiffe://rete-lovers/service/api",
         "allow": [
           "spiffe://rete-lovers/user/alice",
           "spiffe://rete-lovers/user/bob"
         ]
       },
       {
-        "target_spiffe_id": "spiffe://rete-lovers/service/alpha/ssh",
+        "target": "spiffe://rete-lovers/service/alpha/ssh",
         "allow": ["spiffe://rete-lovers/user/bob"]
       }
     ],
@@ -247,8 +248,8 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
       }
     ],
     "egress": [
-      { "target_spiffe_id": "spiffe://rete-lovers/service/config-server", "allow": ["spiffe://rete-lovers/node/alpha"] },
-      { "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",       "allow": ["spiffe://rete-lovers/service/api"] }
+      { "target": "spiffe://rete-lovers/service/config-server", "allow": ["spiffe://rete-lovers/node/alpha"] },
+      { "target": "spiffe://rete-lovers/service/mongodb",       "allow": ["spiffe://rete-lovers/service/api"] }
     ]
   },
   "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }

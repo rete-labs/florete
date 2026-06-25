@@ -325,9 +325,9 @@ This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelo
 
 ### Workloads & IO
 
-Both vertex configs use a unified `workloads` shape — one entry per local principal/target. Each workload has zero or more `io` channels, and **each channel's direction is intrinsic to its `kind`** (matching C0 scope's "Inbound/Outbound" usage):
+Both vertex configs use a unified `workloads` shape — one entry per local workload (a [TLS principal](../../c0-tended-tunnels/mgmt-plane/identity#types-of-principal); initiator, target, or both). Each workload has zero or more `io` channels, and **each channel's direction is intrinsic to its `kind`** (matching C0 scope's "Inbound/Outbound" usage):
 
-- **inbound** kind (`socks5`) — the workload connects *into* flor here; flor originates outgoing connections on its behalf. Workload acts as a **principal**.
+- **inbound** kind (`socks5`) — the workload connects *into* flor here; flor originates outgoing connections on its behalf. Workload acts as an **initiator**.
 - **outbound** kind (`tcp`) — flor connects *out* to the workload here; flor delivers incoming connections. Workload acts as a **target** (service).
 - **bidirectional** kind (`florio`) — one socket does both, carrying Connect requests downward and inbound deliveries upward between recursive flor layers.
 
@@ -379,13 +379,13 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
   ],
   "ingress": [
     {
-      "target_spiffe_id": "spiffe://rete-lovers/vertex/alpha/rete",
+      "target": "spiffe://rete-lovers/vertex/alpha/rete",
       "allow": [ "spiffe://rete-lovers/vertex/beta/rete" ]
     }
   ],
   "egress": [
     {
-      "target_spiffe_id": "spiffe://rete-lovers/vertex/beta/rete",
+      "target": "spiffe://rete-lovers/vertex/beta/rete",
       "allow": ["spiffe://rete-lovers/vertex/alpha/rete"]
     }
   ]
@@ -450,13 +450,13 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
   ],
   "ingress": [
     {
-      "target_spiffe_id": "spiffe://rete-lovers/service/api",
+      "target": "spiffe://rete-lovers/service/api",
       "allow": ["spiffe://rete-lovers/user/alice"]
     }
   ],
   "egress": [
     {
-      "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
+      "target": "spiffe://rete-lovers/service/mongodb",
       "allow": ["spiffe://rete-lovers/service/api"]
     }
   ]
@@ -625,9 +625,9 @@ Publication is **static-config-only** in C1: link-flor's local services are bake
 
 ### Why one `workloads` list with typed `io[]` channels
 
-C0 had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated principal-vs-target with workload-kind; C1's mesh-vertex case broke it (a mesh-vertex is both, on a single FlorIO channel).
+C0 had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated initiator-vs-target with workload-kind; C1's mesh-vertex case broke it (a mesh-vertex is both, on a single FlorIO channel).
 
-Unifying to `workloads[].io[]` resolves the asymmetry: each channel's `kind` carries its own direction — `socks5` inbound, `tcp` outbound, `florio` bidirectional — so a workload is a principal if it has any inbound-kind channel, a target if it has any outbound-kind channel, both if both. FlorIO is one socket carrying both directions, no mechanism duplication. There is **no separate `direction` field**: it would be redundant with `kind` (and with whether the channel carries `listen`, `upstream`, or `socket`) and would admit illegal states like an inbound `tcp`. A new direction is a new kind (e.g. a future `socks5_out`). The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
+Unifying to `workloads[].io[]` resolves the asymmetry: each channel's `kind` carries its own direction — `socks5` inbound, `tcp` outbound, `florio` bidirectional — so a workload is an initiator if it has any inbound-kind channel, a target if it has any outbound-kind channel, both if both. FlorIO is one socket carrying both directions, no mechanism duplication. There is **no separate `direction` field**: it would be redundant with `kind` (and with whether the channel carries `listen`, `upstream`, or `socket`) and would admit illegal states like an inbound `tcp`. A new direction is a new kind (e.g. a future `socks5_out`). The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
 
 ### Why three compiled artifacts per node
 

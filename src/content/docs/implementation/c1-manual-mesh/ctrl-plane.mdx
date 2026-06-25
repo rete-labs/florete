@@ -33,14 +33,14 @@ The C1 ctrl artifact for mesh-flor:
     "label_bindings": [
       {
         "scope": "ingress",
-        "target_spiffe_id": "spiffe://rete-lovers/service/api",
-        "principal": "spiffe://rete-lovers/user/alice",
+        "target": "spiffe://rete-lovers/service/api",
+        "initiator": "spiffe://rete-lovers/user/alice",
         "in": { "link": "beta", "label": 9 }
       },
       {
         "scope": "egress",
-        "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
-        "principal": "spiffe://rete-lovers/service/api",
+        "target": "spiffe://rete-lovers/service/mongodb",
+        "initiator": "spiffe://rete-lovers/service/api",
         "out": { "link": "beta", "label": 11 }
       }
     ]
@@ -59,7 +59,7 @@ Field semantics:
 - **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against a pubkey in the agent's `trust.authorized_ctrl_signers` (carried in `agent.json`, not in this artifact — see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)); ctrl signed by an unauthorized key is rejected.
 - **`active_links`** — the subset of mgmt's `links` bound (the per-node projection of `allowed_links`) this mesh-flor should currently bring up. In C1 this equals the full set produced by `links`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the rete-wide topology information a per-node agent ever sees — it knows its own links, nothing else.
 - **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries, each an `in: {link, label}` → `out: {link, label}` swap. **Labels are per-link** (per-interface significance), so each is paired with its link name; the agent verifies that each `in.link`/`out.link` is in `active_links` and that every `(in.link, in.label)` is unique.
-- **`label_bindings`** — binds each accepted (initiator, target) flow from the mgmt allow lists to a per-link label: an **ingress** binding is `in: {link, label}` → local delivery; an **egress** binding is local origin → `out: {link, label}` (the first hop). Each binding's (scope, target_spiffe_id, principal) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
+- **`label_bindings`** — binds each accepted (initiator, target) flow from the mgmt allow lists to a per-link label: an **ingress** binding is `in: {link, label}` → local delivery; an **egress** binding is local origin → `out: {link, label}` (the first hop). Each binding's (scope, target, initiator) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
 
 **No `active_paths` field.** Per-node agents have no use for the rete-wide path enumeration: a flor vertex can only act on packets it actually sees, which means its own forwarding rows and label bindings. Knowing that label 17 globally corresponds to "alice → alpha → beta → kafka" buys nothing operationally — the vertex doesn't process the path, it processes labels. Keeping path enumeration out of per-node ctrl artifacts also matches the practical limit of local verifiability (see "What hijacked CP can and cannot do" below).
 
@@ -129,7 +129,7 @@ Each agent fetches both streams and verifies them locally before applying. The f
 6. **Verify ctrl-vs-mgmt structural rules**:
    - Every entry in `active_links` is in the set produced by mgmt's `links` bound (dispatch on each rule's `type`; for `enum` that's literal membership).
    - Every `forwarding_table` `in.link`/`out.link` is in `active_links`.
-   - Every `label_bindings` entry's (scope, target_spiffe_id, principal) appears in the corresponding flat `ingress.allow` or `egress.allow` list.
+   - Every `label_bindings` entry's (scope, target, initiator) appears in the corresponding flat `ingress.allow` or `egress.allow` list.
    - Every `(in.link, in.label)` is unique across the forwarding table and ingress bindings (per-link in-label uniqueness; out-labels live in the neighbour's space).
 7. **Apply** — combine mgmt's identities, allow lists, and link/adapter config with ctrl's `active_links`, `forwarding_table`, and `label_bindings` to derive the runtime state.
 

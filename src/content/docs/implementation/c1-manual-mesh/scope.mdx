@@ -7,7 +7,7 @@ This milestone inherits all goals, limitations, development constraints, evoluti
 
 ## Real Service Mesh (Multi-hop)
 
-C0 is a set of 1-hop tunnels — every principal reaches every target by a direct QUIC connection to the target's host node. C1 adds the actual mesh:
+C0 is a set of 1-hop tunnels — every initiator reaches every target by a direct QUIC connection to the target's host node. C1 adds the actual mesh:
 
 - **Mesh layer** on top of the **link layers**. The data plane is implemented by two separate flor instances per node (referenced as mesh-flor and link-flor), communicating over FlorIO (a local datagram socket). This is the first milestone that exercises our recursive architecture.
 - **Multi-hop forwarding** between mesh-vertices (using MPLS-style labels).
