@@ -17,7 +17,7 @@ ADR-0009 settled that the operator authors a compose-style facade and that the *
 3. **`via` was polymorphic across three contexts** (`{udp_peer}`, `{adapter, udp_peer}`, `{first_hop}`), an untagged-union guessing game for a *signed* artifact.
 4. **`allowed_peers` was double-purposed** (a CP-narrowable bound *and* dial config), and the mgmt↔ctrl relationship was an expand-and-match rather than a clean join.
 
-A framing correction underlies the fix. ADR-0009's "self-describing, addressable objects" can be misread as "make the artifact a generic `kind`/`name` object store." It is not one. The per-node artifact is a **typed projection delivered to a single consumer** that reads it whole, once; the *store* is the Coordinator's resource model. The addressability the object model wants is already carried by the **SPIFFE ID**, used as the key for every entity (`workloads[].spiffe_id`, `ingress/egress[].target_spiffe_id`, `links[].peer`) — with a local link `name` as the one additional, deliberately non-identity key the forwarding plane needs. Building a generic object decoder would re-import on the consumed side exactly the envelope ceremony ADR-0009 rejected on the facade side.
+A framing correction underlies the fix. ADR-0009's "self-describing, addressable objects" can be misread as "make the artifact a generic `kind`/`name` object store." It is not one. The per-node artifact is a **typed projection delivered to a single consumer** that reads it whole, once; the *store* is the Coordinator's resource model. The addressability the object model wants is already carried by the **SPIFFE ID**, used as the key for every entity (`workloads[].spiffe_id`, `ingress/egress[].target`, `links[].peer`) — with a local link `name` as the one additional, deliberately non-identity key the forwarding plane needs. Building a generic object decoder would re-import on the consumed side exactly the envelope ceremony ADR-0009 rejected on the facade side.
 
 ## Decision
 
@@ -59,11 +59,11 @@ Each link carries a local `name` (the forwarding handle — `beta-pub` and `beta
 
 ### `ingress`/`egress` are pure flat allow-lists
 
-Both are `[{ "target_spiffe_id", "allow": [ <principal-spiffe-id>… ] }]` — operator authority, **not** bounds (the CP cannot narrow them, so no typed-rule shell). `egress` drops `target_node` (derivable from the peer's node-scoped SPIFFE ID), `target_udp` (moved to `links`), and `via`/`first_hop` (moved to ctrl). `egress` is now identical in shape to `ingress`.
+Both are `[{ "target", "allow": [ <initiator-spiffe-id>… ] }]` — operator authority, **not** bounds (the CP cannot narrow them, so no typed-rule shell). `egress` drops `target_node` (derivable from the peer's node-scoped SPIFFE ID), `target_udp` (moved to `links`), and `via`/`first_hop` (moved to ctrl). `egress` is now identical in shape to `ingress`.
 
 ### Routing realisation is ctrl; the mgmt↔ctrl join is a zip
 
-mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisation. **Labels are per-link, not per-peer or per-node** (MPLS per-interface semantics): a label is only meaningful in the label space of the link it travels on, and parallel links to the same peer have *distinct* spaces — so every label is paired with its **link name**. Each entry is an `in → out` mapping where each side is either a link-label (a transit hop) or a local workload (origination/delivery, named by `target`+`principal`):
+mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisation. **Labels are per-link, not per-peer or per-node** (MPLS per-interface semantics): a label is only meaningful in the label space of the link it travels on, and parallel links to the same peer have *distinct* spaces — so every label is paired with its **link name**. Each entry is an `in → out` mapping where each side is either a link-label (a transit hop) or a local workload (origination/delivery, named by `target`+`initiator`):
 
 ```json
 {
@@ -72,11 +72,11 @@ mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisa
   "payload": {
     "active_links": [ "beta-pub", "gamma" ],
     "label_bindings": [
-      { "scope": "ingress", "target_spiffe_id": "spiffe://rete-lovers/service/api",
-        "principal": "spiffe://rete-lovers/user/alice",
+      { "scope": "ingress", "target": "spiffe://rete-lovers/service/api",
+        "initiator": "spiffe://rete-lovers/user/alice",
         "in":  { "link": "beta-pub", "label": 9 } },
-      { "scope": "egress",  "target_spiffe_id": "spiffe://rete-lovers/service/mongodb",
-        "principal": "spiffe://rete-lovers/service/api",
+      { "scope": "egress",  "target": "spiffe://rete-lovers/service/mongodb",
+        "initiator": "spiffe://rete-lovers/service/api",
         "out": { "link": "beta-pub", "label": 11 } }
     ],
     "forwarding_table": [
@@ -90,11 +90,11 @@ mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisa
 
 An ingress binding is `link-label → local` (the `out` is the local workload, given by scope); an egress binding is `local → link-label` (its `out.link` is the first hop — a *specific* link to the first-hop peer, which is what a `paths.yaml` hop's link selection resolves to); a `forwarding_table` row is `link-label → link-label`. The three differ only in whether each endpoint is a link or a local workload, leaving room to fold them into one table later — deferred, not done here.
 
-The two join keys are the **link name** (ctrl `active_links` and every `in.link`/`out.link` ⊆ the mgmt `links` table) and the **flow tuple `(scope, target_spiffe_id, principal_spiffe_id)`** (ctrl `label_bindings` ⊆ the mgmt `ingress`/`egress` allow-set, expanded once). The agent verifies, before applying:
+The two join keys are the **link name** (ctrl `active_links` and every `in.link`/`out.link` ⊆ the mgmt `links` table) and the **flow tuple `(scope, target, initiator)`** (ctrl `label_bindings` ⊆ the mgmt `ingress`/`egress` allow-set, expanded once). The agent verifies, before applying:
 
 1. `active_links` ⊆ ⋃ `links` rules (dispatch on `type`); each link's `peer` is dialed via its `via` adapter.
 2. every `in.link` / `out.link` ∈ `active_links`.
-3. every `label_bindings (scope, target, principal)` ∈ the expanded mgmt allow-set.
+3. every `label_bindings (scope, target, initiator)` ∈ the expanded mgmt allow-set.
 4. each `(in.link, in.label)` is unique across `forwarding_table` ∪ ingress bindings (per-link in-label uniqueness; out-labels live in the neighbour's space and are not checked locally).
 5. `obeys_mgmt_version` ≥ the held mgmt `version`.
 

@@ -7,6 +7,8 @@ description: Principal types, CA management, and SPIFFE naming scheme for C0
 
 ### Types of Principal
 
+A **principal** is any entity with a rete identity — a SPIFFE ID issued by the rete CA. Users, services, nodes, vertices, and the signing keys are all principals (the rete CA itself is not — it's the issuing authority, see [Rete CA](#rete-ca)). "Principal" denotes *having an identity*, independent of what the entity does on a given connection: a service that only ever serves is no less a principal than a user that only ever initiates. The directional roles a workload plays in a flow — **initiator** vs **target** — are orthogonal to the principal kinds below and are defined in [Validate & Compile](../validate-and-compile#terminology).
+
 C0 issues two flavours of SPIFFE principal, distinguished by how the cert is used at runtime. Both flavours are signed by the same rete CA and live in the same trust domain; what differs is the X.509 extension policy and where the private key resides.
 
 **TLS principals** — terminate mTLS handshakes on the wire. Cert has `keyUsage: digitalSignature, keyEncipherment` plus `extKeyUsage: serverAuth, clientAuth`. The private key is held by a flor vertex acting on the principal's behalf.
