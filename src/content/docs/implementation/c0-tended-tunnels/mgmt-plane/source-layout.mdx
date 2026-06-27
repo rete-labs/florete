@@ -60,7 +60,7 @@ so a single resource can live in its own file if desired — the equivalence is 
 
 How the compiler reads source:
 
-- **Discovery.** `retectl compile`/`validate` require `rete.yaml` at the repo root (the fixed anchor — it names the rete and holds CA/signer policy); if it is missing or nested elsewhere, discovery cannot start and a command fails. From that root, they recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, and dotfiles. `rete.yaml` may carry a `source:` block with `include`/`exclude` globs to override discovery precisely (useful in a shared repo). `retectl validate -f <file|glob>…` and `retectl compile -f <file|glob>…` override discovery entirely for partial/CI runs; in that mode, at least one selected file must still contain the singleton `rete` block.
+- **Discovery.** `retectl compile`/`validate` require `rete.yaml` at the repo root (the fixed anchor — it names the rete and holds CA/signer policy); if it is missing or nested elsewhere, discovery cannot start and a command fails. From that root, they recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, and dotfiles. `rete.yaml` may carry a top-level `source:` block with `include`/`exclude` globs to override discovery precisely (useful in a shared repo). `retectl validate -f <file|glob>…` and `retectl compile -f <file|glob>…` override discovery entirely for partial/CI runs; in that mode, at least one selected file must still contain the singleton `rete` block.
 - **Merge = union.** Collections of the same kind across files are unioned into one logical view before validation, so cross-references (a role naming a group, a service naming a node) resolve regardless of file layout.
 - **Duplicates are errors.** A duplicate `(kind, name)` across files is a hard validation error, never last-wins — silent override in a security source-of-truth is unacceptable, and erroring also makes the compile order-independent and [deterministic](../validate-and-compile).
 - **Singletons are exactly-one.** The `rete` block must appear exactly once (error on zero or two).
@@ -84,14 +84,14 @@ The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it kee
 ### rete.yaml
 
 ```yaml
+source:                                                  # optional; which files form the rete
+  # default when omitted: recursively glob *.yaml/*.yml under the repo,
+  # skipping .flor/, certs/, and dotfiles
+  include: ["**/*.yaml"]                                 # repo-relative globs; replaces the default set
+  exclude: ["examples/**", "vendor/**"]                  # repo-relative globs; subtracted after include
+
 rete:
   name: rete-lovers                                      # also the SPIFFE trust domain
-
-  source:                                                # optional; which files form the rete
-    # default when omitted: recursively glob *.yaml/*.yml under the repo,
-    # skipping .flor/, certs/, and dotfiles
-    include: ["**/*.yaml"]                               # repo-relative globs; replaces the default set
-    exclude: ["examples/**", "vendor/**"]                # repo-relative globs; subtracted after include
 
   ca:
     cert: certs/ca.crt
@@ -114,7 +114,7 @@ rete:
 
 The rete `name` doubles as the SPIFFE trust domain: every principal in this rete has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#naming-scheme)).
 
-**Source discovery (`source.include` / `source.exclude`).** Optional, shapes *which files* the compiler treats as rete source. Omitted, the compiler uses its default: recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, and dotfiles (see [Source files are a recommended split](#source-files-are-a-recommended-split-not-a-requirement) above). `include` **replaces** that default glob set with an explicit, repo-relative list; `exclude` is applied **after** `include` to subtract paths — a `vendor/`/`examples/` subtree, or YAML that isn't rete source. `rete.yaml` must live at the repo root and is always read regardless of these globs (it is the anchor); without it, discovery cannot start and `retectl validate`/`compile` fail. Reach for this when the rete repo shares space with unrelated YAML, or when you want discovery to be explicit rather than implicit. `retectl validate -f <file|glob>…` and `retectl compile -f <file|glob>…` bypass `source` entirely and use exactly the given paths; at least one selected file must contain the singleton `rete` block.
+**Source discovery (`source.include` / `source.exclude`).** Optional top-level block (not nested under `rete`), shapes *which files* the compiler treats as rete source. Omitted, the compiler uses its default: recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `certs/`, and dotfiles (see [Source files are a recommended split](#source-files-are-a-recommended-split-not-a-requirement) above). `include` **replaces** that default glob set with an explicit, repo-relative list; `exclude` is applied **after** `include` to subtract paths — a `vendor/`/`examples/` subtree, or YAML that isn't rete source. `rete.yaml` must live at the repo root and is always read regardless of these globs (it is the anchor); without it, discovery cannot start and `retectl validate`/`compile` fail. Reach for this when the rete repo shares space with unrelated YAML, or when you want discovery to be explicit rather than implicit. `retectl validate -f <file|glob>…` and `retectl compile -f <file|glob>…` bypass `source` entirely and use exactly the given paths; at least one selected file must contain the singleton `rete` block.
 
 **Per-category lifetimes.** The CA, the envelope signers, and the TLS principals have different lifecycles — the CA is long-lived (rete lifetime); mgmt signers rotate on operator policy (annual-ish); TLS principal certs rotate frequently (quarterly). Each category gets its own `validity_days` slot; the field is optional and falls back to the compiler default if omitted. Smaller retes can leave the policy fields out entirely and just declare cert paths.
 
