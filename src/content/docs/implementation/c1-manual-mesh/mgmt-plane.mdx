@@ -272,13 +272,13 @@ retectl compile --node <name> [--repo <dir>] [--out <dir>]
                                             # emits <out>/<node>/{agent.json, vertices/*.json}
 
 # node (flor) — runtime
-flor vertex run --rete <scope> --vertex <name>
+flor vertex run --rete <scope> --name <name>
                                             # vertex daemon; reads mgmt + (mesh) ctrl
                                             # configs by name under the rete root; the agent
                                             # supervises one or more of these per node
 ```
 
-`flor agent run` keeps its C0 behaviour and CLI shape (`[--rete <scope>]`, reading `<root>/mgmt/agent.json`); it just supervises N vertex instances rather than one, spawning each as `flor vertex run --rete <scope> --vertex <name>`. Exactly *how* the agent launches vertex processes — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C1; the runtime API stays simple (a vertex starts when given its scope and name, and the agent makes that happen by whatever means the platform offers).
+`flor agent run` keeps its C0 behaviour and CLI shape (`[--rete <scope>]`, reading `<root>/mgmt/agent.json`); it just supervises N vertex instances rather than one, spawning each as `flor vertex run --rete <scope> --name <name>`. Exactly *how* the agent launches vertex processes — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C1; the runtime API stays simple (a vertex starts when given its scope and name, and the agent makes that happen by whatever means the platform offers).
 
 `retectl ca sign` adds `vertices` to its `--kind` enumeration (already foreshadowed in C0). The vertex's SPIFFE name is derived from `<node>/<vertex-name>`.
 
@@ -571,7 +571,7 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 - [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, principal role coherence)
 - [ ] `retectl issue-bundle --node <n>` includes the node's mesh-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
 - [ ] `retectl ca sign --kind control-plane --name <name>` issues a CP signing keypair on operator hardware
-- [ ] `flor vertex run --rete <scope> --vertex <name>` daemon entry point (reads mgmt + mesh ctrl configs by name; resolves identities against the rete root)
+- [ ] `flor vertex run --rete <scope> --name <name>` daemon entry point (reads mgmt + mesh ctrl configs by name; resolves identities against the rete root)
 - [ ] `flor agent run` supervises vertex instances (mechanism — direct fork, systemd, or future local runtime — left open in C1); fetches mgmt and ctrl artifacts as separate streams from the config-server
 - [ ] Example `my-rete/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
 

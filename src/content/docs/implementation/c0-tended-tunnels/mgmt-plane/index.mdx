@@ -131,7 +131,7 @@ C0/C1 are the degenerate case: empty CP, empty agent autonomy, full mgmt determi
 - [ ] `flor enroll` (two-step bootstrap: install certs, fetch artifacts from config-server, start agent)
 - [ ] `flor agent sync` with `--commit-timeout` default 5m, `--confirm`, `--dry-run`
 - [ ] `flor agent run [--rete <scope>]` reads `<root>/mgmt/agent.json` and supervises one `flor vertex` instance in C0
-- [ ] `flor vertex run --rete <scope> --vertex <name>` daemon entry point
+- [ ] `flor vertex run --rete <scope> --name <name>` daemon entry point
 - [ ] `flor agent status` over local Unix socket
 - [ ] Per-service SOCKS5 outbound proxy with port→identity binding; local listen ports are **preferences** — agent binds preferred if free, otherwise picks any available port and records the binding; bind failures are logged, not fatal
 - [ ] Installer: `install.sh` for Linux/Mac, MSI for Windows
