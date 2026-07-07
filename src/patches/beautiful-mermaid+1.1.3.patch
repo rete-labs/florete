@@ -1,0 +1,26 @@
+diff --git a/node_modules/beautiful-mermaid/dist/index.js b/node_modules/beautiful-mermaid/dist/index.js
+index e7e087b..8e337cf 100644
+--- a/node_modules/beautiful-mermaid/dist/index.js
++++ b/node_modules/beautiful-mermaid/dist/index.js
+@@ -6960,8 +6960,8 @@ function arrowMarkerDefs() {
+     `  <marker id="arrowhead" markerWidth="${w}" markerHeight="${h}" refX="${refX}" refY="${h / 2}" orient="auto">
+     <polygon points="0 0, ${w} ${h / 2}, 0 ${h}" ${arrowStyle} />
+   </marker>
+-  <marker id="arrowhead-start" markerWidth="${w}" markerHeight="${h}" refX="1" refY="${h / 2}" orient="auto-start-reverse">
+-    <polygon points="${w} 0, 0 ${h / 2}, ${w} ${h}" ${arrowStyle} />
++  <marker id="arrowhead-start" markerWidth="${w}" markerHeight="${h}" refX="${refX}" refY="${h / 2}" orient="auto-start-reverse">
++    <polygon points="0 0, ${w} ${h / 2}, 0 ${h}" ${arrowStyle} />
+   </marker>`
+   );
+ }
+@@ -6975,8 +6975,8 @@ function arrowMarkerDefsForColor(color) {
+   return `  <marker id="arrowhead-${suffix}" markerWidth="${w}" markerHeight="${h}" refX="${refX}" refY="${h / 2}" orient="auto">
+     <polygon points="0 0, ${w} ${h / 2}, 0 ${h}" ${arrowStyle} />
+   </marker>
+-  <marker id="arrowhead-start-${suffix}" markerWidth="${w}" markerHeight="${h}" refX="1" refY="${h / 2}" orient="auto-start-reverse">
+-    <polygon points="${w} 0, 0 ${h / 2}, ${w} ${h}" ${arrowStyle} />
++  <marker id="arrowhead-start-${suffix}" markerWidth="${w}" markerHeight="${h}" refX="${refX}" refY="${h / 2}" orient="auto-start-reverse">
++    <polygon points="0 0, ${w} ${h / 2}, 0 ${h}" ${arrowStyle} />
+   </marker>`;
+ }
+ function markerSuffix(color) {
