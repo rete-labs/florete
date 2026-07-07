@@ -59,6 +59,10 @@ Note how Portal::Publish method resembles Reverse Proxy role, and Portal::Connec
 
 A vertex implements Portal API, being a participant of a layer. Naturally, it is done by connecting to some other vertices within the layer. Here the recursive nature of the architecture shows itself: to connect, the vertex uses Portal::Connect of a vertex from some other layer!
 
+In classical naming terms, a vertex is a **network attachment point**: the point where a layer's users attach to the layer — Saltzer's *point of attachment*[^poa], the same structure RINA reaches with its layer-internal names. The notion recurses with the architecture: a vertex's own attachment points are the lower-layer vertices it uses. Saltzer's chain *service → node → attachment point → route* thus maps onto Florete as *workload identity → mesh-vertex → used vertex → path*; and any wire-level address a medium may need is a layer-private label naming an attachment point — never a name of the layer's user (see [Addressing & Routing](#addressing--routing)).
+
+[^poa]: J. Saltzer, [RFC 1498 — On the Naming and Binding of Network Destinations](https://datatracker.ietf.org/doc/rfc1498/): the canonical *service name → node → point of attachment → route* binding chain, each step resolved by a directory.
+
 Internally vertex consists of
 - transport endpoint to establish connections on behalf of the Portal API users
 - connection manager for in-layer connections with other vertices
@@ -176,7 +180,7 @@ TODO([#39](https://github.com/rete-labs/florete/issues/39)): Define Florete Iden
 
 #### Addressing & Routing
 
-What about addresses? That concept becomes private implementation detail of a particular layer. Actually, for small networks there is no need for addresses at all: names are enough, and routing can be done by other methods. The most well-known alternative to IP routing is MPLS[^mpls]. It enables Traffic Engineering[^te] — the thing we need too. MPLS uses labels instead of addresses for forwarding packets.
+What about addresses? That concept becomes private implementation detail of a particular layer. Where a layer does need them, addresses label **attachment points** — the [vertices](#vertex) its users attach through — never the users themselves; user names bind to attachment-point labels per layer, by a directory or by derivation. Actually, for small networks there is no need for addresses at all: names are enough, and routing can be done by other methods. The most well-known alternative to IP routing is MPLS[^mpls]. It enables Traffic Engineering[^te] — the thing we need too. MPLS uses labels instead of addresses for forwarding packets.
 
 [^mpls]: [MPLS](https://en.wikipedia.org/wiki/Multiprotocol_Label_Switching), and [Segment Routing](https://en.wikipedia.org/wiki/Segment_routing) as an evolution.
 
