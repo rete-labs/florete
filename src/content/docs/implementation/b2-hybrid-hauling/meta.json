@@ -1,0 +1,12 @@
+{
+    "pages": [
+        "scope",
+        "design",
+        "link-contract",
+        "radio-macs",
+        "experiments",
+        "attachment-labels",
+        "glossary"
+    ],
+    "defaultOpen": false
+}

@@ -3,7 +3,8 @@
         "adr",
         "c0-tended-tunnels",
         "c1-manual-mesh",
-        "b1-cloud-control"
+        "b1-cloud-control",
+        "b2-hybrid-hauling"
     ],
     "defaultOpen": false
 }

@@ -1,0 +1,44 @@
+---
+title: Attachment Labels
+description: "Note: why PoA labels stop at the medium and never climb the recursion"
+---
+
+A design note, not a decision record. The [Link Contract](../link-contract#link-identity--discovery) introduces derived **attachment-point (PoA) labels** for radio media. The natural follow-up: do the higher recursion boundaries — a rete mesh-vertex attaching to link-vertices, an interrete mesh-vertex attaching to rete mesh-vertices — need similar labels? **No.** PoA labels are a base-case artifact, and it's worth recording why.
+
+## Why the base medium needs labels
+
+A link-vertex's medium sits *below* the recursion — "physics", not a layer. It has no Portal API, no identities, no directory; a radio medium is also shared, so everything arrives at everyone. That leaves three jobs unserved, and the PoA label is hired for all three:
+
+1. **Binding** (Saltzer's *name → attachment point*): no directory exists in the medium, so we borrow its native one (MAC addresses + a mapping) or collapse the directory into a derivation function.
+2. **Demultiplexing**: on a shared medium the receiver must sort arrivals by sender.
+3. **Per-peer state anchoring**: the radio driver keys ARQ, TX tuning, and grants by attachment point.
+
+The label is a prosthetic directory-plus-demux for a nameless medium.
+
+## Inside the recursion, every job is already served
+
+When a vertex attaches to a **Florete layer** (an interrete mesh-vertex over a rete mesh), its "medium" natively provides everything the label faked:
+
+| PoA-label job | Provided by the layer |
+|---|---|
+| Binding | Portal::Publish + the layer's registry/resolver — identity→location lookup ([ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing)) — a *real* directory |
+| Demux | The layer's service is **connection-oriented** (Zero-Trust: no unsolicited datagrams); the connection handle *is* the demux key |
+| Per-peer state | Hangs off the connection object the layer maintains (crypto session, congestion state) |
+| Discovery | Portal::Discover — on radio we beacon only because the medium can't answer "who's here?" |
+
+The pattern is already visible in [C1's compiled artifacts](/docs/implementation/c1-manual-mesh/mgmt-plane): a `udp` link's `via` carries an `addr` — that is *IP's* PoA label, the medium's — while a `florio` link's `via` carries **no address at all**, just an adapter name, because the layer below does its own naming. Interrete-over-rete is the FlorIO case, not the UDP case.
+
+## Attachment labels vs. forwarding labels
+
+The HLD's "addresses are a layer-private implementation detail" cuts both ways. Each layer multiplexing many parties invents labels *for its own internal use* — the rete mesh has its MPLS-style forwarding labels; the interrete layer will need its own routing vocabulary (perhaps aggregatable addresses at scale, per the HLD's [Interrete Thoughts](/docs/overview/high-level-design#interrete-thoughts)). Keep the categories crisp:
+
+- **Attachment labels** substitute for a *missing directory* at the bottom of the recursion. Only nameless media need them.
+- **Forwarding labels/addresses** are a layer's *private routing machinery inside itself*. Every non-trivial layer has them; none exposes them upward.
+
+The interrete layer will have the second kind, never the first — a directory is what a Florete layer fundamentally *is* (Publish/Discover/Connect over identities). In RINA terms: a layer knows its members by its own internal names, and the radio medium is a degenerate "layer" with no naming machinery — the PoA label is a loan; real layers don't need it. Saltzer's chain simply re-instantiates per layer: *interrete workload → interrete vertex → rete mesh-vertex → interrete path*, each binding resolved by the rete layer's real directory.
+
+## Edge cases that do not change the answer
+
+- **Selecting among several attachment points** (an interrete vertex multihomed over two rete mesh-vertices) is local configuration — `uses:`/`via:`-style names; nothing hits any wire.
+- **Cross-rete naming** (resolving *foreign* identities at the interrete boundary) is a **Name Service / federation** problem ([ADR-0007's evolution path](/docs/implementation/adr/0007-decouple-naming-identity-routing)), not a labeling one: labels answer "how do I tag frames for a nameless medium"; the Name Service answers "how do I resolve a name outside my trust domain".
+- A PoA-label need could reappear above the base only if a layer exposed a *connectionless, identity-less* service — exactly what the Zero-Trust, connection-oriented design bans. The invariant holds by construction.

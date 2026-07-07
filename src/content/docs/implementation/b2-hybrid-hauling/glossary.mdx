@@ -1,0 +1,86 @@
+---
+title: Glossary
+description: Terms and acronyms introduced by the B2 milestone
+---
+
+Terms B2 adds on top of the [rete/mesh/cluster vocabulary](/docs/implementation/adr/0008-name-rete-mesh-cluster). Each term is a heading, so it can be referenced by anchor (e.g. `glossary#rra`).
+
+### RRA
+
+**Radio Resource Allocation** — the *function* of deciding how radio resources (spectrum/channels, time, transmit power, spatial reuse/beams) are used across the rete. Spans all three [decision-authority layers](/docs/implementation/c0-tended-tunnels/mgmt-plane#decision-authority-layers): operator-signed bounds (regulatory), a Coordinator RRA extension (semi-persistent), [node fast-path](#node-fast-path) (per-slot/instantaneous). Applies to **both** MAC families — a contention medium still benefits from power/channel/spatial decisions.
+
+### Scheduler
+
+The mechanism inside a *scheduled MAC* that assigns transmission opportunities (slots, resource blocks). A scheduler implements a slice of [RRA](#rra) for scheduled MACs; it is not the whole of RRA. In Florete the scheduler splits explicitly: the **slow path** (provisioning options — frame plans, slot maps, semi-persistent grants) lives in the Coordinator's RRA extension; the **fast path** (per-slot selection *among provisioned options*) lives in the vendor's [radio driver](#radio-driver). Contention MACs have no scheduler, yet RRA still applies to them.
+
+### Contention MAC
+
+Medium access decided locally by carrier sensing and backoff — CSMA, e.g. 802.11 DCF. No allocator exists.
+
+### Scheduled MAC
+
+Medium access follows explicit resource allocation (TDMA slots, OFDMA resource blocks); implies a [scheduler](#scheduler) somewhere.
+
+### Slot
+
+A scheduled transmission opportunity: a time slot in TDMA, a time-frequency resource block in OFDMA. B2 docs use "slot" generically for both, avoiding standard-specific terms (LTE's "TTI" and kin). "Per-slot" means the fastest decision granularity of a [scheduled MAC](#scheduled-mac).
+
+### Semi-persistent allocation
+
+Resource assignments valid across many frames, revised at ctrl-plane timescale (seconds); the Coordinator-side share of scheduled-MAC RRA.
+
+### Node fast-path
+
+The node-local µs–ms layer of the [decision-authority model](/docs/implementation/c0-tended-tunnels/mgmt-plane#decision-authority-layers): decisions too fast for any coordinator. They live in the data-plane components — the mesh-vertex (path failover/FRR), the link-vertex and the radio driver/module (per-slot radio decisions) — while `flor agent` (the mgmt/ctrl receiver and supervisor) makes none of them. See [Radio MACs > Node-side RRA placement](../radio-macs#node-side-rra-placement).
+
+### Single-rank network
+
+No fixed infrastructure/user-equipment asymmetry (contrast LTE eNB/UE): every node runs the same stack, and coordination roles are movable between nodes. See [Radio MACs](../radio-macs#no-infrastructure-asymmetry).
+
+### Supernode
+
+A node comprising multiple computing hosts joined by an internal network (e.g. in-vehicle Ethernet), possibly with several radio modules — an [HLD concept](/docs/overview/high-level-design#supernode). B2's degenerate case is a single host; see [Radio MACs > Evolution](../radio-macs#evolution).
+
+### Radio module
+
+The vendor's radio **hardware** — the transceiver itself (possibly with on-board FPGA/firmware). Always means hardware in B2 docs.
+
+### Radio driver
+
+All vendor **software** driving a [radio module](#radio-module) and exposing the R10 host interface — the fast-path scheduler included, for scheduled MACs. How it splits across kernel, userspace, and firmware is a vendor implementation detail; "driver" here does not mean "kernel driver".
+
+### Medium adapter
+
+The connection-manager component that binds a Florete vertex to a medium: a link vertex's single `udp` adapter in [C0](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile#key-points), the adapter speaking R10 for a custom radio. Florete-side software — distinct from any hardware "adapter".
+
+### Attachment point
+
+Where a node meets a medium — Saltzer's *point of attachment* (PoA, [RFC 1498](https://datatracker.ietf.org/doc/rfc1498/)). In Florete **vertices are attachment points** (stated in the [HLD](/docs/overview/high-level-design#vertex)): the link-vertex is the mesh-vertex's attachment point, and the notion recurses — a vertex's attachment points are the lower-layer vertices it *uses* (an interrete mesh-vertex's are the rete mesh-vertices beneath it). Wire-level labels name attachment points, not nodes (see [Link Contract > Link identity & discovery](../link-contract#link-identity--discovery)); such labels exist only at the base medium, never at higher recursion boundaries (see [Attachment Labels](../attachment-labels)).
+
+### Introductor
+
+The Coordinator's admission service ([B1 sketch](/docs/implementation/b1-cloud-control/coordinator#microservice-decomposition-sketch)): admits new or returning nodes within an operator-signed admission-policy bound — dynamic membership. In B2 it exists only as the future consumer of discovery (R6): admission stays operator-driven (enrollment), and which nodes may beacon/answer is governed by mgmt/ctrl fields instead of a placed Introductor service.
+
+### Hidden terminal
+
+Two senders outside each other's carrier-sense range colliding at a common receiver; the classic CSMA pathology that centralized power/spatial control (B2's minimal RRA) mitigates.
+
+### Link budget
+
+The per-node bound on resources spendable on links (for radio, a hard resource limit), constraining the [Coordinator's](/docs/implementation/b1-cloud-control/coordinator) topology computation.
+
+### ARQ
+
+**Automatic Repeat reQuest** — link-level retransmission turning a lossy medium into one with bounded residual loss (contract R2). Hybrid variants (HARQ, as in LTE/5G) combine retransmission with forward error correction in hardware; whether a radio uses plain ARQ or HARQ is the vendor's design choice — the contract only bounds the residual loss.
+
+### BFD-class liveness
+
+Fast in-band "does this link actually forward?" probing, after BFD (Bidirectional Forwarding Detection); the software baseline of contract R7.
+
+### FAPI / nFAPI
+
+The standardized PHY↔MAC interface from the split-RAN world (published by the [Small Cell Forum](https://www.smallcellforum.org/), adopted in O-RAN); the reference shape for a PHY-focused vendor boundary.
+
+### TCE / PCE
+
+The topology / path computation elements of the Coordinator ([B1 sketch](/docs/implementation/b1-cloud-control/coordinator)); the RRA extension is their radio-resource sibling.

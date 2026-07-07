@@ -35,7 +35,7 @@ So the control model is a chain of **constraint refinement**, the *same operatio
 |---|---|---|---|
 | **Operator** (mgmt) | intent | author bounds + objectives, sign | a permitted *space* of rete states |
 | **Coordinator** (ctrl) | space + objectives + observations | optimize within the space, narrow | a per-agent *decision space* (still a space) |
-| **Agent** (fast-path) | decision space + local observations | choose / react locally | concrete local action |
+| **Node** (fast-path) | decision space + local observations | choose / react locally | concrete local action |
 
 K8s reconciliation falls out of this when the decision space collapses to a single point (a complete spec), there is exactly one controller, and agents have zero autonomy. Florete's general case is an **autonomic control loop**[^mapek] (Monitor → Analyze → Plan → Execute over shared Knowledge) whose *Plan* step is a constrained optimizer, whose authority is attenuated, and which **degrades to fully decentralized** operation. It is the tunable middle of the SDN spectrum the [HLD describes](../../../overview/high-level-design#network-control-plane)[^sdn] — fully-centralized SDN and fully-decentralized self-organization are its two degenerate ends. MAPE-K here is only the loop *topology* — deliberately silent about what fills its Analyze and Plan steps; [Intelligence, prediction, and confinement](#intelligence-prediction-and-confinement) covers how predictive and learning-based methods (and eventually AI) slot into those steps without changing the authority model.
 
