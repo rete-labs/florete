@@ -1,0 +1,43 @@
+---
+title: Scope
+description: Scope of the B2 milestone "Hybrid Hauling"
+---
+
+<Callout title="Research stage">
+B2 is in the research/design stage. This scope is a working draft, not a committed plan; it will firm up as the [link contract](../link-contract) and [experiments](../experiments) produce numbers.
+</Callout>
+
+This milestone inherits goals, constraints, and no-goals from [C1. Manual Mesh](/docs/implementation/c1-manual-mesh/scope) and assumes the control plane direction sketched in [B1's Coordinator](/docs/implementation/b1-cloud-control/coordinator). For how B2's pieces fit together, continue with the [Design Sketch](../design).
+
+## Goals
+
+### Use Case
+
+Edge Mesh: a rete of mobile/embedded nodes (robots, drones, vehicles) connected over **heterogeneous links** — where no single medium covers all pairs, and links appear and disappear with mobility.
+
+The B2 prototype must demonstrate:
+
+- A working mesh over **at least two dissimilar link types simultaneously** (reference target: ad hoc WiFi + Ethernet), with multi-hop forwarding across mixed hops — exercising C1's parallel-link-vertices design under real radio conditions.
+- **Link-quality-aware behavior**: the mesh survives a degrading/disappearing radio link by failing over to an allowed alternative path.
+- **A minimal, operational Radio Resource Allocation ([RRA](../glossary#rra))** — the first Coordinator RRA extension, targeting the contention medium itself: the smallest radio-resource control that is still useful (working candidate: centrally computed per-node TX-power caps within operator-signed regulatory bounds, improving spatial reuse and mitigating hidden terminals). This completes the control-plane roadmap: C0 delivers mgmt only → C1 adds the minimal ctrl stream → **B2 adds the first RRA extension**.
+- The **link contract**: a published, vendor-neutral statement of what any L1/L2 must provide to carry a Florete link — validated against WiFi as the reference CSMA medium.
+
+### Radio-vendor readiness
+
+B2 makes Florete *integrable* by radio/hardware vendors:
+
+- The [link contract](../link-contract) is public and testable (each requirement has a number or a validation procedure, not just prose).
+- A custom-radio link integrates as a **3rd-party link adapter** per C1's connection-manager design — no changes to mesh-flor required.
+- The [RRA-placement design](../radio-macs) states where resource allocation lives for each MAC family (node fast-path vs. Coordinator extension), including the single-rank/decentralizability constraint on scheduled MACs.
+
+## Development Constraints
+
+Same as C0/C1 (Rust, Tokio, cross-platform), plus: the reference prototype must run on single-board computers (ARMv7+, Linux) with commodity WiFi adapters.
+
+## No-Goals
+
+- **No custom PHY in the reference scope.** Vendor-specific radio integration is a variant layered on the same contract, not part of the open reference.
+- **Single host, omnidirectional radios.** A B2 node is one computing host with directly attached omni, non-beam-steering radios. Multi-host/multi-radio carriers ([supernodes](../glossary#supernode)) and directional/beam-steering (phased-array) antennas are the evolution axes the contract and RRA are shaped to extend into — see [Radio MACs > Evolution](../radio-macs#evolution).
+- **No scheduler.** B2's minimal RRA targets contention MACs; scheduled-MAC machinery (allocator interface, semi-persistent grants, slot maps) stays design-only ([Radio MACs](../radio-macs)) and is pulled in by a concrete vendor integration.
+- **No asymmetric/unidirectional links.** Supported by the architecture (directed vertex graph); B2 neither implements them nor makes decisions that would foreclose them.
+- **No coordinator-less/gossip mode.** Churn beyond Coordinator convergence is post-B2.

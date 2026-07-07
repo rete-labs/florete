@@ -519,6 +519,8 @@ C1 adds two new principal kinds on top of C0's users, services, and nodes:
 | Mesh-vertex | No | **Yes** | `spiffe://<rete>/vertex/<node>/rete` | Hop-by-hop link-layer mTLS (one per node per rete, named `rete` by convention) |
 | Control plane | Reserved | **Yes** | `spiffe://<rete>/control-plane/<name>` | Signing authority for ctrl artifacts (one or more per rete; in C1 a single operator-held key) |
 
+Link-vertices are *named* in the same `vertex/<node>/<name>` namespace (`vertex/alpha/public`) but are **not principals** and receive no SVIDs — a name alone confers no principal status (see [C0's identity callout](../../c0-tended-tunnels/mgmt-plane/identity#types-of-principal)). Their canonical names become load-bearing in B2, as the derivation source for medium attachment-point labels; a link-vertex would gain an SVID only if it acted as a principal (e.g. a non-DAG vertex graph where a link-vertex `uses` the mesh for its return channel).
+
 A useful "owned-by / held-by" view across all four principal kinds:
 
 | Kind | Principal (identity owner) | Cert+key held by (the vertex on its behalf) |

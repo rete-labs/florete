@@ -1,0 +1,17 @@
+---
+title: Experiments
+description: Falsifiable experiments that turn link-contract assertions into numbers
+---
+
+Each experiment answers one question and feeds one number (or verdict) into the [Link Contract](../link-contract). Method: emulated links first (netem/`tc` — controlled loss, delay, reordering, capacity), then confirmation on real ad hoc WiFi.
+
+| # | Question | Method | Output |
+|---|---|---|---|
+| E1 | At what residual loss rate / reordering depth does mesh-QUIC throughput collapse? | Sweep loss/reorder on an emulated link under a C1 stack; measure goodput knee | R2 thresholds ("residual loss < X%, reordering < Y") |
+| E2 | What is the minimum link MTU at which the C1 stack works? | Shrink emulated MTU under mesh-QUIC (handshake + data), with and without link-level fragmentation | R4 MTU floor |
+| E3 | How much ACK-path delay does QUIC tolerate on a half-duplex/TDMA medium? The return path is gated until the medium turns around (up to a frame epoch): RTT inflates and jitters, ACKs arrive compressed in bursts; past some gap, PTO fires spuriously and the congestion window collapses. Where is that gap? | Alternating-gate emulation; sweep turnaround/epoch duration; watch RTT estimator, spurious retransmits, goodput vs full-duplex baseline | Max turnaround/epoch bound — the delay-variance term of R2, and an input to scheduled-MAC frame design (R9) |
+| E4 | What is the **operational floor** — the minimum link bandwidth and maximum delay at which Florete stays practically usable (link mTLS establishment, agent sync, useful goodput)? | Sweep a rate × RTT grid on an emulated link; measure handshake time, sync time, steady goodput | Operational floor for the contract; R3 handshake sizing falls out |
+| E5 | Which telemetry fields are both **necessary** and **obtainable** (R5)? | Top-down: enumerate what TCE/PCE/RRA computations actually consume. Bottom-up: instrument commodity WiFi (nl80211: RSSI, MCS/rate, retries, queue) and check coverage | R5 mandatory minimal set |
+| E6 | Can neighbor discovery run **purely in software** over R1's datagram service? | Beacon mTLS connection initiations over ad hoc WiFi broadcast; alternate initiator/responder roles on a schedule; sweep beacon rate | Discovery latency vs airtime overhead; verdict on the R6 software baseline |
+
+Results are recorded here per-experiment as they land (setup, raw numbers, conclusion), and the contract is updated in the same change.

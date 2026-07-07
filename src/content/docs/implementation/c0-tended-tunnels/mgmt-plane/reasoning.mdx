@@ -224,7 +224,7 @@ What we deliberately **don't** design now:
 - The policy language. Risk: sliding into Cedar/Rego-class complexity. Defense: introduce primitives only as B1+ features pull on them. Most policy will derive from YAML operators already write, with a small "freedoms" addition.
 - Intermediate-key delegation, multi-operator quorum, transparency log, HSM integration. All B1+ when concrete needs justify them.
 - Threat modeling, key ceremony, recovery procedures, emergency revocation. Operational/security-design phase, not the architectural-shape phase. Captured here as evolution direction, not commitment.
-- Agent fast-path autonomy primitives (FRR-class). C0/C1 have nothing dynamic to react to.
+- Node fast-path autonomy primitives (FRR-class). C0/C1 have nothing dynamic to react to.
 
 C0/C1 are the degenerate case of the model: empty CP, empty agent autonomy, full mgmt determines runtime state. The shape we lock in now is what lets B1+ add the lower decision layers additively without re-cutting envelopes or reissuing identities.
 

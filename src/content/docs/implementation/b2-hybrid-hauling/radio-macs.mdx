@@ -1,0 +1,84 @@
+---
+title: Radio MACs
+description: MAC families, RRA placement, and evolution toward advanced radio setups
+---
+
+How radio MAC models map onto Florete's control architecture. Companion to the [Link Contract](../link-contract) — this page covers its resource-contract requirements R8–R9 and the [RRA](../glossary#rra) extension. Terms: [Glossary](../glossary).
+
+## Two MAC families
+
+- **Contention (CSMA)** — e.g. 802.11. Access is decided locally by carrier sensing; link establishment is fully local; no allocator exists. The ctrl-plane resource contract is **thin, not empty**: a logically centralized optimizer can still improve a contention medium — per-node transmit-power caps that shrink interference domains and mitigate hidden terminals, channel assignment, spatial reuse of links. This is the B2 reference target.
+- **Scheduled (TDMA/OFDMA/…)** — resource blocks (slots, subcarriers, power) are allocated by an entity with a wider-than-local view. That allocator must live somewhere — and Florete's control model already has the right slots for it.
+
+**RRA vs. scheduler.** [RRA](../glossary#rra) is the whole radio-resource function, across all timescales and both MAC families. A *[scheduler](../glossary#scheduler)* is the scheduled-MAC mechanism implementing RRA's fast-timescale slice (per-frame grants). CSMA has RRA without a scheduler.
+
+## RRA placement: the timescale hierarchy
+
+Radio resource allocation splits across Florete's existing [decision-authority layers](/docs/implementation/c0-tended-tunnels/mgmt-plane#decision-authority-layers):
+
+| Layer | Timescale | Radio meaning |
+|---|---|---|
+| Operator bounds (signed mgmt) | days | Regulatory & policy: allowed bands, TX power caps, duty cycle, allowed peerings |
+| Coordinator — **RRA extension** (ctrl, bounded) | seconds–minutes | The **slow-path scheduler**: semi-persistent allocation — power caps, channel assignment, TDMA frame plans, slot maps — jointly optimized with topology and paths (TCE/PCE), since radio capacity *is* the link budget |
+| [Node fast-path](../glossary#node-fast-path) (data-plane components / radio) | µs–ms | Per-[slot](../glossary#slot) decisions, link-level retransmission ([ARQ](../glossary#arq)), rate adaptation, CSMA backoff — the Coordinator is orders of magnitude too slow for these |
+
+Regulatory constraints being *operator-signed bounds* is a natural fit: an out-of-bounds allocation is rejected locally, and a hijacked control plane stays DoS-class.
+
+**Control-plane roadmap:** C0 — the Coordinator (config-server) only delivers mgmt decisions; C1 — adds the minimal ctrl stream; **B2 — adds the first RRA extension**: the minimal-but-operational CSMA RRA (working candidate: centrally computed per-node TX-power caps within regulatory bounds). Scheduled-MAC RRA (semi-persistent grants) lands only with a concrete vendor integration.
+
+## Node-side RRA placement
+
+The Coordinator extension is only the *computing* end. On each node, RRA decisions travel a chain down to the node fast-path:
+
+1. **`flor agent`** — receives and verifies RRA ctrl artifacts exactly like any other ctrl state; makes no radio decisions itself.
+2. **Link vertex (via its [medium adapter](../glossary#medium-adapter))** — applies semi-persistent decisions to the radio driver through the [host interface (R10)](../link-contract): sets power caps, channels, slot maps; owns queues and per-link policy. For WiFi this is a UDP socket + nl80211; for a custom radio, whatever control interface R10 documents.
+3. **Radio driver over the radio module (vendor)** — executes the fast path: the **fast-path scheduler** selects [slots](../glossary#slot) locally *among the options the slow path provisioned*, plus timed transmissions, backoff, rate adaptation, link-level retransmission. Timing this hard lives in hardware/firmware (often an FPGA); the [radio driver](../glossary#radio-driver) itself may be split kernel/userspace — link-layer fragmentation or ARQ can live in userspace as long as timing-critical parts stay below.
+
+Where the split between link vertex and radio driver falls — in particular, who owns the fast-path scheduler state — is radio-specific and one of the main open designs. The mesh layer follows the same pattern at its own level: path failover on liveness loss is a *mesh-vertex* decision, not an agent one.
+
+## No infrastructure asymmetry
+
+A hard constraint on MAC choice (contract R9) — but a precise one: it is **not** a demand for a distributed scheduler. The split:
+
+- **The fast path is local.** Per-slot selection runs in the radio driver/module, choosing among semi-persistently provisioned options. This mirrors label forwarding exactly: the mesh-vertex picks labels from tables it did not compute.
+- **The slow path is logically centralized — and that is fine.** The options themselves are provisioned by the Coordinator's RRA, just as label allocation is PCE-computed rather than negotiated hop-by-hop. Florete deliberately took the PCE route over distributed label-distribution protocols, and the same choice applies to slot provisioning: distributed, hop-by-hop scheduling protocols (6TiSCH's MSF and kin) are *an* implementation shape, not something R9 demands — they too are just slow-path producers filling local tables.
+- **What must never be required: fixed infrastructure with fast-timescale authority.** The Coordinator is logically centralized but **relocatable and partition-tolerant** — it splits, moves, and re-emerges in a disconnected group (see [Coordinator evolution](/docs/implementation/b1-cloud-control/coordinator#architecture-options-and-evolution)), and the emergent one plays the RRA role too; meanwhile nodes keep operating on their provisioned options. A MAC fails R9 only if it pins scheduling authority to fixed infrastructure at per-slot timescale, so that losing the controller stops the medium — the LTE eNB/UE asymmetry. Florete is a **single-rank network**: every node runs the same stack, and coordination roles are movable.
+
+**Scheduler ownership.** The slow-path scheduler is the RRA extension — Florete-side by default, which is the natural split with a PHY-focused vendor (their radio driver runs the fast path). A vendor- or third-party slow-path scheduler is admissible as a rete app, but its decisions must flow **through the Coordinator's ctrl chain** — bounded and agent-verified like any ctrl state — never through a side channel to the radio, or the bounds model breaks.
+
+## Evolution
+
+B2 is deliberately the **degenerate radio setup**: one computing host per node, directly attached omnidirectional non-beam-steering radios, one link vertex per radio. Two real-world axes it must not foreclose:
+
+- **Multi-host, multi-radio carriers ([supernodes](../glossary#supernode)).** A real vehicle/robot/drone carries several computing hosts and radio modules over an internal network. The outer mesh then spans the carrier's border hosts, the on-board network is itself a (recursive) Florete network, and RRA must eventually allocate across *all radio modules of one carrier*, not per host.
+- **Directional antennas: sectoral, beam-steering (phased-array/AESA), MIMO.** A steered beam is naturally a *per-neighbor* link — the pairwise star model of R1 fits directional radios even better than omni. Multi-beam operation (one module forming several simultaneous beams) appears as parallel links from a single module. What changes is RRA — beams become a first-class resource dimension (a beam schedule alongside power/channels/slots) and topology computation gains geometry — and neighbor discovery, which needs beam sweeping/alignment (part of R6's open design). Structurally this converges with the supernode case: several spatial channels behind one carrier.
+
+What B2 does about this now: keeps the ctrl-artifact resource vocabulary open-ended (a new resource dimension is an additive change), keeps telemetry per-link rather than per-radio, and keeps discovery an explicit design surface instead of assuming omni broadcast.
+
+## Case studies
+
+Each studied against three fixed questions: *where does the allocator live, what is its interface, what timescales does it run at?*
+
+| System | What it is | Why it matters |
+|---|---|---|
+| 802.11 DCF / 802.11s[^dot11s] | Plain WiFi contention (DCF); 802.11s adds link-layer mesh routing on top | CSMA baseline; what fully-local link establishment gives up. 802.11s is also the useful *contrast*: link-layer multi-hop is exactly what R1 excludes |
+| 6TiSCH[^sixtisch] | IETF stack over IEEE 802.15.4 **TSCH** (time-slotted, channel-hopping TDMA) for industrial low-power mesh; scheduling is deliberately a separate "scheduling function" — distributed (MSF) or centralized (PCE-based) | A TDMA MAC with the scheduler explicitly separated from the MAC. Its **PCE-scheduled variant is our reference shape**: semi-persistent schedules computed centrally at management timescale, executed locally by the TSCH state machine. MSF is the distributed alternative R9 does *not* require |
+| O-RAN[^oran] | The telecom split-RAN architecture: **FAPI/nFAPI** is its standardized PHY↔MAC interface; the **RIC** (RAN Intelligent Controller) hosts policy apps above the per-slot schedulers, at ~10 ms–1 s timescale | The PHY↔MAC boundary shape for a PHY-focused vendor (R10); the RIC-vs-scheduler split mirrors Coordinator-RRA vs node fast-path |
+| NR sidelink Mode 1 / Mode 2[^sidelink] | 3GPP's device-to-device mode: in **Mode 1** the network assigns radio resources; in **Mode 2** devices select them autonomously | Both MAC families in one standard — and Mode 2 shows local selection surviving loss of the network controller, the degradation property R9's fast/slow split enables |
+| Tactical MANET waveforms[^manet] | Military mobile ad hoc radios (TrellisWare TSM, Persistent Systems Wave Relay, Silvus MN-MIMO): infrastructure-less, mobile, contested spectrum | Edge Mesh's operational context; existence proof that infrastructure-less scheduled MACs work at scale |
+
+## Open questions
+
+- Exact scope of B2's minimal CSMA RRA: power caps only, or also channel assignment / link spatial separation?
+- Node fast-path split: link vertex vs radio driver — who owns the fast-path scheduler state for a scheduled MAC?
+- Vendor/third-party slow-path schedulers as rete apps: their interface to the Coordinator, and how their decisions enter the ctrl chain.
+- RRA ↔ TCE/PCE coupling: one joint optimization or staged?
+- The ctrl-artifact schema for radio decisions (power caps now; grants, slot maps, beam schedules later — a `radio` payload alongside forwarding state?).
+- Time: source of synchronization, Time service ↔ TDMA clock relationship (R8).
+- Where the vendor boundary sits on a FAPI-like split: vendor PHY + whose MAC?
+
+[^dot11s]: [IEEE 802.11s](https://en.wikipedia.org/wiki/IEEE_802.11s) — the 802.11 amendment for link-layer mesh networking (path selection at L2).
+[^sixtisch]: [RFC 9030 — An Architecture for 6TiSCH](https://datatracker.ietf.org/doc/rfc9030/); the distributed Minimal Scheduling Function is [RFC 9033](https://datatracker.ietf.org/doc/rfc9033/).
+[^oran]: [O-RAN Alliance](https://www.o-ran.org/) specifications; the (n)FAPI PHY↔MAC interface family is published by the [Small Cell Forum](https://www.smallcellforum.org/).
+[^sidelink]: [3GPP TS 38.300](https://www.3gpp.org/DynaReport/38300.htm) (NR overall description) covers sidelink resource-allocation Modes 1 and 2; the LTE ancestors are V2X Modes 3 and 4.
+[^manet]: No open standard exists — tactical waveforms are proprietary, documented mostly in vendor whitepapers ([TrellisWare TSM](https://www.trellisware.com/), [Persistent Systems Wave Relay](https://www.persistentsystems.com/), [Silvus](https://silvustechnologies.com/)). The most readable technical entry point is TrellisWare's published work on **barrage relay networks** (searchable term; Halford & Chugg's papers), plus the general academic [MANET](https://en.wikipedia.org/wiki/Wireless_ad_hoc_network) literature.

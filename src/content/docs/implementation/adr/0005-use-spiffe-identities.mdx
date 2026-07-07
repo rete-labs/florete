@@ -155,7 +155,7 @@ The reversal is deliberate. An earlier draft of this ADR endorsed the enum on fo
 
 ### Why six kinds from day one
 
-The C1 milestone introduces `Kind::Vertex` for mesh-vertices. The control-plane and management-plane kinds both arrive as the artifact-signing flows materialise (C1 for ctrl envelopes; ManagementPlane is introduced by this ADR to symmetrise mgmt envelope signing). All six are pre-declared in C0 because:
+The C1 milestone introduces `Kind::Vertex` for mesh-vertices. (The `vertex/` *naming* namespace is broader than the TLS-principal kind: link-vertices carry canonical `vertex/<node>/<name>` names without SVIDs — a name alone confers no principal status; see identity.mdx.) The control-plane and management-plane kinds both arrive as the artifact-signing flows materialise (C1 for ctrl envelopes; ManagementPlane is introduced by this ADR to symmetrise mgmt envelope signing). All six are pre-declared in C0 because:
 
 - the cost of an unused variant is nil,
 - post-hoc additions force `kind_of` and CLI `--kind` parsers to grow, and `match` arms in `Ca::sign_csr` to gain a new branch — touching every call site,

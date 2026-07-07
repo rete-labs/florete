@@ -91,7 +91,7 @@ The compiled per-node artifact is the stable public contract. What changes acros
 | Consensus         | Operator (1 person)            | Operator (1 person)            | Single-writer server            | Raft / CRDT                   |
 | Paths             | N/A (direct forwards)          | Manual `paths.yaml`            | Derived from topology + access  | Derived, per-agent resolution |
 | State updates     | Atomic (poll config-server)    | Atomic (poll config-server)    | Atomic push                     | Atomic; deltas in B2+         |
-| Decision authority| Operator only (signed mgmt)    | Operator only (signed mgmt)    | + bounded CP (unsigned, within signed policy) | + agent fast-path autonomy (FRR-class) within CP/policy bounds |
+| Decision authority| Operator only (signed mgmt)    | Operator only (signed mgmt)    | + bounded CP (unsigned, within signed policy) | + node fast-path autonomy (FRR-class) within CP/policy bounds |
 | Artifact streams  | `plane: "mgmt"` (signed)       | `plane: "mgmt"` (signed)       | + `plane: "ctrl"` (unsigned)    | Same                          |
 
 From B1 on, the **Source of truth** and **Compile** rows split by plane: **mgmt** stays authored, compiled, and signed on operator hardware — the coordination server relays it but cannot author it (see [Coordinator](../../b1-cloud-control/coordinator)) — while only **ctrl** moves to the server or to consensus. This bounds a compromised cloud to disruption, not destruction.
@@ -106,7 +106,7 @@ A second evolution axis, orthogonal to producer/distribution, is **who is allowe
 |---|---|---|---|---|
 | Operator (mgmt plane) | minutes–days | signed | grammar of permitted states (identities, reachability, topology, path constraints) | flors verify operator signature on the mgmt artifact |
 | Control plane (B1+) | seconds–minutes | unsigned, bounded | pick a state within grammar (path failover, link selection, NAT signaling, later: placement) | flors check each ctrl decision against the signed mgmt policy locally |
-| Agent fast-path (B1+) | µs–ms | unsigned, local | sub-millisecond reactions inside what CP/operator allowed (e.g. MPLS-style FRR over reserved paths, BFD-class liveness, queue mgmt) | self-bounded by the configured policy/CP state already in the agent |
+| Node fast-path (B1+) | µs–ms | unsigned, local | sub-millisecond reactions inside what CP/operator allowed (e.g. MPLS-style FRR over reserved paths, BFD-class liveness, queue mgmt) | self-bounded by the configured policy/CP state already on the node |
 
 This is **policy-bounded autonomy** (capability attenuation): the operator signs *bounds*, lower layers act freely *within* them, and verification stays local — no online operator key, no hot signing key in the cloud. Precedent: Macaroons (caveats narrow capabilities held by untrusted parties), RPKI/ROAs (signed origin authorizations bound dynamic BGP), BGP/FIB + ECMP/FRR (control plane sets paths; data plane reroutes locally on failure), OPA-style admission policies.
 
