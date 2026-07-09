@@ -19,7 +19,7 @@ The full picture — how these requirements sit in the artifact chain and who co
 
 | # | Requirement | Consumed by | Status |
 |---|---|---|---|
-| R1 | **Per-neighbor datagram service (point-to-point star).** Bidirectional datagram delivery to each radio neighbor, individually addressable. One link vertex serves a **star of pairwise links over a single [medium adapter](../glossary#medium-adapter)** — the same pattern as C0's UDP link vertex over one socket; no per-neighbor vertices or processes. What the medium must *not* impose: a multipoint bus abstraction, or link-layer multi-hop forwarding (as in 802.11s) — multipoint and routing belong to the mesh layer. How neighbors are addressed is the [identity question](#link-identity--discovery) below. | link vertex | Mandatory |
+| R1 | **Per-neighbor datagram service (point-to-point star).** Bidirectional datagram delivery to each radio neighbor, individually addressable. One link vertex serves a **star of pairwise links over a single [medium adapter](../glossary#medium-adapter)** — the same pattern as C0's UDP link vertex over one socket; no per-neighbor vertices or processes. What the medium must *not* impose: a multipoint bus abstraction, or link-layer multi-hop forwarding (as in 802.11s, or NR sidelink's Rel-17/18 U2N/U2U relays) — multipoint and routing belong to the mesh layer. How neighbors are addressed is the [identity question](#link-identity--discovery) below. | link vertex | Mandatory |
 | R2 | **Bounded residual loss.** QUIC congestion control reads loss as congestion, so a lossy medium must carry an ARQ below the Florete transport; residual loss, reordering, and delay variance must stay below thresholds **TBD ([E1](../experiments), [E3](../experiments))**. The ARQ may live below R10, in the vendor's radio driver (preferred), or in the link vertex. | mesh transport (QUIC) | Mandatory; placement negotiable |
 | R3 | **Link-layer mutual authentication — mTLS baseline.** Baseline: Florete runs its own mTLS (QUIC over the medium's ARQ-backed datagram service), so the medium owes nothing beyond R1/R2. **Radio-provided link security is an optional extension**: if present, it must satisfy an extension contract (to be designed) — in particular, keys must derive from Florete's X.509/SPIFFE identity framework, not form a parallel credential system. | link vertex transport | Mandatory (baseline needs no medium support); radio-security extension optional |
 | R4 | **MTU floor.** Datagrams of at least ~1300 bytes end-to-end (QUIC Initial needs ≥1200B payload plus link overhead), or link-level fragmentation. Exact floor **TBD ([E2](../experiments))**. | mesh transport | Mandatory |
@@ -42,6 +42,18 @@ The full picture — how these requirements sit in the artifact chain and who co
 - **Control path**: carries telemetry (R5), discovery primitives (R6), and resource commands with timing (R8–R9).
 
 WiFi reference: UDP sockets (data) + nl80211 (control). The kernel/userspace split of the radio driver, FPGA offload, and userspace fragmentation/ARQ are the vendor's choice as long as the interface holds. The concrete definition is **negotiated per vendor**; Florete proposes a reference shape that minimizes [medium-adapter](../glossary#medium-adapter) work (open question below). **Status: mandatory** — R10 is the surface the vendor and the Florete project actually negotiate; everything above it is Florete-side, everything below it vendor-side.
+
+### The interface floor: the vendor owns the fast-path MAC
+
+R10 has a hard floor, set by a division of labor rather than preference: **the timing-critical fast-path MAC is unconditionally on the vendor side of the interface.** That fast path is medium-access arbitration (slot timing for scheduled MACs; carrier-sense and backoff for contention) together with any sub-millisecond link-layer / HARQ retransmit — work with µs–sub-ms deadlines that belongs in hardware/firmware (often an FPGA), where [Radio MACs](../radio-macs#rra-placement-the-timescale-hierarchy) already places it. Florete's [medium adapter](../glossary#medium-adapter) is ordinary userspace software on commodity boards; it runs no per-slot loop and reconstructs no medium access.
+
+Everything *above* that line is Florete-side and non-real-time: per-neighbor addressing/demux, discovery logic, telemetry, applying slow-path RRA — and the **upper MAC**, including coarse (ms-scale) ARQ where the medium's residual loss needs trimming. R2's placement stays negotiable only within this rule: a fast HARQ-class retransmit, if needed to meet R2's thresholds, is itself timing-critical and stays below the line.
+
+So of the three host-interface shapes a modem can expose:
+
+- **PHY-only (FAPI-like)** — **declined**. The whole per-slot MAC would fall above the interface, into software that cannot meet its deadlines. Such a radio becomes integrable only once the vendor (or a third party) adds the fast-path MAC first.
+- **MAC-level per-neighbor datagrams** — the canonical, preferred shape: the fast path is already below the line, the adapter is thin. This is R1 directly.
+- **Framed broadcast modem** — admissible, *provided the modem still owns medium-access timing in hardware*; Florete then supplies addressing and ARQ above the interface (a thicker, but still non-real-time, adapter). A modem that arbitrates nothing (pure keyed ALOHA) fails for the same reason PHY-only does.
 
 ### Additional properties
 
