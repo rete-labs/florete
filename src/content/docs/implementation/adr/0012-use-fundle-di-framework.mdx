@@ -1,0 +1,73 @@
+---
+title: "0012: Use Fundle DI Framework"
+---
+
+## Status
+
+Accepted
+
+This ADR obsoletes [ADR-0003: Use DI Framework](0003-use-di-framework/).
+
+## Context
+
+[ADR-0003: Use DI Framework](0003-use-di-framework/) selected Shaku[^shaku] as the Dependency Injection (DI) framework for flor.
+
+While integrating Shaku into flor, we hit a blocking limitation: several flor components perform **fallible construction**. For example, the transport layer binds a UDP socket and spawns the QUIC endpoint actor while building its bundle — either step can fail and must return an error to the caller.
+
+Shaku's component and provider model expects infallible construction: a component's build method does not return a `Result`, so a construction error cannot be propagated cleanly through the dependency graph. Working around this (e.g., panicking, deferring initialization, or storing half-constructed state) undermines the value the framework was meant to provide.
+
+We therefore need a DI framework that supports fallible construction while preserving the compile-time-checked wiring that motivated ADR-0003 in the first place.
+
+## Decision
+
+We decided to adopt the Fundle[^fundle] framework and to obsolete ADR-0003.
+
+flor now depends on `fundle = "0.3"`. Dependency groups are declared with `#[fundle::deps]`, containers with `#[fundle::bundle]`, and bundles are assembled through a typestate builder with a fallible `try_new` constructor that returns a `Result`.
+
+## Rationale
+
+The original evaluation criteria from ADR-0003 still apply — **maintenance**, **maturity**, **documentation**, and **ease of use** — but experience added one non-negotiable requirement that ADR-0003 did not account for:
+
+- **Fallible construction**: components must be able to fail during construction and propagate the error through the DI graph.
+
+This requirement is decisive. Shaku cannot express it, which makes it unsuitable for flor regardless of its other merits.
+
+Fundle satisfies it while keeping the properties we wanted from a DI framework:
+
+- **Fallible construction**: bundles are built via a `try_new` constructor returning `Result`, so construction errors propagate naturally.
+- **Compile-time safety**: the typestate builder enforces that every dependency is set before a bundle can be built, catching wiring mistakes at compile time.
+- **Simple, explicit API**: `#[fundle::deps]` / `#[fundle::bundle]` map cleanly onto flor's layered component structure.
+- **Active maintenance and backing**: Fundle is developed as part of Microsoft's Oxidizer[^oxidizer] project and is actively released (0.3.x throughout 2026).
+
+The main trade-off is **popularity**. ADR-0003 required at least 10,000 downloads on [crates.io](https://crates.io); Fundle is a younger crate and does not yet meet that bar. We consciously relax this criterion because:
+
+- The hard requirement (fallible construction) eliminates the more popular alternative (Shaku).
+- Fundle is backed by a reputable, actively maintained organization (Microsoft Oxidizer), which lowers the abandonment risk that the popularity criterion was a proxy for.
+
+We re-considered the alternatives from ADR-0003 in light of the fallible-construction requirement:
+
+- **Shaku**[^shaku] — obsoleted. Does not support fallible construction.
+- **dill**[^dill] — builds and validates the dependency graph at runtime, losing the compile-time guarantees we want.
+- **nject**[^nject] — compile-time validated, but a comparatively complex API and no first-class story for fallible construction.
+- **Manual wiring** — always available as a fallback; supports fallible construction trivially but reintroduces the boilerplate and loss of explicit, checked wiring that ADR-0003 set out to avoid.
+
+## Consequences
+
+### Benefits
+
+- Components can fail during construction and propagate errors through the DI graph via `try_new`.
+- Compile-time-checked wiring is preserved through Fundle's typestate builder.
+- Explicit, layered dependency groups (`#[fundle::deps]`) and containers (`#[fundle::bundle]`) keep wiring readable.
+- Active upstream maintenance under the Microsoft Oxidizer project.
+
+### Trade-offs
+
+- Lower ecosystem popularity than the previously chosen framework; smaller community and fewer real-world references.
+- Younger project with a still-evolving `0.x` API, which may introduce breaking changes.
+- The team must track Oxidizer/Fundle releases and migrate as the API stabilizes.
+
+[^fundle]: [Fundle on crates.io](https://crates.io/crates/fundle)
+[^oxidizer]: [Fundle in the Microsoft Oxidizer project](https://github.com/microsoft/oxidizer/tree/main/crates/fundle)
+[^shaku]: [Shaku on crates.io](https://crates.io/crates/shaku)
+[^dill]: [Dill on crates.io](https://crates.io/crates/dill)
+[^nject]: [Nject on crates.io](https://crates.io/crates/nject)

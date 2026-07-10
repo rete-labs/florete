@@ -10,6 +10,7 @@
         "0008-name-rete-mesh-cluster",
         "0009-config-compiled-facade",
         "0010-compiled-artifact-object-model",
-        "0011-bootstrap-rotate-signer-trust"
+        "0011-bootstrap-rotate-signer-trust",
+        "0012-use-fundle-di-framework"
     ]
 }
