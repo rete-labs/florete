@@ -161,6 +161,7 @@ This tradeoff is intrinsic to "global path coherence is a non-local property and
 - Multi-CP coexistence (multiple `authorized_ctrl_signers` entries, regional CP, A/B rollouts). Schema permits it from day one; orchestration is post-C1.
 - CP key rotation tooling and policy refresh on schedule.
 - Hot reload of ctrl-only changes (path failover with no mgmt change). Today every ctrl change still goes through `flor agent sync`'s restart-with-commit-timeout path, like mgmt.
+- Schema-ceiling negotiation on the ctrl fetch. From B1+ the ctrl producer must emit each per-node artifact within that node's supported `schema_version` range ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)); C1's degenerate producer satisfies this trivially, and the ceiling advertisement rides the sync protocol, designed with B1.
 - Path-coherence enforcement beyond local rules — see "What hijacked CP can do" above.
 - Bounds-language growth beyond `allow-list`. The typed-rule shell is in place; richer rules land when concrete features need them.
 

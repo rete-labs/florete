@@ -74,7 +74,7 @@ Identity files (`ca_cert_path`, `cert_path`, `priv_path`) are bare filenames at 
 
 Field semantics:
 
-- `schema_version` — semver of the compiled-artifact public contract.
+- `schema_version` — `major.minor` of the compiled-artifact contract. Every consumer gates it fail-closed: it accepts its own major at any older-or-equal minor and rejects anything newer with an explicit upgrade error; the producer stamps each artifact with the lowest minor its content actually uses. See [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract) for the contract-wide versioning policy.
 - `plane` — `"mgmt"` for everything in C0/C1. Reserved: `"ctrl"` for the unsigned control-plane decision stream that lands in B1+ (carried in a separate envelope, not inside this one). Discriminating now keeps the envelope schema stable across the split.
 - `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs.
 - `name` — the artifact's name within its `(node, kind)` space, so identity is `(node, plane, kind, name)`, path-independent: the vertex name for a vertex artifact, `"agent"` for the single agent. Vertex artifacts additionally carry a payload `kind` of `"link"` or `"mesh"` that selects the engine. (C0 has a single `link` vertex per node; C1 adds `mesh`.)

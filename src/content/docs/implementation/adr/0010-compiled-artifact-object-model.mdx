@@ -35,7 +35,7 @@ The envelope already treats `plane` and `kind` as orthogonal. The link/mesh dist
 | `kind` | Which process consumes this? | `agent` / `vertex` | envelope |
 | `kind` (vertex) | Which engine does the vertex run? | `link` / `mesh` | payload |
 
-Naming is fixed by two words used identically in YAML and JSON: **`kind` = the category of an object** (artifact: `agent`/`vertex`; vertex: `link`/`mesh`), **`type` = the variant within a context** (transport: `quic`; adapter: `udp`/`florio`/`wg`; bound rule: `enum`). No YAML change: the YAML already uses `kind: link|mesh` and `type: quic`. The two-level `kind` is consistent ("the kind of *this* object"), not a collision. Because the unified `links` / `egress` / `ingress` / `connection_manager` shapes (below) make the mgmt payload field-identical for both vertex kinds, `kind` is a **plain discriminator field**, not a tagged union with per-variant data; it selects the forwarding engine, gates validation, and decides whether a ctrl artifact is consumed.
+Naming is fixed by two words used identically in YAML and JSON: **`kind` = the category of an object** (artifact: `agent`/`vertex`; vertex: `link`/`mesh`), **`type` = the variant within a context** (transport: `quic`; adapter: `udp`/`florio`/`wg`; bound rule: `list`). No YAML change: the YAML already uses `kind: link|mesh` and `type: quic`. The two-level `kind` is consistent ("the kind of *this* object"), not a collision. Because the unified `links` / `egress` / `ingress` / `connection_manager` shapes (below) make the mgmt payload field-identical for both vertex kinds, `kind` is a **plain discriminator field**, not a tagged union with per-variant data; it selects the forwarding engine, gates validation, and decides whether a ctrl artifact is consumed.
 
 ### One connection-manager shape
 
@@ -47,7 +47,7 @@ A vertex reaches each **peer** (adjacent vertex) over one or more **links**, and
 
 ```json
 "links": [
-  { "type": "enum", "members": [
+  { "type": "list", "members": [
     { "name": "beta-pub",  "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "type": "florio", "adapter": "via-link" } },
     { "name": "beta-eth1", "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "type": "udp", "adapter": "eth1", "addr": "10.0.1.6:5544" } },
     { "name": "gamma",     "peer": "spiffe://rete-lovers/vertex/gamma/rete", "via": { "type": "udp", "adapter": "internal", "addr": "10.0.0.7:5544" } }
@@ -116,7 +116,7 @@ The two artifact-signer sets live in a `trust` block in `agent.json` — `ca_cer
 
 ### Envelope naming
 
-Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`) and **payload-agnostic**: rather than a `vertex`-specific claim it carries a generic `name` — the artifact's name within its `(node, kind)` space (the vertex name for a vertex artifact, `agent` for the single agent) — so identity is `(node, plane, kind, name)`, never path-derived. The envelope is a closed, `schema_version`-gated schema (unknown fields rejected): it evolves by adding an explicit field under a `schema_version` bump, never an open extension bag. Per-plane metadata rides on the `plane` discriminator itself — `plane` is a tagged value, `"mgmt"` or `{ "ctrl": { "obeys_mgmt_version": … } }` — so a ctrl-only field needs no optional envelope claim, and a payload's per-`kind` data stays in `payload`.
+Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`) and **payload-agnostic**: rather than a `vertex`-specific claim it carries a generic `name` — the artifact's name within its `(node, kind)` space (the vertex name for a vertex artifact, `agent` for the single agent) — so identity is `(node, plane, kind, name)`, never path-derived. The envelope is a closed, `schema_version`-gated schema (unknown fields rejected): it evolves by adding an explicit field under a `schema_version` (`major.minor`) bump, never an open extension bag. A consumer gates each artifact **fail-closed and one-directionally**: it reads its own major at any older-or-equal minor (so a newer flor keeps consuming older artifacts — the rolling-upgrade direction), but **rejects a newer minor** (and any other major) rather than silently ignoring fields it doesn't understand — because `deny_unknown_fields` means a newer minor may have added a restriction, and dropping it would fail *open*. Compatibility across a minor bump is thus achieved by upgrading consumers before the producer emits the new minor, not by lenient parsing. Per-plane metadata rides on the `plane` discriminator itself — `plane` is a tagged value, `"mgmt"` or `{ "ctrl": { "obeys_mgmt_version": … } }` — so a ctrl-only field needs no optional envelope claim, and a payload's per-`kind` data stays in `payload`. [ADR-0012: Version the Compiled-Artifact Contract](/docs/implementation/adr/0012-version-artifact-contract) elevates this gate into the contract-wide versioning policy: producer stamping and per-plane rollout discipline, relay obligations, and the minor/major evolution rules.
 
 ## Rationale
 
