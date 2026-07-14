@@ -165,7 +165,7 @@ A user device initiates connections only — no `listen_udp`-served services. Th
     ],
     "links": [
       {
-        "type": "enum",
+        "type": "list",
         "members": [
           { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
           { "name": "api",           "peer": "spiffe://rete-lovers/service/api",           "via": { "type": "udp", "adapter": "wire", "addr": "1.2.3.4:4433" } },
@@ -240,7 +240,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
     ],
     "links": [
       {
-        "type": "enum",
+        "type": "list",
         "members": [
           { "name": "config-server", "peer": "spiffe://rete-lovers/service/config-server", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
           { "name": "mongodb",       "peer": "spiffe://rete-lovers/service/mongodb",       "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }

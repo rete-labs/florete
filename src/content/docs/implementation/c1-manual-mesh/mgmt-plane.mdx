@@ -185,10 +185,10 @@ Each `nodes:` entry is an `{at, via}` object in C1. `at:` names the host node; `
 # Bound: the set of mesh-vertex peerings the CP is allowed to bring up.
 # Each entry under `allowed_links` is a typed rule. Agents verify ctrl's
 # active peers against the union of all rules' results.
-# In C1 the only rule type is `enum`. New rule types can be added as
+# In C1 the only rule type is `list`. New rule types can be added as
 # additional entries in this list without reshaping the schema.
 allowed_links:
-  - type: enum
+  - type: list
     links:
       - { a: alpha, b: beta,  via: public   }
       - { a: alpha, b: gamma, via: internal }
@@ -228,7 +228,7 @@ In C1 these declared peerings are the **bound** — the operator signs that *onl
 # In C1 every node has exactly one mesh-vertex, so vertex: always derives.
 # via: derives unless two or more links connect the same adjacent mesh-vertex pair.
 allowed_paths:
-  - type: enum
+  - type: list
     paths:
       # users
       - principal: alice
@@ -367,7 +367,7 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
   ],
   "links": [
     {
-      "type": "enum",
+      "type": "list",
       "members": [
         {
           "name": "beta",
@@ -416,7 +416,7 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
   },
   "links": [
     {
-      "type": "enum",
+      "type": "list",
       "members": [
         {
           "name": "beta",
@@ -471,7 +471,7 @@ The multi-adapter connection manager is a **mesh**-vertex trait. A **link**-vert
 
 `links` is a **typed-rule bound list**, mirroring `allowed_links`/`allowed_paths` in the YAMLs (it is the per-node projection of `allowed_links`). Each rule produces a set of links — each a local `name`, its `peer` identity, and the `via` adapter selection; the agent's effective link set is the union across rules. The compiler assigns the stable link `name`s, and a `paths.yaml` hop's `via:` (link selection) resolves to one. A peer joined by *parallel* links (dual-ethernet, or QUIC + private-UDP) appears in more than one entry — the link, not the peer, is the forwarding handle. CP-shaped decisions (which subset is currently *active*, which forwarding rows reference which link) are verified against this bound at the agent — see [Ctrl Plane](../ctrl-plane/).
 
-In C1 the only rule type is `enum`; the rule body lists links explicitly under `members`. The `via` per link (adapter + dial info) is fixed by the operator — CP doesn't switch a link between QUIC and bare UDP at runtime. CP can only narrow *which* allowed links it actually brings up.
+In C1 the only rule type is `list`; the rule body lists links explicitly under `members`. The `via` per link (adapter + dial info) is fixed by the operator — CP doesn't switch a link between QUIC and bare UDP at runtime. CP can only narrow *which* allowed links it actually brings up.
 
 `ingress.allow` and `egress.allow` are **direct flat allow lists** of authorized SPIFFE IDs. They are not bounds and not typed rules — they're pure operator authority. Compile time resolves richer YAML grammar (roles, groups, future selectors) into these flat lists; the agent's check is a simple `principal ∈ allow`. CP cannot narrow ingress/egress, so there's no bounds shell to provide.
 
@@ -677,7 +677,7 @@ The typed-rule list shape (`{type: <discriminator>, ...}` items) wraps three thi
 
 We deliberately *don't* apply the shell to `ingress.allow`/`egress.allow`. Those aren't bounds — CP doesn't narrow them. They're pure operator authority: a flat SPIFFE-ID list resolved at compile time from richer YAML grammar (roles, groups, future attribute-based selectors). Wrapping a flat allow list in a one-rule typed shell would be cargo-cult — the CP-narrowing test it's meant to enable doesn't apply.
 
-The pattern of "discriminator-tagged bound types" is proven elsewhere — Kubernetes admission policies, OPA policy types, AWS IAM condition operators. C1's bounds are tiny (one rule type, `enum`); the policy-language work is deferred. The *shell* is what later policy growth plugs into without forcing a schema migration.
+The pattern of "discriminator-tagged bound types" is proven elsewhere — Kubernetes admission policies, OPA policy types, AWS IAM condition operators. C1's bounds are tiny (one rule type, `list`); the policy-language work is deferred. The *shell* is what later policy growth plugs into without forcing a schema migration.
 
 ### Why paths are over mesh-vertices, not nodes — and why the notation includes link specification
 
