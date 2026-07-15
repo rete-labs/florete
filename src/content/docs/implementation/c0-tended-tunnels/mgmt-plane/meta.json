@@ -4,7 +4,7 @@
         "identity",
         "validate-and-compile",
         "cli",
-        "config-server",
+        "coordinator",
         "enrollment",
         "distribution-and-reload",
         "reasoning"

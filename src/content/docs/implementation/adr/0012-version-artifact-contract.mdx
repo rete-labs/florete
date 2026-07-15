@@ -19,7 +19,7 @@ flor now gates every artifact on `schema_version` (`major.minor`): it accepts it
 | Per-node ctrl | `retectl compile` (C1) → Coordinator service (B1+) | flor agent → mesh vertex | The producer is centrally upgraded, churns at seconds-to-minutes, and cannot assume any fleet state |
 | Delegated publications (roadmap direction, not committed design) | developer tooling under attenuated authority — a scoped signer, or self-authenticated names still directory-published and routable | agents, service directory | Producers outside the operator's upgrade control entirely |
 
-Alongside the consumers sit the **relays** — the config-server today, the Coordinator in its store-and-serve role from B1+ — which handle every mgmt artifact without being party to its contents.
+Alongside the consumers sit the **relays** — the `coordinator` today, the Coordinator in its store-and-serve role from B1+ — which handle every mgmt artifact without being party to its contents.
 
 Three facts fix the shape of the problem:
 

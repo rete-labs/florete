@@ -24,7 +24,7 @@ This is load-bearing security behaviour that `flor`'s agent will otherwise imple
 
 ### The agent is the sole verifier
 
-The **agent** fetches every artifact and verifies signatures and the mgmt↔ctrl cross-rules; the **vertex** consumes already-verified configs handed to it by the agent. This matches the threat model: an artifact signature protects the **distribution path** (config-server, network MITM, a tampered relay), not local-filesystem integrity — anyone who can rewrite `vertices/rete.json` on the node can equally rewrite the `flor` binary, so re-verifying inside the vertex guards nothing the signature is for. Local integrity is the node's own concern. (Vertex re-verification remains available as defence-in-depth; it is not the boundary.)
+The **agent** fetches every artifact and verifies signatures and the mgmt↔ctrl cross-rules; the **vertex** consumes already-verified configs handed to it by the agent. This matches the threat model: an artifact signature protects the **distribution path** (coordinator, network MITM, a tampered relay), not local-filesystem integrity — anyone who can rewrite `vertices/rete.json` on the node can equally rewrite the `flor` binary, so re-verifying inside the vertex guards nothing the signature is for. Local integrity is the node's own concern. (Vertex re-verification remains available as defence-in-depth; it is not the boundary.)
 
 ### Both signer sets live in `agent.json`, and they are not symmetric
 

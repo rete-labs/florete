@@ -1,0 +1,64 @@
+---
+title: Coordinator
+description: Management-node config distribution service for C0
+---
+
+## Coordinator
+
+The **coordinator** is the rete infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
+
+The binary is named `coordinator`. It ships as a third bin target in the flor crate (alongside `flor` and `retectl`, ADR-0002) and is installed **only on the management node**. C0's coordinator is the degenerate, store-and-serve form of the Coordinator sketched for B1 — see [B1 · Coordinator](/docs/implementation/b1-cloud-control/coordinator) for where this grows a dynamic control plane; in C0 it does nothing but persist the operator-signed tree and hand out per-node slices of it.
+
+It's declared in `services.yaml` as **two separate services** — one for reads (nodes) and one for writes (operators) — so Florete's per-service RBAC can gate them cleanly:
+
+```yaml
+# services.yaml — rete infrastructure
+services:
+  coordinator:                    # read-only: serves compiled artifacts to nodes
+    at: mgmt01
+    addr: 127.0.0.1:9000
+    groups: [coordinator-sync]    # reserved group; read-access for `node` role
+  coordinator-publisher:          # write: accepts new compiled trees from retectl
+    at: mgmt01
+    addr: 127.0.0.1:9001          # same process as coordinator, different port+endpoint
+    groups: [coordinator-publish] # reserved group; write-access for `operator` role
+  # ... workload services
+
+# groups.yaml — reserved groups
+groups:
+  coordinator-sync:
+  coordinator-publish:
+
+# roles.yaml — reserved role definitions (must be provided; validator enforces)
+roles:
+  node:     { allow: [coordinator-sync]    }   # auto-assigned by compiler to every node
+  operator: { allow: [coordinator-publish] }   # manually assigned in users.yaml
+```
+
+**Why "coordinator-*" and not "mgmt-plane-*".** The groups gate access to the coordinator's HTTP endpoints, not to a plane. The plane (mgmt vs ctrl, when ctrl lands in C1) is an artifact-content distinction encoded in the URL path inside an already-authenticated tunnel — RBAC has no reason to project it. C1's ctrl-fetch endpoint will live in the same `coordinator-sync` group; ctrl-publish stays in `coordinator-publish` because C1's ctrl artifacts are still operator-produced. A B1+ split where the CP becomes an external writer is a B1+ design call; today there's no second writer, so a second write group would be speculative.
+
+**Group naming rationale.** `coordinator-sync` covers *all* node-role traffic on the node-facing service — artifact fetch today, metrics push later (see below) — and survives B1's push distribution without a rename. `coordinator-publish` is operator-role publishing. The two-service split exists purely to draw this one RBAC boundary between node reads and operator writes; both services are the same process.
+
+**Reserved-name conventions:**
+
+- `node`, `operator` (roles), `coordinator-sync`, `coordinator-publish` (groups), and the `coordinator` / `coordinator-publisher` services are all **reserved names**. Validator fails if they're missing or redefined with different structure. Florete compiler never *writes* YAML — these live in the repo as part of the initial rete template.
+- **Role assignment** is split: the `node` role is auto-assigned by the compiler to every `node/` principal (so each node's compiled artifact has the right egress row to reach `coordinator`). The `operator` role is assigned manually in `users.yaml` (`fyodor: { role: operator }`) — the validator rejects the rete if no user has it (otherwise nothing can publish).
+
+**Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "coordinator" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `coordinator-sync`) and one for writes (gated by `operator` role via `coordinator-publish`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
+
+This split doesn't give per-node isolation of *reads* — every `node` principal can `GET /artifact/mgmt/<any-node>` as long as it reaches the read-service. Tightening this (so alpha can only fetch its own directory) requires passing the verified peer SPIFFE ID to the HTTP layer, which flor deliberately does **not** do today — flor is a pure L4/L5 forwarder (QUIC/mTLS + TCP bytes), and reaching into HTTP to inject `X-Florete-Peer-SpiffeID` headers would promote it to an L7 proxy. That's a meaningful architectural shift with knock-on design questions (which component owns L7? is it flor itself, an adjacent sidecar, a side-channel lookup API?), and it needs careful design in C1+ rather than a rushed solution now. Flagged in [Open Follow-ups](../#open-follow-ups) and tied to the broader L7 awareness topic there. For pilots, the exposed ACL-matrix metadata is tolerable.
+
+**Wire protocol (C0).** Both services speak plain HTTP over the Florete mTLS tunnel.
+
+- `coordinator: GET /artifact/mgmt/<node>?version=<n>` — returns the node's compiled directory (an `agent.json` + the vertex configs under `vertices/`) packaged as a single response if the caller passed the `coordinator-sync` ingress gate. (No path/identity cross-check in C0; see note above.)
+- `coordinator-publisher: POST /publish/mgmt` — accepts a new compiled tree from `retectl`. Only reachable by callers with `operator` role.
+
+The `/mgmt` path segment matches what C1's ctrl-plane already specifies, so C1 adds `/artifact/ctrl/<node>` and `/publish/ctrl` siblings without reshaping the C0 endpoints.
+
+The caller of `GET /artifact/mgmt/<node>` is the node's `flor agent`, acting as the `node/<node>` principal via the local vertex's SOCKS5 listener. C0 doesn't need anything more elaborate — no streaming, no deltas, no watch. Agents poll on their own cadence via `flor agent sync`.
+
+**Metrics.** There is no separate `metrics` service in C0. Metrics is a planned *future endpoint on the coordinator itself* (C1+/B1) — it would ride the node-facing service under the `coordinator-sync` group, which is why that group is named for the role rather than for artifact fetch. C0 observability is logs-only (see [scope](../../scope)).
+
+**Management-node bootstrap (chicken-and-egg).** The coordinator can't fetch its own artifacts from itself before it's running. Resolution: the management node is bootstrapped manually. The operator runs `retectl compile`, the enrollment bundle for mgmt01 carries that node's compiled `agent.json` and `vertices/flor.json`, and the operator starts `flor agent run` against that local material. Once it's up (with the coordinator service listening on `127.0.0.1:9000` via Florete), the operator runs `retectl publish` and from then on `mgmt01` refreshes itself via the normal `flor agent sync` flow. The manual step is genuinely one-shot per management node.
+
+**Availability.** Coordinator downtime doesn't break running traffic — nodes keep running their last installed artifact. The only thing that fails is publishing new state. HA (two management nodes with replicated state) is a post-C0 concern; pilots can tolerate short outages.

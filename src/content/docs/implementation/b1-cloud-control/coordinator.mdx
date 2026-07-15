@@ -6,7 +6,7 @@ description: Forward sketch of the rete Coordinator, grounding the config-model 
 The **Coordinator** is the rete's network control plane: the entity that keeps a rete operational within the bounds and objectives an operator declares. Its full design is a B1+ concern. This page sketches only as much of it as is needed *now*, at C0, to make one decision honestly: **what shape our configs should take** — chosen against the real needs of the thing that will consume them, not an imagined one.
 
 <Callout title="This is a forward sketch, not a committed design">
-Nothing here commits B1's architecture. The Coordinator's true implementation, its consensus model, its optimization algorithms, and its federation protocol are all deferred. What this page *does* commit to is narrow and load-bearing: the **shape of state** the Coordinator consumes and produces — because the C0 config format is the operator-authored slice of that state, and we want to pick it for reasons that survive contact with B1. The rename of today's `config-server` to `Coordinator` is assumed throughout (the C0 component is the Coordinator in its degenerate, store-and-serve form).
+Nothing here commits B1's architecture. The Coordinator's true implementation, its consensus model, its optimization algorithms, and its federation protocol are all deferred. What this page *does* commit to is narrow and load-bearing: the **shape of state** the Coordinator consumes and produces — because the C0 config format is the operator-authored slice of that state, and we want to pick it for reasons that survive contact with B1. The C0 `coordinator` component is this Coordinator in its degenerate, store-and-serve form.
 </Callout>
 
 ## Functional role
@@ -117,7 +117,7 @@ The synthesis is **C + D, generalizing B, degrading to E, with A as a degenerate
 
 Evolution, matching the stated constraints:
 
-1. **Single workload.** The Coordinator is one workload, published as a rete service; the loop runs in-process, Knowledge in-process. (C0's `config-server` is this, degenerate to store-and-serve — it decides nothing yet.)
+1. **Single workload.** The Coordinator is one workload, published as a rete service; the loop runs in-process, Knowledge in-process. (C0's `coordinator` is this, degenerate to store-and-serve — it decides nothing yet.)
 2. **Distributed / HA.** Knowledge gains consensus; Plan can be sharded (regional PCE/TCE). Multiple Coordinator instances, one logical authority.
 3. **Agile / recursive (Edge).** The Coordinator becomes a **distributed service the orchestrator places and may move**, able to split and join — a robot-group-local Coordinator that hands authority up to a cloud Coordinator on connect, and reclaims it on disconnect. Several Coordinators per rete; agents act as local Coordinators in the limit; coordinator-less operation is the extreme.
 
@@ -164,7 +164,6 @@ Concrete takeaways for the config-model decision being made now:
 - **Derived Knowledge that is not a forwarding table** — history/time-series stores and (possibly large, binary) learned-model artifacts: their versioning, signing, and delivery to agents.
 - **Formal AI confinement** — the runtime-assurance guarantees an untrusted (possibly AI) planner must satisfy, and the safe-fallback semantics when an agent rejects an out-of-bounds decision.
 - **Multi-major artifact operation** — a managed Coordinator serves many retes on independent upgrade schedules while itself running the vendor's latest version, so across a contract-major transition it must keep consuming every live tenant's bounds major and emitting ctrl at each fleet's major; nothing downstream of a signer can convert an artifact, so the burden lands on producers ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)). Includes `retectl` dual-publish and transitional multi-major flor builds.
-- Naming: confirming the `config-server → Coordinator` rename, and a better name than "Operator Service" for the Authoring/Ingest endpoint.
 
 [^kcmd]: A **k-connected m-dominating set** is a virtual-backbone construction from wireless/ad-hoc networking: every node is within reach of ≥ m backbone members, and the backbone stays connected after any k−1 removals. It generalizes the [connected dominating set](https://en.wikipedia.org/wiki/Connected_dominating_set) used as a routing backbone, trading link budget for fault tolerance.
 [^k8s-recon]: Kubernetes [controllers and the reconciliation loop](https://kubernetes.io/docs/concepts/architecture/controller/) drive observed state toward a declared, complete `spec`; they are level-triggered and have full authority within their resource.
