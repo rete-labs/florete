@@ -100,10 +100,10 @@ The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl art
 
 `retectl publish` pushes both subtrees:
 
-- Mgmt artifacts go to `POST /publish/mgmt` on the config-server.
+- Mgmt artifacts go to `POST /publish/mgmt` on the coordinator.
 - Ctrl artifacts go to `POST /publish/ctrl`.
 
-Authentication for the publish side is via the existing `config-write` group (operator role). Internally the config-server stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`), both gated by `config-read`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `retectl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
+Authentication for the publish side is via the existing `coordinator-publish` group (operator role). Internally the coordinator stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`), both gated by `coordinator-sync`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `retectl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
 
 ## Label allocation
 
@@ -186,15 +186,15 @@ By landing the stream in C1 with a degenerate producer (`retectl compile`) we ex
 
 All of these are forward-compatible with B1+, where only the *producer* changes (operator-machine `retectl` → CP service). No schema migration. No flag-day. The cost is moderate (extra plumbing in compile, publish, fetch, verify), but it's strictly less than the cost of changing the schema later.
 
-### Why the CP signing identity is its own SPIFFE kind (not collapsed with config-server or operator)
+### Why the CP signing identity is its own SPIFFE kind (not collapsed with coordinator or operator)
 
 Three identities show up around the rete's coordination point, and they have different roles, lifecycles, and compromise blast radii:
 
-- **`service/config-server`** — service identity, authenticates the *coordination service* to its clients. Compromise = clients dial an imposter; mTLS catches it.
-- **`node/<node>`** — service-class identity for control-plane *clients* (the agent), authenticates them to config-server. Compromise = imposter agent reads its own per-node artifacts.
+- **`service/coordinator`** — service identity, authenticates the *coordination service* to its clients. Compromise = clients dial an imposter; mTLS catches it.
+- **`node/<node>`** — service-class identity for control-plane *clients* (the agent), authenticates them to coordinator. Compromise = imposter agent reads its own per-node artifacts.
 - **`control-plane/<name>`** — signing authority for ctrl artifacts. Compromise = forged ctrl decisions within mgmt bounds.
 
-Conflating the CP signing identity with config-server's service identity would couple two different blast radii (a config-server breach would also forge ctrl artifacts) and two different rotation cadences (CP key rotates with operator policy; service identity rotates with regular cert hygiene). Keeping them as separate SPIFFE kinds keeps the failure modes independent.
+Conflating the CP signing identity with coordinator's service identity would couple two different blast radii (a coordinator breach would also forge ctrl artifacts) and two different rotation cadences (CP key rotates with operator policy; service identity rotates with regular cert hygiene). Keeping them as separate SPIFFE kinds keeps the failure modes independent.
 
 Separating CP from operator identity matters too: in C0/C1 they happen to live on the same machine, but in B1+ the CP key moves to a different host (managed cloud or BYO on-prem). Treating them as one key from day one would create an awkward "the operator's key now lives in the cloud" moment. Treating them as separate identities means the migration is just "the CP key was always its own thing; it now happens to run elsewhere."
 
@@ -204,7 +204,7 @@ A bounded ctrl stream could in principle be unsigned — agents already verify e
 
 Three reasons make it worth it:
 
-- **Authenticity of the producer.** Bounds-checking only verifies that decisions are *permissible*; it doesn't verify *who* made them. A signature on ctrl tells the agent "this came from a CP the operator authorized," not just "this happens to satisfy mgmt." Distribution-path attacks (compromised config-server, MITM on a fetch) can substitute a permissible-but-unintended ctrl decision; signing catches that.
+- **Authenticity of the producer.** Bounds-checking only verifies that decisions are *permissible*; it doesn't verify *who* made them. A signature on ctrl tells the agent "this came from a CP the operator authorized," not just "this happens to satisfy mgmt." Distribution-path attacks (compromised coordinator, MITM on a fetch) can substitute a permissible-but-unintended ctrl decision; signing catches that.
 - **Clean revocation primitive.** Operator removes a CP's pubkey from `authorized_ctrl_signers` → agents stop accepting that CP's ctrl artifacts. No code change, no data flush, no out-of-band coordination. This is the same revocation pattern as identity revocation (remove from mgmt, propagate on next sync).
 - **Multi-CP coexistence.** As soon as B1+ wants regional CPs, A/B-tested CPs, or quorum CPs, each needs its own identity and its own pubkey in mgmt's authorized list. Without per-CP signatures the agent has no way to tell which CP made which decision.
 

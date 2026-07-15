@@ -17,7 +17,7 @@ C0 issues two flavours of SPIFFE principal, distinguished by how the cert is use
 |---|---|---|---|
 | User | Yes | The human (their workload) | End-to-end mTLS to services |
 | Service | Yes | The service workload | End-to-end mTLS + as caller |
-| Node | Yes | The node (the host as rete member) | Mgmt-plane mTLS — agent ↔ rete infrastructure (config-server, metrics) |
+| Node | Yes | The node (the host as rete member) | Mgmt-plane mTLS — agent ↔ rete infrastructure (coordinator) |
 | Vertex | Reserved | Rete mesh-vertex | Hop-by-hop link-layer mTLS (introduced in C1) |
 
 **Signing principals** — sign envelopes at compile or decision time. Cert has `keyUsage: digitalSignature` only, no `extKeyUsage` — TLS verifiers reject these certs at handshake, so a leaked signing cert cannot be re-used to impersonate a TLS endpoint. The private key stays on the producer's own machine and is never held by a vertex. Only the public cert is shipped to nodes (delivered alongside `ca.crt` at enrollment) so agents can verify envelope signatures locally.
@@ -50,14 +50,14 @@ These terms overlap in everyday speech but are distinct in the Florete model:
 
 - **Node** (computing host) — a physical machine, VM, or device. A hardware/OS concept. May run workloads from multiple Florete retes simultaneously.
 - **`node/<name>` SPIFFE principal** — the node's rete-scoped identity, one per (host, rete) pair. Exists within a specific rete's trust domain; the name is chosen by that rete's operator and may differ across retes the same host has joined.
-- **`flor-agent`** — the workload process that acts on the node-principal's behalf within one rete. Fetches state, supervises vertices, dials config-server using the node identity. One agent process per joined rete.
+- **`flor-agent`** — the workload process that acts on the node-principal's behalf within one rete. Fetches state, supervises vertices, dials coordinator using the node identity. One agent process per joined rete.
 
 "Per-node" and "for all nodes" in rete-scoped prose always mean *per `node/<name>` principal in this rete*, not per physical host. The distinction matters when one host joins multiple retes.
 </Callout>
 
 Key points:
 
-- **The node is a first-class principal; `flor-agent` is the workload that acts on its behalf.** The node's identity (`spiffe://<rete>/node/<node>`) is the rete's view of this computing host — used solely for agent ↔ rete-infrastructure mTLS (fetching compiled state from the config-server, pushing metrics). The agent does not hold the cert+key; the local flor vertex does, and the agent delegates mTLS to it via a SOCKS5 channel, the same way alice delegates to flor. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals.
+- **The node is a first-class principal; `flor-agent` is the workload that acts on its behalf.** The node's identity (`spiffe://<rete>/node/<node>`) is the rete's view of this computing host — used solely for agent ↔ rete-infrastructure mTLS (fetching compiled state from the coordinator). The agent does not hold the cert+key; the local flor vertex does, and the agent delegates mTLS to it via a SOCKS5 channel, the same way alice delegates to flor. Node identity never appears on the workload hot path: user-to-service and service-to-service traffic is authenticated end-to-end between those principals.
 - **Services are first-class principals.** A service's identity is both the server side of its inbound mTLS and the client side of its outbound connections. The `role` field in services.yaml governs what the service can call.
 - **Node identity and mesh-vertex identity are distinct principal kinds with distinct holders.** C1 introduces `vertex/<node>/<name>` for hop-by-hop mesh-transit mTLS: the principal is mesh-flor (qua participant in the link layer), and link-flor below it holds the cert+key. The `node/<node>` principal is the node itself, with flor-agent as its workload. The two kinds belong to different layers and different holders — there's no question of merging. A computing host can join multiple Florete retes; each rete gives it a separate `node/<name>` identity in its own trust domain, with a dedicated flor-agent process acting on its behalf.
 
@@ -107,14 +107,14 @@ Examples:
 - `spiffe://rete-lovers/user/alice` — user principal.
 - `spiffe://rete-lovers/service/api` — api service (rete-scoped).
 - `spiffe://rete-lovers/service/alpha/ssh` — SSH on node alpha.
-- `spiffe://rete-lovers/node/alpha` — alpha's node principal (used to reach the config-server and metrics services over Florete).
+- `spiffe://rete-lovers/node/alpha` — alpha's node principal (used to reach the coordinator service over Florete).
 - `spiffe://rete-lovers/management-plane/primary` — the rete's mgmt-envelope signing identity (operator-held, issued explicitly via `retectl ca sign --kind management-plane --name primary`). The name is operator-chosen; `primary` is the convention, mirroring `control-plane/primary` in C1.
 - `spiffe://rete-lovers/control-plane/primary` — the rete's primary CP signing identity (operator-held in C0/C1; cloud-held in B1+).
 
 C1 extends this with two further kinds:
 
 - `spiffe://<rete>/vertex/<node>/<name>` — the canonical name of **any vertex** on a node. Node-scoped, mirroring `service/<node>/<service>`: `<node>` is the host node; `<name>` is the vertex's local identifier on that node. Mesh-vertices use it as a TLS-principal identity for hop-by-hop mesh-transit mTLS (SVID issued); link-vertices carry the canonical name **without an SVID** (see the "Names are not principals" callout above) — e.g. `vertex/alpha/public` for alpha's `public` link-vertex. By convention the rete-wide mesh-vertex is named `rete`, giving e.g. `spiffe://rete-lovers/vertex/alpha/rete` for alpha's rete vertex. The name is an operator choice, not a validator rule. A future interrete-vertex on the same node would be `spiffe://rete-lovers/vertex/alpha/interrete` by convention.
-- `spiffe://<rete>/control-plane/<name>` — the signing authority for ctrl artifacts. Distinct from `node/` (a service-class identity used by agents to *fetch* artifacts from config-server) and from `service/config-server` (a service-class identity for the *coordination service*). The CP-signing authority compromises independently of those services and rotates on its own cadence, which is why it has its own kind. Symmetric with `management-plane/<name>`, which already signs mgmt artifacts in C0. In C0 the `control-plane` kind exists only as a reservation; nothing produces ctrl artifacts there. The mgmt artifact lists authorized CP pubkeys for the rete (see C1's ctrl-plane doc).
+- `spiffe://<rete>/control-plane/<name>` — the signing authority for ctrl artifacts. Distinct from `node/` (a service-class identity used by agents to *fetch* artifacts from coordinator) and from `service/coordinator` (a service-class identity for the *coordination service*). The CP-signing authority compromises independently of those services and rotates on its own cadence, which is why it has its own kind. Symmetric with `management-plane/<name>`, which already signs mgmt artifacts in C0. In C0 the `control-plane` kind exists only as a reservation; nothing produces ctrl artifacts there. The mgmt artifact lists authorized CP pubkeys for the rete (see C1's ctrl-plane doc).
 
 ### Convenience Hostname (services only)
 

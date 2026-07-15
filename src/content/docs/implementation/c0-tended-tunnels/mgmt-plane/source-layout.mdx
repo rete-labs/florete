@@ -20,7 +20,7 @@ my-rete/
 ├── enrollment.log        # append-only operator sign events (auditable)
 └── .flor/
     └── compiled/                # committed; operator runs `retectl compile` then commits
-        ├── mgmt01/              # management node — bootstrap-applied manually (see Config-server)
+        ├── mgmt01/              # management node — bootstrap-applied manually (see Coordinator)
         │   └── mgmt/
         │       ├── agent.json
         │       └── vertices/flor.json
@@ -133,7 +133,7 @@ Two vertex kinds exist in the design (only `link` is used in C0):
 
 ```yaml
 nodes:
-  # management node — hosts config-server and metrics
+  # management node — hosts the coordinator
   mgmt01:
     vertices:
       - { name: public, kind: link, type: quic, address: 9.10.11.12:4433 }
@@ -171,18 +171,14 @@ Node-naming convention for pilots: short DNS-like names for servers (`alpha`, `w
 ```yaml
 services:
   # Rete infrastructure — on the management node (reserved; validator enforces)
-  config-server:                      # read side — nodes poll for compiled artifacts
+  coordinator:                     # read side — nodes poll for compiled artifacts
     at: mgmt01
     addr: 127.0.0.1:9000
-    groups: [config-read]
-  config-publisher:                   # write side — operators push new state
+    groups: [coordinator-sync]
+  coordinator-publisher:           # write side — operators push new state
     at: mgmt01
-    addr: 127.0.0.1:9001              # same process as config-server, different endpoint
-    groups: [config-write]
-  metrics:
-    at: mgmt01
-    addr: 127.0.0.1:9090
-    groups: [config-read]
+    addr: 127.0.0.1:9001           # same process as coordinator, different endpoint
+    groups: [coordinator-publish]
 
   # Workload services
   api:
@@ -223,8 +219,8 @@ A service is simultaneously a **target** (its `groups` govern who may reach it) 
 # groups.yaml — applies to any target (service)
 groups:
   # reserved (must be present; validator enforces):
-  config-read:  # read side — nodes poll for artifacts
-  config-write: # write side — operators push new state
+  coordinator-sync:  # read side — nodes poll for artifacts
+  coordinator-publish: # write side — operators push new state
 
   # user-defined:
   api:
@@ -236,8 +232,8 @@ groups:
 # roles.yaml — applies to any principal (user OR service)
 roles:
   # reserved (must be present, must have exactly these `allow` sets):
-  node:     { allow: [config-read]  }   # auto-assigned by compiler to every node
-  operator: { allow: [config-write] }   # manually assigned via `role: operator` in users.yaml
+  node:     { allow: [coordinator-sync]  }   # auto-assigned by compiler to every node
+  operator: { allow: [coordinator-publish] }   # manually assigned via `role: operator` in users.yaml
 
   # user-defined:
   devops:      { allow: [api, db, brokers, admin] }
@@ -266,7 +262,7 @@ users:
 
 `nodes` is the list of user devices where this user's flor agent runs — the compiler embeds alice's identity material into each listed node's compiled artifact, so any of her devices can initiate Florete connections as alice. Each entry is `{at: <node>, via: <vertex>}` naming the host node and the vertex that holds the user's identity. In C0 every node has exactly one vertex, so `via:` may be omitted and the compiler picks that vertex automatically. In C1 `via:` is required (multiple vertices per node).
 
-**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `retectl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `config-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
+**The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `retectl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `coordinator-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
 
 The **mgmt-envelope signing principal** is a separate identity, issued out-of-band on operator hardware via `retectl ca sign --kind management-plane --name primary`. Its name (`primary` by convention, mirroring `control-plane/primary` in C1) is independent of any user — the keypair belongs to the *rete*'s signing authority, not to a specific person. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the public cert is shipped to nodes, alongside `ca.crt` at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
 

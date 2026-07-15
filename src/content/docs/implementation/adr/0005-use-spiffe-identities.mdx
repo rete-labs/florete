@@ -223,7 +223,7 @@ The earlier florete spec used `"key_id": "operator:<fingerprint>"` for mgmt enve
 - Both are SPIFFE-shaped principals so envelope verification can treat them uniformly under whichever trust scheme is chosen later.
 - Both need their compromise blast radius decoupled from any TLS use (the operator's `user/<op>` cert is TLS-capable; the operator's mgmt-signing cert should not be).
 
-Introducing `Kind::ManagementPlane` symmetrises the design. The operator's workflow becomes "hold two keypairs": `user/<op>` for mTLS to config-publisher, `management-plane/<name>` for envelope signing. The mgmt envelope's `key_id` becomes a SPIFFE URI matching CP's shape. Other user principals don't sign envelopes; the X.509 ext policy and the envelope verifier together enforce that only `control-plane/*` and `management-plane/*` keys do.
+Introducing `Kind::ManagementPlane` symmetrises the design. The operator's workflow becomes "hold two keypairs": `user/<op>` for mTLS to coordinator-publisher, `management-plane/<name>` for envelope signing. The mgmt envelope's `key_id` becomes a SPIFFE URI matching CP's shape. Other user principals don't sign envelopes; the X.509 ext policy and the envelope verifier together enforce that only `control-plane/*` and `management-plane/*` keys do.
 
 ### Why cert extensions, not just an application-layer envelope check
 
