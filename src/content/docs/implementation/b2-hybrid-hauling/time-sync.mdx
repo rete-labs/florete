@@ -1,0 +1,37 @@
+---
+title: Time Sync
+description: Two clock domains — the slot clock and the network clock — and the R8 bridge between them
+---
+
+How time works in a rete of mobile nodes over heterogeneous links. This page fixes the **two-domain split** that the [Link Contract's](../link-contract) **R8** rests on; each domain then has its own design page — the **[Slot Clock](../slot-clock)** (µs-class, scheduled MACs, no fixed infrastructure) and the **[Network Clock](../network-clock)** (ms-class, rete-wide, Coordinator-referenced). Terms: [Glossary](../glossary).
+
+<Callout title="Status of the two halves">
+The slot-clock design is **design-only in B2**, like the rest of the scheduled-MAC machinery — B2's reference CSMA prototype carries no slots to align, and the design is pulled in by a concrete vendor integration. The network clock applies to **every rete from day one** — wired, CSMA, and cloud nodes included.
+</Callout>
+
+## Two clock domains
+
+The single most load-bearing decision: **radio slot time and network time are separate clock domains**, with different precisions, owners, and failure modes. R8's "defined relationship" is the narrow bridge between them — never a merger.
+
+| | **Slot clock** | **Network clock** |
+|---|---|---|
+| What it disciplines | Frame/slot boundaries of a scheduled MAC | Rete time: certificate validity, timestamps of telemetry *reports* and logs, consensus |
+| Precision class | µs (a fraction of a guard interval) | ms |
+| Scope | One [sync domain](../glossary#sync-domain) per radio medium | Rete-wide |
+| Lives in | The radio module, **below [R10](../link-contract#r10--the-host-interface-the-envelope)** — tracking at µs timescale is fast-path work | A per-rete **virtual clock** maintained by the agent — the host OS clock is never touched |
+| Reference | A movable rank-0 node ([Slot Clock](../slot-clock#the-movable-reference)) | The Coordinator's Time service ([Network Clock](../network-clock)) |
+| Exists when | Scheduled MACs only | Always |
+| Absolute time? | No — purely relative phase + a shared frame count | Yes — UTC-anchored when any source provides it; rete-consistent regardless |
+
+The bridge (this *is* R8's relationship, restated as requirements):
+
+- The radio exports its slot clock upward through R10's control path — a **frame counter** and **RX timestamps** in that counter's units — so the host and the ctrl plane can *reference* radio time (see [frame numbering](../slot-clock#frame-numbering-not-just-phase)).
+- The host **never disciplines slot phase**: host time is orders of magnitude too coarse, and pushing it down would re-create the fast-timescale dependency R9 bans.
+- **Events are stamped in slot time; reports in network time.** A radio-level observation (a burst received at frame N, an MCS shift) is meaningful only in slot-clock units and is stamped so at R10; the agent's telemetry *reports* packaging such events for delivery carry network-time stamps. The Coordinator correlates the two through the reported mapping (next).
+- The mapping between the two clocks (frame N ↔ host time T, with drift) is **telemetry** — reported, consumed by the Coordinator, never authoritative for either side.
+
+## Ownership, and mutual acceleration
+
+Each clock is owned where its deadlines live: the slot clock below R10 in the radio (µs work is fast-path work), the network clock in the agent (a ctrl-timescale concern). Neither disciplines the other; the only coupling is reported state. The domains may however *accelerate* each other where present — the radio's frame counter can carry network time across a sync domain at µs quality ([Network Clock > slot-clock assist](../network-clock#the-slot-clock-assist-extension-not-baseline)), and a well-sourced network clock can inform slot-clock root selection — but always as accelerators, never as foundations: each domain's baseline closes without the other.
+
+Read on: **[Slot Clock](../slot-clock)** — what slot alignment a scheduled MAC needs, the movable reference, the time-source graph, beacons, join, degradation, and what crosses R10. **[Network Clock](../network-clock)** — Coordinator-referenced rete time, why it is not an NTP deployment, time as a bounded ctrl decision, sources, bootstrap, and degradation.

@@ -4,6 +4,9 @@
         "design",
         "link-contract",
         "radio-macs",
+        "time-sync",
+        "slot-clock",
+        "network-clock",
         "experiments",
         "attachment-labels",
         "glossary"
