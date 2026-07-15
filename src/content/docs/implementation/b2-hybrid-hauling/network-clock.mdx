@@ -1,0 +1,106 @@
+---
+title: Network Clock
+description: Rete time — Coordinator-referenced, agent-disciplined, bounded like any ctrl decision
+---
+
+The ms-class half of [Time Synchronization](../time-sync): where rete-wide time comes from, how it reaches every node, and why it is *not* an NTP deployment. The µs domain — slot alignment for scheduled MACs — is deliberately not this page's business: see [Slot Clock](../slot-clock). Terms: [Glossary](../glossary).
+
+<Callout title="Baseline for every rete">
+Unlike the [slot clock](../slot-clock) (design-only until a scheduled-MAC vendor integration), the network clock applies to **every rete from day one** — wired, CSMA, and cloud nodes included. It must therefore assume nothing about the media underneath.
+</Callout>
+
+## What actually needs time — and what deliberately doesn't
+
+Florete's correctness story is built on **counters, not clocks**: artifact ordering is version numbers, ctrl-vs-mgmt freshness is `obeys_mgmt_version`, revocation is membership in signed state ([Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane)) — none of it depends on wall-clock time. That is a design asset, and this page preserves it. What remains for the network clock is modest:
+
+- **Certificate validity windows** (mTLS `notBefore`/`notAfter`) — seconds-class accuracy suffices, but this consumer is *security-relevant* and *bootstrap-critical* ([below](#bootstrap)).
+- **Timestamps of telemetry reports and logs** — cross-node correlation at the Coordinator; ~10 ms rete-wide consistency serves every ctrl-timescale computation. (The radio-level events *inside* reports are stamped in slot-clock units — see [the bridge](../time-sync#two-clock-domains).)
+- **Coordinator internals** (B1+: consensus rounds, leases) — the Time service's own affair inside its replica set, out of scope here beyond one sentence [below](#degradation).
+
+Target: **rete-consistent to ~10 ms; UTC-anchored whenever any source provides it.** Internal consistency is the primary goal; UTC accuracy is secondary (certificates and operator-facing audit want it only loosely).
+
+## The design: Coordinator-referenced, agent-disciplined
+
+One sentence: **the Coordinator's Time service is the reference; each agent measures its offset to it over the connection it already maintains; the estimate disciplines a per-rete virtual clock.** Unpacked:
+
+- **The reference is the Coordinator.** The rete already has a logically centralized, movable, partition-tolerant coordination point — time is one more thing it coordinates. No peer-to-peer time protocol runs between nodes, for the same reason ranks are ctrl state in the [slot clock](../slot-clock#the-time-source-graph): where the architecture has an authority, use it; peer-to-peer is the fallback shape, not the baseline.
+- **Measurement rides the existing channel.** The agent already holds an authenticated mTLS connection to the Coordinator for artifact sync and telemetry. A time exchange is a four-timestamp request/response on that same channel — **NTP's on-wire arithmetic, kept; NTP's deployment, declined** ([below](#why-not-an-ntpptp-deployment)). Raw samples are jittery (userspace, multi-hop, radio segments); a filter over sample history — minimum-RTT selection, regression for offset *and* drift, the chrony/FTSP family[^ntp][^ftsp-nc] — turns them into a stable estimate. Cadence piggybacks on the agent's sync cycle; the traffic is a few bytes per exchange, negligible even at MVP scale.
+- **Discipline targets a per-rete virtual clock — the OS clock is never touched.** The agent maintains rete time as an offset-plus-rate function over the host's monotonic clock; flor components stamp reports and check certificate validity against *rete time*. Three reasons this is a rule, not a preference: a node enrolled in several retes needs several network clocks (one per trust domain — the [multi-rete precedent](/docs/implementation/c0-tended-tunnels/mgmt-plane#multi-rete-on-a-single-node)); disciplining the OS clock needs privileges and collides with whatever else the host runs (the operator's business, not the rete's); and it mirrors the domain separation the [bridge](../time-sync#two-clock-domains) already imposes — each clock owned at its layer. The virtual clock is **monotonic**: small corrections slew, backward steps never happen, a forward step is allowed only at [bootstrap](#bootstrap).
+- **Uncertainty is part of the value.** The clock API returns an interval, not a point: *rete time t, ± ε* — where ε comes from the filter and grows in holdover. Spanner's TrueTime[^truetime] made this shape famous; here it lets the Coordinator weigh telemetry by the quality of the clock that stamped it, and makes holdover degradation explicit instead of silent.
+
+## Why not an NTP/PTP deployment
+
+To be fair first: NTP's *architecture* — client-server, hierarchical, a reference disciplining leaves — is exactly ours, and its algorithms are proven; we reuse them. What is declined is the *deployment shape*:
+
+1. **A parallel, unauthenticated trust surface.** Time influences certificate validity, so time input is security input — it must arrive authenticated. Plain NTP isn't; NTS[^nts] fixes that with a parallel credential system, which is precisely what Florete forbids elsewhere (the R3 rule: no credentials outside the rete's X.509/SPIFFE trust). We already own an authenticated channel to the natural reference; using anything else creates a second trust plane for a security-relevant input.
+2. **A daemon and config outside the facade.** chrony/ntpd per node means per-node configuration that no compiled artifact describes and no signature covers — exactly the drift the [config model](/docs/implementation/adr/0009-config-compiled-facade) exists to prevent. In this design, time distribution has *no configuration surface of its own*: it inherits the agent's.
+3. **PTP assumes the path cooperates.** IEEE 1588's precision comes from hardware timestamping and transparent/boundary clocks at every hop[^ptp-nc]; our hops are userspace proxies. PTP over an overlay degrades to NTP-quality while keeping PTP's operational weight.
+4. **TDMA paths bias the math.** Two-way delay estimation assumes symmetric paths. A half-duplex or TDMA segment gates the return direction (the [E3](../experiments) effect), turning asymmetry into a *systematic offset error*, not noise. Generic NTP can neither see nor correct this. Our shape can: the error stays within the ms-class budget for MVP; the **Coordinator can correct it** where it matters, since it uniquely knows topology and per-link telemetry, radio latencies included (an assist no generic time server has — future refinement); and the [slot-clock assist](#the-slot-clock-assist-extension-not-baseline) bypasses the biased segment entirely.
+
+In one line: **decline the protocol, keep the math.**
+
+## Time is a bounded ctrl decision
+
+The Florete-native piece. Wrong time is not merely inconvenient — a clock dragged far enough manipulates certificate validity, so time assertions get the same treatment as forwarding tables: **ctrl-class decisions, verified locally against operator-signed bounds** before the agent applies them.
+
+- **Mgmt bounds on time**: maximum step, maximum slew rate, maximum accepted uncertainty — a bounds vocabulary grown feature-by-feature like every other ([the typed-rule discipline](/docs/implementation/c1-manual-mesh/mgmt-plane)).
+- **The signed floor**: every verified mgmt/ctrl artifact carries a signed `generated_at` — a **cryptographically backed lower bound on now**. The agent never accepts rete time earlier than the newest signed artifact it holds; ordinary operator activity keeps raising the floor for free.
+- **Oscillator sanity**: an offset trajectory implying absurd local drift (a host crystal is ppm-class, not percent-class) is rejected on physics alone.
+- **Out-of-bounds assertion** → reject, hold last-known-good estimate, raise an alarm — the standard ctrl-rejection behavior.
+
+This slots time directly into the [hijacked-CP analysis](/docs/implementation/c1-manual-mesh/ctrl-plane#what-hijacked-cp-can-and-cannot-do--the-security-tradeoff): a hijacked Time service can skew rete time only *slowly* (slew bounds) and only *forward of the floor* — and since Florete revocation is membership in signed state rather than certificate expiry, stretching validity windows buys an attacker little. What remains is telemetry-correlation skew: observability damage. The class-level summary holds — **access survives; observability degrades** — which is the DoS-class outcome the bounded-CP model promises.
+
+## Sources: how the Coordinator gets its time
+
+The [slot clock's ladder](../slot-clock#the-source-priority-ladder) pattern, applied centrally — a selection policy at the Time service, nothing on the wire:
+
+1. **External UTC at the reference** — the Coordinator's host is NTP-disciplined (cloud) or fed by operator time infrastructure. UTC discipline happens *at the reference only*; it is never deployed rete-wide.
+2. **A GNSS-fed member node** — the source flows *upward*: an agent whose host carries GNSS/PPS reports it as a candidate source with quality metadata; the Time service adopts it. The *reference* stays the Coordinator; the *source* is a node — the same distinction as rank-0 designation being a ctrl decision.
+3. **None** — the Coordinator's host clock free-runs: rete time stays internally consistent and drifts from UTC, which everything internal tolerates; the drift is visible in the uncertainty the API reports.
+
+## Degradation
+
+- **Coordinator unreachable** → **holdover**: the agent free-runs on its last offset-and-drift estimate, ε growing at oscillator rate (~20 ppm ≈ 1.7 s/day) — telemetry correlation degrades gracefully and certificate checks tolerate days of it. No re-election machinery at baseline: nothing at ms class needs a fast replacement reference, which is exactly why the [slot clock's](../slot-clock#the-time-source-graph) rank-tree machinery is *not* replicated here. If coordinator-less operation ever needs tight cross-node time, that machinery — a rank tree over links, local rule, monotonicity — is the ready-made shape, at ms scale; deliberately deferred.
+- **Partition (B1+)**: an emergent partition-local Coordinator ([Coordinator evolution](/docs/implementation/b1-cloud-control/coordinator#architecture-options-and-evolution)) brings a partition-local time reference with it; on merge, rete time re-converges like any other ctrl state — slew-bounded, no step.
+- **Distributed Coordinator (B1+)**: replicas agree on time internally (consensus among themselves — the Time service's own problem) and present **one logical time** outward; nothing on the agent side changes.
+
+## The slot-clock assist (extension, not baseline)
+
+Where a scheduled radio [sync domain](../glossary#sync-domain) exists, radio time is a µs-class timebase shared by every member — and the frame-N ↔ host-time mapping is [already telemetry](../time-sync#two-clock-domains). That composes into a time-transfer path: a node holding a good network-clock estimate publishes its mapping; any member of the same domain hears frame N and transfers rete time across the radio at µs quality — **bypassing the TDMA path-asymmetry bias entirely**, since no round trip is involved. Constraints keep it an extension: it works only within a sync domain, only on scheduled MACs, and the baseline must close without it — the exact status GNSS has in the slot clock's ladder. (The symmetry is stated in the [hub](../time-sync#ownership-and-mutual-acceleration): each domain can accelerate the other; neither depends on the other.)
+
+## Bootstrap
+
+The circularity: validating the Coordinator's certificate needs time; getting time needs that connection. Breaking it uses material the node already holds:
+
+- **The signed floor, again.** The enrollment bundle and any previously verified artifacts give a signed lower bound on now *before any connection exists* — enough to reject long-expired material and to pass validity checks in the common case. This is Roughtime's[^roughtime] coarse-then-tight shape, with the coarse bound derived from already-pinned signed material instead of a new protocol.
+- **Step once, then slew.** First contact validates the pinned identity ([ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)) against the floor-based clock with a relaxed validity window; the first in-bounds time fix may **step** the virtual clock forward once; thereafter strict validation and slew-only discipline apply. The exact relaxed-window semantics are an open question below.
+
+## Known approaches
+
+| System | What it is | What we take |
+|---|---|---|
+| NTP / chrony[^ntp] | The Internet's client-server time hierarchy; chrony's regression-based discipline | The on-wire arithmetic and the filter/discipline algorithms — run *inside* our authenticated channel; the deployment shape declined |
+| NTS[^nts] | Authenticated NTP (TLS-derived keys) | The confirmation that time needs authentication — and why we decline it: it is a parallel credential system, and we already own an authenticated channel |
+| IEEE 1588 PTP[^ptp-nc] | Hardware-timestamped master-slave sync with on-path transparent clocks | The reminder that precision comes from the *path's cooperation* — which an overlay doesn't have; inapplicable here |
+| Roughtime[^roughtime] | Signed coarse time, designed for certificate-validity bootstrapping | The bootstrap shape: coarse-then-tight; our coarse bound comes from already-signed artifacts instead of a new protocol |
+| Spanner TrueTime[^truetime] | A clock API returning uncertainty intervals, GPS+atomic-backed | Uncertainty as first-class: rete time is *(t, ± ε)*, and ε grows honestly in holdover |
+| HLC[^hlc] | Hybrid logical clocks — causal counters bounded to physical time | Related art for "correctness from counters": if telemetry ever needs causal ordering, HLC-style stamps slot in without touching this design |
+
+## Open questions
+
+- Wire shape of the exchange (piggyback on the sync cycle vs a dedicated lightweight stream) and the cadence policy.
+- Filter/discipline algorithm choice and the uncertainty model — what ε the API reports and how it composes with holdover.
+- The bounds vocabulary for time (max step, max slew, max uncertainty) — grown like all bounds; which parts are mgmt vs ctrl vs local constants.
+- GNSS-node-as-source: the reporting format, quality metadata, and PPS handling at the host.
+- Coordinator-assisted asymmetry correction from topology + telemetry — value vs complexity, and whether the slot-clock assist makes it moot on radio segments.
+- Bootstrap details: relaxed-window semantics at first contact, the step-once rule, interaction with enrollment tooling.
+- Telemetry stamps: plain rete time or HLC-style causal stamps.
+- The Time service's internals in the distributed Coordinator (consensus time) and its northbound API — B1 ([Coordinator open questions](/docs/implementation/b1-cloud-control/coordinator#open-questions-deferred)).
+
+[^ntp]: [RFC 5905 — NTPv4](https://datatracker.ietf.org/doc/rfc5905/); [chrony](https://chrony-project.org/) is the modern reference implementation, notable for regression-based offset/drift estimation that outperforms the classic PLL under jittery links.
+[^ftsp-nc]: The same regression family as FTSP's drift estimation — see the [Slot Clock's known approaches](../slot-clock#known-approaches).
+[^nts]: [RFC 8915 — Network Time Security for NTP](https://datatracker.ietf.org/doc/rfc8915/) — authenticates NTP with TLS-derived keys; a parallel credential system from Florete's standpoint.
+[^ptp-nc]: [IEEE 1588 Precision Time Protocol](https://en.wikipedia.org/wiki/Precision_Time_Protocol) — sub-µs over cooperating LANs via hardware timestamping and transparent clocks at each hop.
+[^roughtime]: [Roughtime](https://datatracker.ietf.org/doc/draft-ietf-ntp-roughtime/) — cryptographically signed coarse time (hundreds of ms), designed so a device can validate certificates before it has trustworthy fine time.
+[^truetime]: Corbett et al., *Spanner: Google's Globally-Distributed Database* (OSDI 2012) — TrueTime exposes clock uncertainty as an interval API backed by GPS and atomic references.
+[^hlc]: Kulkarni et al., *Logical Physical Clocks* (OPODIS 2014) — hybrid logical clocks: causality-preserving counters bounded to physical time, used where ordering matters more than instants.

@@ -3,7 +3,7 @@ title: Radio MACs
 description: MAC families, RRA placement, and evolution toward advanced radio setups
 ---
 
-How radio MAC models map onto Florete's control architecture. Companion to the [Link Contract](../link-contract) — this page covers its resource-contract requirements R8–R9 and the [RRA](../glossary#rra) extension. Terms: [Glossary](../glossary).
+How radio MAC models map onto Florete's control architecture. Companion to the [Link Contract](../link-contract) — this page covers its resource-contract requirement R9 and the [RRA](../glossary#rra) extension; R8's design lives in [Time Synchronization](../time-sync). Terms: [Glossary](../glossary).
 
 ## Two MAC families
 
@@ -76,7 +76,7 @@ Each studied against three fixed questions: *where does the allocator live, what
 - Vendor/third-party slow-path schedulers as rete apps: their interface to the Coordinator, and how their decisions enter the ctrl chain.
 - RRA ↔ TCE/PCE coupling: one joint optimization or staged?
 - The ctrl-artifact schema for radio decisions (power caps now; grants, slot maps, beam schedules later — a `radio` payload alongside forwarding state?).
-- Time: source of synchronization, Time service ↔ TDMA clock relationship (R8).
+- Time: the two-clock-domain split is fixed in [Time Synchronization](../time-sync), with the designs in [Slot Clock](../slot-clock) and [Network Clock](../network-clock); open questions live there.
 
 [^dot11s]: [IEEE 802.11s](https://en.wikipedia.org/wiki/IEEE_802.11s) — the 802.11 amendment for link-layer mesh networking (path selection at L2).
 [^sixtisch]: [RFC 9030 — An Architecture for 6TiSCH](https://datatracker.ietf.org/doc/rfc9030/); the distributed Minimal Scheduling Function is [RFC 9033](https://datatracker.ietf.org/doc/rfc9033/).

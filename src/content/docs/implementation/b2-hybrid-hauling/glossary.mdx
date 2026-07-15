@@ -29,6 +29,30 @@ A scheduled transmission opportunity: a time slot in TDMA, a time-frequency reso
 
 Resource assignments valid across many frames, revised at ctrl-plane timescale (seconds); the Coordinator-side share of scheduled-MAC RRA.
 
+### Slot clock
+
+The µs-class clock disciplining a [scheduled MAC's](#scheduled-mac) frame and [slot](#slot) boundaries — purely relative phase plus a shared frame counter, no absolute time. Lives in the radio module, below R10; one per [sync domain](#sync-domain). One of the two clock domains of [Time Synchronization](../time-sync); design: [Slot Clock](../slot-clock). The other domain is the [network clock](#network-clock).
+
+### Network clock
+
+Rete-wide time (ms-class): certificate validity, timestamps of telemetry *reports* — the radio-level events inside them are stamped in [slot-clock](#slot-clock) units. A per-rete **virtual clock** maintained by the agent (the host OS clock is never touched), referenced to the Coordinator's Time service and disciplined over the existing mTLS channel; time updates are bounded ctrl decisions. Design: [Network Clock](../network-clock). Never disciplines a [slot clock](#slot-clock); the mapping between the two is telemetry. See [Time Synchronization](../time-sync).
+
+### Sync domain
+
+The set of nodes sharing one [slot clock](#slot-clock) — frame phase and frame numbering — over a radio medium. Independently synchronized groups that meet are partitions of a domain and merge by the source-priority ladder ([Slot Clock](../slot-clock#degradation-ladder)).
+
+### Time source / time rank
+
+A node's **time source** is the neighbor it tracks its [slot clock](#slot-clock) against; **time rank** is a single ordered value encoding the root's source class (high-order — the priority ladder folded in) and quality-weighted distance from the reference, rank 0 (low-order). Sources and ranks are Coordinator-provisioned ctrl state (with local selection among provisioned sources) or, in fallback, locally derived from beacons by lowest audible rank; **rank monotonicity** — never sync to a source of rank ≥ your own — keeps the time-source graph loop-free and locally verifiable. See [Slot Clock](../slot-clock#the-time-source-graph).
+
+### Holdover
+
+Free-running on the local oscillator after losing every time source, with a drift bound growing over time; guards widen with the bound until the schedule is no longer trustworthy. Step 3 of the slot-clock [degradation ladder](../slot-clock#degradation-ladder); the [network clock](#network-clock) has its own, gentler holdover (ppm-scale drift, tolerated for days).
+
+### Ranging
+
+Measuring propagation delay to a neighbor via a two-way MAC-level exchange, to compensate transmit timing (cellular's *timing advance*). A radio primitive below R10, run at join and re-run under mobility; the one part of slot sync that passive listening cannot provide. See [Slot Clock](../slot-clock#ranging).
+
 ### Node fast-path
 
 The node-local µs–ms layer of the [decision-authority model](/docs/implementation/c0-tended-tunnels/mgmt-plane#decision-authority-layers): decisions too fast for any coordinator. They live in the data-plane components — the mesh-vertex (path failover/FRR), the link-vertex and the radio driver/module (per-slot radio decisions) — while `flor agent` (the mgmt/ctrl receiver and supervisor) makes none of them. See [Radio MACs > Node-side RRA placement](../radio-macs#node-side-rra-placement).
