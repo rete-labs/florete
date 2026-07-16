@@ -19,7 +19,7 @@ retectl ca init --out <dir>                 # once per rete: generate CA keypair
 retectl ca sign <csr> --name <name>
                       --kind <user|service|node|management-plane|control-plane|vertex>
                       [--scope rete|node]
-                                            # sign a CSR; append to enrollment.log.
+                                            # sign a CSR into an X.509 cert.
                                             # All six kinds are recognised from day one;
                                             # `vertex` and `control-plane` aren't exercised
                                             # at runtime in C0 (see ADR-0005).
@@ -29,12 +29,13 @@ retectl ca sign <csr> --name <name>
                                             #                   --name primary
                                             # produces the keypair `retectl publish` signs with.
 retectl issue-bundle --node <node-name> --rete <coordinator-url>
-                     [--csr <csr-bundle>] [--validity <duration>] [--out <bundle>]
+                     [--validity <duration>] [--out <bundle>]
                                             # per-node enrollment bundle: CA cert, node
                                             # identity, and every workload identity
                                             # (users/services) declared in YAML to run
                                             # on this node, plus coordinator bootstrap.
-                                            # Flow B: consume `flor id create` CSR bundle.
+                                            # Flow A only in C0 (operator-generated keys);
+                                            # --csr / Flow B deferred (see below).
 
 retectl validate [--repo <dir>] [-f <file|glob>…]
                                             # schema + cross-ref + access consistency
@@ -62,7 +63,8 @@ Notes:
 flor id create --node <node> [--principal <kind>/<name>]...
                                             # generate keypairs locally for the node and
                                             # any workload principals to run on it;
-                                            # package CSRs into a bundle (Flow B)
+                                            # package CSRs into a bundle (Flow B —
+                                            # low-level primitive; not in the C0 path)
 flor enroll <bundle> [--as <scope>]         # bootstrap: install certs, install initial
                                             # compiled artifacts, start agent
                                             # (two-step: bundle → sync)
@@ -74,11 +76,11 @@ flor agent run    [--rete <scope>]          # the supervisor daemon (system serv
                                             # reads <root>/mgmt/agent.json; auto-detects
                                             # the scope if only one rete is enrolled;
                                             # supervises one `flor vertex run` in C0
-flor agent sync   [--rete <scope>]          # select rete by scope name;
-                  [--commit-timeout <d>]    # auto-detected if only one rete enrolled
-                  [--dry-run]               # default timeout 5m; 0 disables
-                  [--confirm]               # show artifact diff, no restart
-                                            # finalise a pending commit-timeout sync
+flor agent sync   [--rete <scope>]          # fetch + verify + install latest artifacts,
+                  [--dry-run]               # then restart the vertex. Scope auto-detected
+                                            # if only one rete enrolled. --dry-run shows
+                                            # which version would install, no restart.
+                                            # (commit-timeout/--confirm land in C1)
 flor agent status [--rete <scope>]          # local agent state + active artifact version
 
 flor vertex run   [--rete <scope>]          # the data-plane daemon spawned by the agent;
@@ -93,10 +95,10 @@ flor vertex run   [--rete <scope>]          # the data-plane daemon spawned by t
 Notes:
 
 - **flor home.** Node-local commands resolve their install root from `<flor-home>`: `$FLOR_HOME` if set, otherwise `$HOME/.flor`. Enrolled retes live at `<flor-home>/retes/<scope>/`. The `$FLOR_HOME` override exists mainly to relocate the tree for development and CI (currently at `<flor-repo>/.flor-dev/`, git-ignored); production uses the `$HOME/.flor` default.
-- `flor id create` runs on the target machine for **Flow B** (security-purist) enrollment; generates keypairs for the named node + any principals hosted on it, emitting a CSR bundle for the operator to sign. The operator tells the user which principal names to include (out-of-band), so the bundle matches what `users.yaml` + `services.yaml` declare for that node.
+- `flor id create` is the low-level primitive for **Flow B** (security-purist) enrollment; it generates keypairs for the named node + any principals hosted on it, emitting a CSR bundle for the operator to sign. **Flow B is deferred from the C0 enrollment path** — an open question for C1 (see [C1 Scope](/docs/implementation/c1-manual-mesh/scope)); the command stays in the surface as a primitive, but C0 onboarding uses Flow A only. When exercised, the operator tells the user which principal names to include (out-of-band), so the bundle matches what `users.yaml` + `services.yaml` declare for that node.
 - `flor enroll <bundle>` is a **two-step bootstrap**. **Step 1**: unpack the bundle (CA cert + node cert + key + workload certs + keys + coordinator URL + expected coordinator SPIFFE ID + a current `agent.json` and `vertices/flor.json`) and write everything to `~/.flor/retes/<scope>/`, where `<scope>` is the rete name embedded in the bundle (override with `--as <scope>` if it collides with an already-enrolled rete). This gives the node enough material to start running immediately. **Step 2**: start `flor agent run`, which brings up the vertex and then runs `flor agent sync` once to refresh against whatever the rete currently runs. Re-keying (or adding a new workload on this node) re-runs the same command with a freshly-issued bundle.
-- `flor agent sync` fetches `<this-node>/{agent.json, vertices/flor.json}` from the rete's coordinator over Florete (acting as the `node/<node>` principal via the local vertex's SOCKS5), installs the new artifacts, and restarts the supervised vertex with a commit-timeout guard. No compilation on the node — artifacts were pre-compiled by the operator and published to the coordinator.
-- **`--commit-timeout` is on by default** (5 min). New artifacts become active; if `flor agent sync --confirm` isn't run within the timeout, the previous artifacts are restored and the vertex restarts. Cisco IOS `commit confirmed` pattern.
+- `flor agent sync` fetches `<this-node>/{agent.json, vertices/flor.json}` from the rete's coordinator over Florete (acting as the `node/<node>` principal via the local vertex's SOCKS5), installs the new artifacts, and restarts the supervised vertex. No compilation on the node — artifacts were pre-compiled by the operator and published to the coordinator.
+- **No commit-timeout / auto-rollback in C0.** A sync activates the new artifacts and restarts the vertex; there is no confirm-or-roll-back guard. The Cisco-IOS-style `commit confirmed` safety net lands in [C1](/docs/implementation/c1-manual-mesh/scope). In C0 a bad sync is bounded by keeping an out-of-band emergency-access path (see [Distribution & Reload · Safety Net](../distribution-and-reload#safety-net-server-nodes)), which suffices for limited pilots that never rely on Florete as the single access path.
 - `flor agent run` is the long-running supervisor process per node. It reads `<root>/mgmt/agent.json` (where `<root> = ~/.flor/retes/<scope>/`) and spawns a `flor vertex run --rete <scope> --name <name>` per entry in its `vertices` list. In C0 that's one child; C1 adds a second vertex for the mesh-flor layer. How exactly the agent launches vertices (direct fork, systemd unit, future local workload-runtime interface) is intentionally not pinned here; the runtime contract is just "a vertex starts when given its scope and name".
 - `flor vertex run` is the data-plane daemon. Given `--rete <scope>` (the same scope the agent runs under) and `--name <name>`, it resolves the rete root `~/.flor/retes/<scope>/`, reads `mgmt/vertices/<name>.json` (and, for a mesh vertex, the `ctrl/` sibling), resolves its `ca.crt` and per-principal certs/keys against that root, and runs the workloads/io/transport-endpoint/connection-manager described there. It does **not** re-verify signatures (the agent is the sole verifier); apart from resolving its own scope directory it is unaware of the agent, the coordinator, and the rest of the rete.
 - `flor agent status` reads from a **per-rete Unix socket** (`~/.flor/retes/<scope>/agent.sock`) exposed by that rete's agent. `--rete <scope>` selects which socket to use; auto-detected when only one rete is enrolled. A future tray-icon GUI (B1+) will be another client of the same socket — CLI and GUI share the same daemon API.
@@ -104,6 +106,7 @@ Notes:
 **Explicitly deferred from C0**:
 
 - Any YAML-mutation subcommands.
+- Flow B / CSR-based enrollment wired into onboarding (`retectl issue-bundle --csr`, `flor id create`) — open question for C1.
 - Multi-hop paths and label allocation (C1 feature).
 - SIGHUP hot reload.
 - CRL / OCSP. (Revocation is by name removal + `flor agent sync`.)

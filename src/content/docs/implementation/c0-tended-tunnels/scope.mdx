@@ -12,7 +12,7 @@ The resulting Florete system must be suitable for production usage in a small IT
 - 3-5 server nodes, 10-20 services, 10-20 users
 
 Limitations:
-- No active control plane server
+- No *dynamic* control plane: a passive **coordinator** ([Coordinator](/docs/implementation/c0-tended-tunnels/mgmt-plane/coordinator)) stores and serves operator-signed state, but makes no runtime traffic decisions
 - Enrolled & maintained manually by an operator (member of Florete Core Team) with the help of IT admin of the design partner
 - All **initiators** (users, and services acting as callers) can reach **targets** (services) by 1-hop connections (i.e. no relaying is supported)
 - Only TCP services are supported (can be located at the nodes as well as in internal IP LAN)
@@ -23,7 +23,7 @@ Limitations:
 
 ### Service Mesh
 
-In order to create a service mesh, we need per-node proxies. This is common service mesh design pattern we follow. We call our per-node proxy workload `flor` (agent `flor`).
+In order to create a service mesh, we need per-node proxies. This is a common service mesh design pattern we follow. Our per-node workload is `flor`, split into two processes: a **`flor agent`** (supervisor — owns the node principal, syncs signed state, launches and restarts the data plane) and a **`flor vertex`** (the data-plane proxy that terminates mTLS and forwards traffic). C0 runs one `flor vertex` per node under one `flor agent`; see [Management Plane](/docs/implementation/c0-tended-tunnels/mgmt-plane) for the split.
 
 The C0. Tended Tunnels milestone doesn't include real multi-hop mesh. It does include a simple set of tunnels between initiators and targets - QUIC connections over UDP. But from the user PoV it already looks like a service mesh. The only visible limitation is the tunnels are 1-hop. We expect that for up to 90% of small IT companies this is actually enough.
 
@@ -62,7 +62,7 @@ We need an ability to support clients and servers from IP LAN - like smart home 
 We need config files for manual configuration of the rete. And CLI utilites to manage it. What must be configurable:
 - identities of users and services
 - UDP links of vertices (IPs and ports)
-- location of services at vertices (no service discovery, so this config should be duplicated among all nodes)
+- location of services at vertices (no service discovery; the operator compiles this into per-node artifacts)
 
 We need automated user and node enrollment, and config deploy to manage production environments.
 
@@ -77,6 +77,8 @@ We need means to detect and resolve problems that arise in production environmen
 
 For C0 we need the bare minimum to run the production pilots successfully.
 
+**C0 observability is node-local.** `flor` logs to stderr, captured by the host's system logger (journald on Linux, launchd on macOS); the user guide documents how to view and export those logs, and `flor agent status` gives a local state readout. Nothing is shipped to an external collection server in C0 — that upload path arrives with B1's coordinator.
+
 ### Environments
 
 #### Dev Env
@@ -86,6 +88,33 @@ We need a local dev environment for the system. Minimally we can have it emulate
 #### Test Env
 
 We need a test environment that is not limited to a single PC nor local containers/VMs. Minimally we require a pilot-like Florete rete with multiple VMs (2 cloud providers will be nice), services, users. Optimally we'd need a CI/CD process to deploy to them.
+
+## Deliverables
+
+What C0 ships, one line each:
+
+- **`retectl`** — the operator's authoring CLI (CA operations, validate, compile, `issue-bundle`, `publish`). See [CLI Surface](/docs/implementation/c0-tended-tunnels/mgmt-plane/cli).
+- **`flor agent`** — the per-node supervisor: owns the node principal, runs `flor agent sync`, launches and restarts the vertex. See [Management Plane](/docs/implementation/c0-tended-tunnels/mgmt-plane) and [CLI Surface](/docs/implementation/c0-tended-tunnels/mgmt-plane/cli).
+- **`flor vertex`** — the data-plane proxy that terminates mTLS and forwards traffic. See [Data Plane](/docs/implementation/c0-tended-tunnels/data-plane).
+- **`coordinator`** — the store-and-serve management-node service (third bin target in the flor crate). See [Coordinator](/docs/implementation/c0-tended-tunnels/mgmt-plane/coordinator).
+- **Installer** — `install.sh` for Linux and macOS (no Windows in C0; see [Cross-platform](#cross-platform)).
+- **Example `my-rete` repo** — a template rete with reserved roles/groups seeded, used for dogfooding. See [Source Layout](/docs/implementation/c0-tended-tunnels/mgmt-plane/source-layout).
+- **Operator playbook** — bootstrap, issuing bundles, publishing a service, maintenance window, emergency rollback.
+- **User guide** — installing `flor`, enrolling, and how to view/export logs when reporting a problem.
+
+## Release Gate
+
+C0 ships when it passes **our own internal tests** and we are **dogfooding** it — running our own rete for our daily-work services. That is the gate.
+
+The design-partner **pilot happens after C0 ships**, not before: it validates the release in the field, and the issues it turns up and feedback it gathers shape C1. The pilot is deliberately *not* a pre-ship gate — we ship first, then pilot.
+
+## Tracking
+
+The concrete C0 work items live on GitHub:
+
+- [rete-labs C0 progress board](https://github.com/orgs/rete-labs/projects/2/views/6) — the cross-repo release phase plan.
+- [rete-labs/florete · C0. Tended Tunnels](https://github.com/rete-labs/florete/milestone/3) — design & docs.
+- [rete-labs/flor · C0. Tended Tunnels](https://github.com/rete-labs/flor/milestone/1) — code.
 
 ## Development Constraints
 
@@ -103,9 +132,9 @@ So we must produce a design and implementation that is secure from day one.
 
 ### Cross-platform
 
-For C0, our target OSes are Linux, MacOS and Windows. But later on (B1+) we'd like to support mobile OSes (Andoid, iOS, even HarmonyOS).
+For C0, our target OSes are **Linux and macOS**. Windows will be added in [C1](/docs/implementation/c1-manual-mesh/scope) — the design stays portable (OS-agnostic core, thin OS-specific service wrappers), but a Windows deliverable is not part of C0. Later on (B1+) we'd like to support mobile OSes (Android, iOS, even HarmonyOS).
 
-So we need to design our implementation an a way that is portable to different OSes without much effort.
+So we need to design our implementation in a way that is portable to different OSes without much effort, even where a given OS is not a C0 target yet.
 
 ## No-Goals
 
@@ -116,3 +145,16 @@ We don't want to build abstract Portal APIs in Rust. That was checked and it wor
 We don't want to make an execution environment for workloads and dynamic components etc. This task is out of scope for C0.
 
 We are not doing active control plane features, service discovery and various adaptive mechanics in C0.
+
+### Deferred to later milestones
+
+These are deliberately out of C0 and picked up (or decided) later:
+
+- **Windows support** — lands in [C1](/docs/implementation/c1-manual-mesh/scope). C0 targets Linux and macOS.
+- **`enrollment.log`** (append-only sign/revoke audit) — introduced in [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the git history of the rete repo is the audit trail.
+- **Flow B / CSR-based enrollment** (principal-generated keypairs) — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). C0 enrolls via Flow A only (operator-generated keypairs).
+- **Encrypted bundles & one-time-URL delivery** — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the enrollment bundle is a plain file the operator delivers over any out-of-band channel; it is bearer material.
+- **Hosted landing page** — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). C0 ships an install guide in the docs instead.
+- **External metrics collection & upload** — an upload/collection server is C1+/B1 (B1's coordinator becomes the consumer). C0 keeps observability node-local (see [Maintenance](#maintenance)).
+- **`flor agent sync` commit-timeout / auto-rollback** — the Cisco-IOS-style "confirm within a window or auto-roll-back" safety net moves to [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the blast radius of a bad sync is bounded by keeping an out-of-band emergency-access path (see [Distribution & Reload · Safety Net](/docs/implementation/c0-tended-tunnels/mgmt-plane/distribution-and-reload#safety-net-server-nodes)), not by auto-rollback — pilots are limited and never rely on Florete as the single access path.
+- **ACL-only hot reload** — near-term post-C0. C0's update mechanism is a plain restart on sync; the agent is built with swappable ACL tables so this can land later without a redesign.

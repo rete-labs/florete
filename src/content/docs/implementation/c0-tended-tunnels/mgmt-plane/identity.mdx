@@ -68,8 +68,8 @@ Key points:
 - **Authorization**: ACLs (roles → groups → services) operate on the authenticated principal name.
 - **Private keys**: stay on the machine that generated them (`~/.flor/retes/<scope>/<name>.key`). Never in the repo.
 - **Signed certs**: delivered to the principal that holds the matching private key; stored locally at `~/.flor/retes/<scope>/<name>.crt`. Not committed to the repo. CA cert (`ca.crt`) is the only shared cert in git.
-- **Audit**: `enrollment.log` in the repo records every sign event (operator identity, principal name, role, timestamp, cert fingerprint). Append-only, optionally GPG-signed by the operator.
-- **Revocation in C0**: remove the principal's entry from `users.yaml` / `services.yaml` and append a revoke-event to `enrollment.log`. Operator runs `retectl compile` → `retectl publish`. The next `flor agent sync` drops the principal from every affected node's ingress table, so even if the revoked private key is still on a machine somewhere, it can no longer pass any peer's access check. CRL/OCSP is deferred until B1.
+- **Audit**: in C0 the rete repo's git history is the enrollment/revocation record — each sign or removal is a commit (operator, principal, role, and timestamp in the commit metadata, plus the diff). A dedicated append-only `enrollment.log` with cert fingerprints arrives in [C1](/docs/implementation/c1-manual-mesh/scope).
+- **Revocation in C0**: remove the principal's entry from `users.yaml` / `services.yaml`. Operator runs `retectl compile` → `retectl publish`. The next `flor agent sync` drops the principal from every affected node's ingress table, so even if the revoked private key is still on a machine somewhere, it can no longer pass any peer's access check. CRL/OCSP is deferred until B1.
 
 ### CA Key Protection
 
