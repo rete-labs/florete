@@ -5,7 +5,7 @@ description: Management plane additions for C1 Manual Mesh
 
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 
-This milestone inherits the management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/mgmt-plane/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` with commit-timeout, same naming scheme, same atomic-artifact distribution.
+This milestone inherits the management plane design from [C0. Tended Tunnels](../../c0-tended-tunnels/mgmt-plane/) wholesale: same git repo as source of truth, same CA and enrollment bundles, same `flor agent sync` mechanics, same naming scheme, same atomic-artifact distribution. (C1 additionally introduces the commit-timeout / auto-rollback safety net on sync — deferred from C0; see [Scope](../scope#platform-and-operational-additions).)
 
 C1 is also where the **ctrl-plane artifact stream** appears for the first time, even though no autonomous control-plane service exists yet. In C1 the ctrl artifact is operator-produced via `retectl compile` (degenerate case — every "decision" equals the corresponding bound), but it travels in its own envelope, has its own signature, and is verified separately by each agent against bounds expressed here in mgmt. This page covers the **bounds**; ctrl mechanics and how decisions are derived from them live in [Ctrl Plane](../ctrl-plane/).
 
@@ -41,7 +41,7 @@ This is also why publication should always go through mesh-flor in the standard 
 - **Per-vertex FlorIO sockets** — each vertex that exposes FlorIO gets a socket at `/run/flor/<rete>/vertices/<vertex-name>.sock`. The compiler derives the path from the rete name and vertex name declared in `nodes.yaml`; no separate `rete.yaml` config is needed.
 - **Additional validator rules** — link validity, address feasibility, multi-hop path validity, principal-role coherence for services that appear as path initiators. (Label feasibility moves to ctrl-plane.)
 
-Everything else (CA, per-node bundles, revocation, `flor agent sync --commit-timeout`, coordinator-fronted distribution, naming, version-stamped envelope, SOCKS5 proxy, emergency-access safety net) is identical to C0.
+Everything else (CA, per-node bundles, revocation, `flor agent sync`, coordinator-fronted distribution, naming, version-stamped envelope, SOCKS5 proxy, emergency-access safety net) is identical to C0 — except that C1's sync gains the commit-timeout / auto-rollback guard noted above.
 
 ## Source layout additions
 

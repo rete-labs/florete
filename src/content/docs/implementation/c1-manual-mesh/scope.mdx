@@ -56,6 +56,14 @@ Requiring dgram service is already a design decision, but rather obvious one: st
 
 Actual published services in links will be mesh-vertices, usually one per each link end. This may be taken in account and optimized for (i.e. no need for multi-service links really - they are not useful in practice).
 
+## Platform and Operational Additions
+
+C1 also picks up scope deferred from [C0](../../c0-tended-tunnels/scope):
+
+- **Windows support.** C0 targets Linux and macOS; Windows is a C1 deliverable. This is deliberately *more* work in C1 than it would have been in C0: it must cover C1's FlorIO local sockets (a Windows named-pipe story in place of Unix datagram sockets) **and** a Windows service story for `flor agent` (a Windows Service wrapper alongside the systemd/launchd ones). That trade was accepted knowingly when Windows was cut from C0. The design stays OS-agnostic at the core with thin OS-specific service wrappers.
+- **`enrollment.log`.** C1 introduces an append-only enrollment audit log — one sign-event per issued cert and one revoke-event per removal (cert fingerprint, timestamp, operator identity), committed alongside the YAML source. It supersedes C0's reliance on plain git commit history as the audit trail. Because C1 retes are stood up by a **clean reinstall** (there is no live C0→C1 migration), the log simply starts fresh at C1 enrollment — no backfill of C0-era events and no validator grace path for logless retes.
+- **Commit-timeout / auto-rollback on `flor agent sync`.** C1 adds the Cisco-IOS-style `commit confirmed` safety net that C0 left out: a sync activates the new artifacts under a confirm-within-a-window guard and auto-rolls-back to the previous artifacts if the operator doesn't `--confirm` in time; the rollback state must survive an agent crash mid-window. In C0 the blast radius of a bad sync was bounded only by the out-of-band emergency-access path — C1 makes rollback a first-class mechanism.
+
 ## Evolution Constraints
 
 ### Link Protocols
@@ -73,3 +81,11 @@ In addition to C0's list:
 - **Automatic multi-hop path derivation.** In C1, operators write paths by hand. Declarative derivation from topology + access is deferred post-C1.
 - **Priority / fallback paths.** Reserved syntax in path configuration, not implemented.
 - **Automatic role selection** on mesh-vertex links. Manual role configuration (originator / acceptor) is the only mode.
+
+## Open Questions
+
+Deferred from [C0](../../c0-tended-tunnels/scope) without a firm C1 decision yet — to be resolved as C1 is scoped:
+
+- **Flow B / CSR-based enrollment.** Should C1 add the principal-generated-keypair path (the principal makes its own keys, sends only CSRs, the operator signs them) so private keys never leave the principal's machine? C0 enrolls via Flow A only; the low-level `flor id create` primitive already exists but isn't wired into onboarding. See [C0 · Enrollment](../../c0-tended-tunnels/mgmt-plane/enrollment#per-node-enrollment) and [C0 · CLI Surface](../../c0-tended-tunnels/mgmt-plane/cli).
+- **Encrypted bundle & one-time-URL delivery.** Should C1 replace C0's plain out-of-band bundle file with an encrypted, short-lived, personalized-URL delivery? In C0 the bundle is bearer material (it carries private keys in Flow A) handed over any channel the operator trusts; hardening it adds a delivery/hosting mechanism to design.
+- **Hosted landing page.** Should C1 ship a per-rete, zero-backend landing page with platform install one-liners for end users, in place of C0's docs install guide?
