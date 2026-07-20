@@ -11,7 +11,7 @@ description: Validator rules and compile step for producing per-node artifacts i
 
 1. **Schema** — every file matches its JSON Schema.
 2. **Cross-references** — every node/service/group/role name referenced exists and is unique across the whole rete.
-3. **Principal registry** — every principal name (users, services, nodes; vertices in C1+) is unique across all principal kinds; no name collision across YAML files. Cross-kind disjointness also keeps the `.rete` DNS namespace unambiguous (see [ADR-0006](/docs/implementation/adr/0006-impl-mtls-in-quic-endpoint) for the `dns::format` mapping): without it, e.g. a service and a vertex sharing a short name on the same node would both render to `<name>.<node>.<rete>.rete`.
+3. **Principal registry** — every principal name (users, services, nodes; vertices in C1+) is unique across all principal kinds; no name collision across YAML files. Cross-kind disjointness also keeps the `.rete` DNS namespace unambiguous (see [ADR-0006](/docs/implementation/adr/0006-impl-mtls-in-quic-endpoint) for the `dns::format` mapping): without it, e.g. a service and a vertex sharing a short name on the same node would both render to `<name>.<node>.<rete>.rete`. Names must also be **filesystem-safe**, because principal leafs, vertex names, and workload names become file and socket names on nodes: the SPIFFE charset is enforced, uniqueness is case-insensitive (macOS/Windows filesystems), OS-reserved basenames (`CON`, `NUL`, `COM1`, …) are rejected, and `agent` is reserved for the supervisor (`manifest` is reserved as well, held for potential set metadata). The filesystem-safety constraints are a documented C0 shortcut — a file-backed-storage detail surfacing in YAML; a future store shim with reversible name encoding lifts them (see [Agent § Artifact handling](../agent#artifact-handling)).
 4. **Service placement** — every service's `at` field names a known node in `nodes.yaml`.
 5. **Management-node integrity** — services named `coordinator` and `coordinator-publisher` must exist in groups `coordinator-sync` and `coordinator-publish` respectively, both hosted on the same node (the management node) with a publicly-reachable link-vertex (a `kind: link, type: quic` entry with an `address`). If missing or malformed, validator fails with a clear message rather than silently producing artifacts that can't sync.
 6. **Reserved-name protection** — `node` and `operator` (roles), `coordinator-sync` and `coordinator-publish` (groups) must be present in the YAML with their canonical `allow` / member definitions. Validator fails if they're missing or redefined with different structure. The compiler never writes YAML — these live in the repo as part of the initial rete template.
@@ -27,37 +27,25 @@ Cert chain verification happens at runtime during mTLS, not at validate time —
 
 ## Compile Step
 
-`retectl compile` produces **two artifacts per node** in C0 — `agent.json` (consumed by `flor agent run`) and `vertices/flor.json` (consumed by `flor vertex run`) — placed under `<repo>/.flor/compiled/<node>/mgmt/`. The per-node `mgmt/` subdirectory is the only output tree in C0; C1+ adds a sibling `ctrl/` (see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/)). Both artifacts share a common envelope:
+`retectl compile` produces **two artifacts per ordinary node** in C0 — `agent.json` (consumed by `flor agent run`) and `flor.json` (the vertex config, consumed by `flor vertex run`) — placed flat under `<repo>/.flor/compiled/<node>/mgmt/`; the management node additionally gets `coordinator.json`, the coordinator's config, an opaque-payload artifact (see [Agent](../agent#supervision-contract)). `agent.json` doubles as the set's root — its inventory is the membership list and the uniform version stamp is the coherence check, so no separate set index exists (see [Agent § Node layout](../agent#node-layout)). The per-node `mgmt/` subdirectory is the only output tree in C0; C1+ adds a sibling `ctrl/` (see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/)). **The compile is whole-rete, and the previous compiled tree is the compiler's ledger**: for each node, `retectl` byte-compares every projected payload (and the set's membership) against the previous tree — bytes only, no payload parsing. An untouched node's files are re-emitted byte-identical, not re-signed, its version unmoved; a touched node gets `version = previous + 1` stamped into **every** artifact of its set, all re-signed. A per-node compile scope (`--node`) is deliberately absent: mgmt state is cross-node coupled (adding a service on one node edits others' egress rows), so a partial compile could desynchronize the tree from the source; whole-rete compile is cheap.
 
-**Paths in compiled artifacts are scope-relative.** `ca_cert_path`, `cert_path`, and `priv_path` values are bare filenames (`ca.crt`, `alpha.crt`, …). The agent resolves them against the rete install root (`retes/<scope>/`) at startup. This keeps artifacts portable: the same compiled JSON is valid regardless of what the operator named the rete scope locally, and a node joining multiple retes can hold each rete's artifacts in separate roots without any path collisions.
-
-The install root is **flat**: the bundle delivers `ca.crt` (and the per-principal cert+key files) directly into `retes/<scope>/`, regardless of how the repo organises them under `certs/`. The repo's `certs/management-planes/<name>.crt` shape is for human/audit organisation; the runtime sees only the flat install root, with mgmt-signer pubkeys delivered via `agent.json`'s `trust.authorized_mgmt_signers` rather than as on-disk files.
+**Artifacts carry no filesystem references.** Identity material is referenced by SPIFFE ID only and materialized on the node by the per-scope identity store (`ca.crt` at the scope root, `certs/<leaf>.crt` / `certs/<leaf>.key` per principal — see [Agent § Artifact handling](../agent#artifact-handling)); local sockets and paths are derived on the node from spawn-injected roots and names. This keeps artifacts fully portable: the same compiled JSON is valid whatever the operator named the rete scope locally, wherever the install root lives, and on any OS. The repo's `certs/management-planes/<name>.crt` shape is for human/audit organisation; mgmt-signer pubkeys reach nodes inside `agent.json`'s `trust.authorized_mgmt_signers`, never as on-disk files.
 
 ### Node runtime layout
 
-Everything `flor` reads at a node resolves against a **single rete root** — `retes/<scope>/` — so there is one base path, not several:
+The node-side layout — deployment modes, install and runtime roots, the identity store, immutable artifact sets activated by the `mgmt/current` pointer, and the agent's durable state — is owned by [Agent § Node layout](../agent#node-layout). What the compiled artifacts rely on:
 
-```
-retes/<scope>/
-├── ca.crt                     # plus per-principal <name>.crt / <name>.key (flat)
-├── alpha.crt
-├── alpha.key
-├── mgmt/
-│   ├── agent.json
-│   └── vertices/
-│       └── <name>.json        # one per vertex (e.g. flor.json)
-└── ctrl/                      # added in C1; absent in C0
-    └── vertices/
-        └── <name>.json        # only vertices with ctrl state (mesh)
-```
+- **One convention, located by name.** Within the active mgmt set, configs sit flat: `<name>.json` per workload — names are cross-kind unique and filesystem-safe, so the flat layout is collision-free. From C1 a mesh vertex's ctrl config lives outside the set, in the node's per-artifact slots (`ctrl/<name>@v<K>.json` — see [Agent § Node layout](../agent#node-layout)). `agent.json` lists only `{ name, run }` per workload; each workload receives its config's resolved path at spawn (`FLOR_ARTIFACT`), so consumers need no layout knowledge at all.
+- **Identity resolves through the store.** A workload entry names its principal by SPIFFE ID; the consumer loads `certs/<leaf>.crt` / `certs/<leaf>.key` by convention and verifies the certified ID matches the declared one. The rete's trust domain is read from the store's `rete.json` (beside `ca.crt`, together the trust anchor) — never inferred from config contents.
 
-Identity files (`ca_cert_path`, `cert_path`, `priv_path`) are bare filenames at the root. Per-vertex configs are **not referenced by path** — the agent locates them by the vertex `name` from `agent.json`, at the fixed convention `mgmt/vertices/<name>.json` (signed) and, from C1, `ctrl/vertices/<name>.json` (CP-signed). So `agent.json` lists only `{ name, kind }` per vertex: one root, one convention, nothing resolved against a second base.
+### The envelope
+
+**All artifacts — both planes, platform and opaque payloads alike — share one envelope.** A frozen subset of its claims is the **routing core** (the `plane` discriminator, `version`, `node`, `name`, plus `schema_version` informationally) — the only part a relay ever reads; everything else, a relay stores and serves as opaque signed bytes ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
 
 ```json
 {
   "schema_version": "1.0",
   "plane": "mgmt",
-  "kind": "agent",
   "version": 42,
   "node": "alpha",
   "name": "agent",
@@ -73,15 +61,12 @@ Identity files (`ca_cert_path`, `cert_path`, `priv_path`) are bare filenames at 
 
 Field semantics:
 
-- `schema_version` — `major.minor` of the compiled-artifact contract. Every consumer gates it fail-closed: it accepts its own major at any older-or-equal minor and rejects anything newer with an explicit upgrade error; the producer stamps each artifact with the lowest minor its content actually uses. See [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract) for the contract-wide versioning policy.
-- `plane` — `"mgmt"` for everything in C0/C1. Reserved: `"ctrl"` for the unsigned control-plane decision stream that lands in B1+ (carried in a separate envelope, not inside this one). Discriminating now keeps the envelope schema stable across the split.
-- `kind` — `"agent"` for `agent.json` and `"vertex"` for vertex configs.
-- `name` — the artifact's name within its `(node, kind)` space, so identity is `(node, plane, kind, name)`, path-independent: the vertex name for a vertex artifact, `"agent"` for the single agent. Vertex artifacts additionally carry a payload `kind` of `"link"` or `"mesh"` that selects the engine. (C0 has a single `link` vertex per node; C1 adds `mesh`.)
-- `version` — **monotonic per-compilation number**. Lets future delta-based distribution ask "what version do you have?" without re-sending the full tree, and lets agents reject older-than-current artifacts (rollback-attack defense).
-- **Trust roots** — the CA path and the authorized mgmt-signer set are **not** repeated in every envelope; they live in a `trust` block in `agent.json`'s payload, where the agent — the sole verifier — reads them. The agent accepts an artifact only if its `signature.key_id` is in that set and the signature verifies. The bootstrap snapshot ships in the enrollment bundle; rotation follows the vouched-successor rule (add a new signer with an artifact signed by a current one, switch to it, then retire the old). See [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for placement and [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust) for the full bootstrap and rotation semantics.
+- `schema_version` — `major.minor` of the **envelope contract** only: the claims, the signature canonicalization, and the relays' frozen routing core within it. Deliberately near-frozen. Every consumer gates it fail-closed: it accepts its own major at any older-or-equal minor and rejects anything newer with an explicit upgrade error; the producer stamps the lowest minor the envelope actually uses. Payload schemas are **not** covered — each payload family versions itself inside `payload` with its own `schema_version`, an independent ladder gated by that payload's consumer. See [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract) for the versioning policy.
+- `plane` — the **authority axis**: it tells the payload-blind agent which signer set authenticates the artifact. `"mgmt"` for everything in C0. Reserved: `"ctrl"` for the separately-signed control-plane decision stream that lands in C1 — ctrl decisions arrive as separate artifacts in this same envelope shape (with `plane: { "ctrl": { … } }`), never embedded inside a mgmt artifact. Discriminating now keeps the envelope schema stable across the split.
+- `name` — the consuming workload's name, so identity is `(node, plane, name)`, path-independent; `agent` is the reserved name for the supervisor's own config. There is **no envelope `kind`**: dispatch is by name — each consumer parses only artifacts addressed to it and knows its own payload schema, so a new supervised workload is a new name, never an envelope change. A vertex payload internally carries `kind: "link" | "mesh"` to select the engine (C0 has a single `link` vertex per node; C1 adds `mesh`); other payloads' internal discriminators are their own business.
+- `version` — on mgmt, **the node's set version**: a per-node monotonic counter stamped uniformly into every member of the node's set, advancing by one per publish that actually changes something on this node (the compiler derives it as `previous + 1` from its ledger; no rete-global counter, and node sequences are fully independent — nothing ever compares versions across nodes). It gives the replay defense (a single mgmt high-water-mark covering the set) and the mixed-set defense (stamp equality across members); change detection is *not* its job — consumers compare payload bytes (see [Agent § Node layout](../agent#node-layout)). On ctrl the same claim is a **per-artifact stream version** — each ctrl artifact is an independent stream ([C1's ctrl-plane](../../../c1-manual-mesh/ctrl-plane/)). One rule covers both: a monotonic freshness ordinal within the artifact's stream; mgmt simply has one stream per node, because its unit of coherence and authority is the whole set.
+- **Trust roots** — the authorized mgmt-signer set is **not** repeated in every envelope; it lives in a `trust` block in `agent.json`'s payload, where the agent — the sole signature verifier — reads it. The CA cert is not referenced by any artifact at all: it sits at its conventional place in the identity store. The agent accepts an artifact only if its `signature.key_id` is in that set and the signature verifies. The bootstrap snapshot ships in the enrollment bundle; rotation follows the vouched-successor rule (add a new signer with an artifact signed by a current one, switch to it, then retire the old). See [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for placement and [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust) for the full bootstrap and rotation semantics.
 - `signature` — operator signature over the canonical-form envelope minus the `signature` field itself. `key_id` is the SPIFFE URI of the **management-plane signing principal** (e.g. `spiffe://<rete>/management-plane/primary`) — a sign-only identity, issued independently from any user entry via `retectl ca sign --kind management-plane`. See [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) for the kind separation. The signing key never leaves operator hardware.
-
-In B1+, a parallel `plane: "ctrl"` envelope (unsigned) will carry CP decisions and reference the mgmt `version` it obeys; agents will refuse a ctrl artifact whose claimed mgmt version is older than what the agent already holds. C0/C1 do not produce ctrl artifacts.
 
 ### Terminology
 
@@ -99,34 +84,37 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
 {
   "schema_version": "1.0",
   "plane": "mgmt",
-  "kind": "agent",
   "version": 42,
   "node": "alice-laptop",
   "name": "agent",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
+    "schema_version": "1.0",
     "trust": {
-      "ca_cert_path": "ca.crt",
       "authorized_mgmt_signers": [
         { "spiffe_id": "spiffe://rete-lovers/management-plane/primary", "pubkey": "<base64-ed25519-pubkey>" }
       ]
     },
-    "vertices": [
-      { "name": "flor", "kind": "link" }
+    "workloads": [
+      { "name": "flor", "run": ["flor", "vertex", "run"] }
+    ],
+    "inbounds": [
+      { "principal": "spiffe://rete-lovers/node/alice-laptop", "via": { "kind": "socks5", "addr": "127.0.0.1:1081" } },
+      { "principal": "spiffe://rete-lovers/user/alice",        "via": { "kind": "socks5", "addr": "127.0.0.1:1080" } }
     ],
     "sync": {
-      "principal":   "spiffe://rete-lovers/node/alice-laptop",
-      "coordinator": "spiffe://rete-lovers/service/coordinator",
-      "via":         { "kind": "socks5", "addr": "127.0.0.1:1081" }
+      "principal":     "spiffe://rete-lovers/node/alice-laptop",
+      "coordinator":   "spiffe://rete-lovers/service/coordinator",
+      "poll_interval": "5m"
     }
   },
   "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
 }
 ```
 
-The `trust` block holds the rete's CA and authorized mgmt-signer set (C0 has no ctrl signers yet); the agent is the sole verifier and checks every artifact against it. `sync.via` is the local flor inbound the agent dials — acting as `principal` — to reach `coordinator` (the same "conduit to the target" sense as a link's `via`); it is typed (`{ kind, addr }`) so a new inbound protocol is a new `kind`, not a schema change. Carrying it here keeps `flor agent` **independent of vertex payloads**: the agent verifies a vertex artifact's signature and hands the file to `flor vertex run`, but never parses its contents.
+The `trust` block holds the authorized mgmt-signer set (C0 has no ctrl signers yet); the agent is the sole signature verifier and checks every artifact against it. `workloads` is the supervision inventory — each entry's `run` is a plain argv naming the executable, with all per-workload context injected via the uniform spawn environment (see [Agent § Supervision contract](../agent#supervision-contract)); the link/mesh engine distinction lives in the vertex payload, which the agent never reads. `inbounds` is the compiler-projected `principal → local inbound` map feeding local endpoint discovery on `agent.sock` (how `retectl` finds the operator's SOCKS5); it re-projects the vertex payload's `io` listen preferences, duplication compiler-guaranteed consistent; each inbound is typed (`{ kind, addr }`) so a new inbound protocol is a new `kind`, not a schema change. `sync` names the agent's `principal`, the `coordinator` to dial, and the poll cadence (`poll_interval` — operator-authored, so it rides normal config delivery) — the dial-out resolves through the agent's own `inbounds` entry (the compiler guarantees the node principal exactly one inbound), so there is no separate `sync.via` to keep consistent. Together these keep the agent inside its [layering rule](../agent#supervision-contract): it parses envelopes and its own artifacts, never another workload's payload.
 
-The agent locates each vertex's configs by its `name` (see [Node runtime layout](#node-runtime-layout)) — `mgmt/vertices/<name>.json` always, plus `ctrl/vertices/<name>.json` for vertices that carry ctrl state — verifies both, then supervises with `flor vertex run`. `agent.json` therefore lists only `{ name, kind }` per vertex, never a path.
+The agent locates each workload's config by `name` (see [Node runtime layout](#node-runtime-layout)) — `<name>.json` in the active mgmt set, plus the node's newest verified `ctrl/<name>@v<K>.json` slot from C1 — verifies envelope and signature on each, then spawns each entry's `run` argv with the uniform environment (`FLOR_ARTIFACT` pointing at the verified file). `agent.json` therefore lists only `{ name, run }` per workload, never a config path.
 
 ### Example: vertex payload (user node)
 
@@ -136,27 +124,24 @@ A user device initiates connections only — no `listen_udp`-served services. Th
 {
   "schema_version": "1.0",
   "plane": "mgmt",
-  "kind": "vertex",
   "version": 42,
   "node": "alice-laptop",
   "name": "flor",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
+    "schema_version": "1.0",
     "kind": "link",
-    "ca_cert_path": "ca.crt",
     "transport_endpoint": { "type": "quic" },
     "connection_manager": { "adapters": [ { "name": "wire", "type": "udp" } ] },
     "workloads": [
       {
         "spiffe_id": "spiffe://rete-lovers/node/alice-laptop",
-        "identity":  { "cert_path": "alice-laptop.crt", "priv_path": "alice-laptop.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1081" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/user/alice",
-        "identity":  { "cert_path": "alice.crt", "priv_path": "alice.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080" }
         ]
@@ -190,27 +175,24 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 {
   "schema_version": "1.0",
   "plane": "mgmt",
-  "kind": "vertex",
   "version": 42,
   "node": "alpha",
   "name": "flor",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
+    "schema_version": "1.0",
     "kind": "link",
-    "ca_cert_path": "ca.crt",
     "transport_endpoint": { "type": "quic" },
     "connection_manager": { "adapters": [ { "name": "wire", "type": "udp", "listen": "0.0.0.0:4433" } ] },
     "workloads": [
       {
         "spiffe_id": "spiffe://rete-lovers/node/alpha",
-        "identity":  { "cert_path": "alpha.crt", "priv_path": "alpha.key" },
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080" }
         ]
       },
       {
         "spiffe_id": "spiffe://rete-lovers/service/api",
-        "identity":  { "cert_path": "api.crt", "priv_path": "api.key" },
         "io": [
           { "kind": "tcp",    "upstream": "127.0.0.1:8000" },
           { "kind": "socks5", "listen":   "127.0.0.1:18000" }
@@ -218,7 +200,6 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
       },
       {
         "spiffe_id": "spiffe://rete-lovers/service/alpha/ssh",
-        "identity":  { "cert_path": "ssh.crt", "priv_path": "ssh.key" },
         "io": [
           { "kind": "tcp", "upstream": "0.0.0.0:22" }
         ]
@@ -263,5 +244,5 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
 - **A link vertex has exactly one `udp` adapter** — by design, not a current-milestone limitation. A link vertex is one transport endpoint over one medium: a single QUIC endpoint over a single UDP socket. It never aggregates multiple sockets under one endpoint (that would hide parallelism the mesh layer is built to see and traffic-engineer — interface/link aggregation is a *mesh*-layer concern, expressed as parallel link-vertices; see [C1's `uses:`](../../c1-manual-mesh/mgmt-plane)), and it never terminates a FlorIO adapter (that is mesh-flor reaching *down* to link-flor, never a link vertex's own connection manager). The compiler emits exactly one `udp` adapter for every link vertex; a compiled link artifact with zero, multiple, or non-`udp` adapters is rejected as malformed (enforced in flor's artifact validation, so `retectl compile` catches it before signing).
 - **Egress is advisory, not security-enforcing.** The authoritative check happens at the target's `ingress`. `egress` exists so the initiator's vertex can fail fast on disallowed SOCKS5 requests; the UDP address it dials lives in `links`. A compromised initiator could ignore its own egress filter; it still cannot pass the target's ingress gate. Do not treat egress as an access-control boundary — it's a local convenience filter over the `links` dialing table.
 - **Roles expand at compile time.** `roles.yaml` is YAML-only; the compiler resolves roles to explicit SPIFFE ID lists in `allow`. Role changes take effect on the next `retectl compile` + push — no cert reissuance needed, no role-resolution at runtime on the vertex hot path.
-- **Deterministic** — same `retectl compile --repo X` produces identical output on any machine given identical inputs.
-- **Per-node filtering** — each node's directory contains only the identity material and ACL rows relevant to its own local workloads.
+- **Deterministic** — same `retectl compile --repo X` produces identical output on any machine given identical inputs; the committed previous compiled tree counts as an input, since it is the version ledger.
+- **Per-node filtering** — each node's directory contains only the ACL rows and local-endpoint facts relevant to its own local workloads (identity material travels separately, via enrollment).

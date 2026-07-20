@@ -74,7 +74,7 @@ pub fn scope_of(id: &SpiffeId) -> Result<Scope, ScopeError>;
 
 `SpiffeId` stays the canonical name throughout the codebase; `Kind` and `Scope` are computed at points where they matter (e.g. `Ca::sign_csr` deciding the X.509 extension policy, `retectl ca sign` validating `--kind` matches the constructed URI).
 
-`Scope::Node` carries a bare `String` — the node-name segment from the SPIFFE path, not a derived `SpiffeId` for the `node/<name>` principal. The string is already validated as a SPIFFE path component (the `spiffe` crate enforced charset/syntax when parsing the parent SPIFFE ID). Synthesizing the host-node SPIFFE ID is a higher-layer concern (ACL, manifest validator) — `Scope` carries what the path *encodes*, not what it *refers to*.
+`Scope::Node` carries a bare `String` — the node-name segment from the SPIFFE path, not a derived `SpiffeId` for the `node/<name>` principal. The string is already validated as a SPIFFE path component (the `spiffe` crate enforced charset/syntax when parsing the parent SPIFFE ID). Synthesizing the host-node SPIFFE ID is a higher-layer concern (ACL, artifact validation) — `Scope` carries what the path *encodes*, not what it *refers to*.
 
 All six kinds are recognised from day one even though `Vertex`, `ControlPlane`, and `ManagementPlane` aren't exercised at runtime in C0. The cost of an unused variant is nil; pre-declaring removes the migration moment when C1 introduces vertex identities and the control-plane.
 

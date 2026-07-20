@@ -19,12 +19,12 @@ The C1 ctrl artifact for mesh-flor:
 {
   "schema_version": "1.0",
   "plane": { "ctrl": { "obeys_mgmt_version": 42 } },
-  "kind": "vertex",
   "version": 17,
   "node": "alpha",
   "name": "rete",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
+    "schema_version": "1.0",
     "active_links": [ "beta", "gamma" ],
     "forwarding_table": [
       { "in": { "link": "beta",  "label": 17 }, "out": { "link": "gamma", "label": 42 } },
@@ -55,10 +55,10 @@ The C1 ctrl artifact for mesh-flor:
 
 Field semantics:
 
-- **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)), including the generic `name` claim (here the vertex name). The one difference is the `plane`: ctrl artifacts carry `plane: { "ctrl": { "obeys_mgmt_version": … } }` where mgmt artifacts carry the bare `plane: "mgmt"`. `obeys_mgmt_version` rides on the ctrl plane itself (it's a ctrl-plane fact, common to every ctrl artifact) and pins which mgmt artifact this ctrl decision was made against; agents reject ctrl whose `obeys_mgmt_version` is older than the mgmt they currently hold (rollback-attack defense).
+- **Envelope** — same shape as the mgmt envelope (see [C0's spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)), including the generic `name` claim (here the vertex name). The one difference is the `plane`: ctrl artifacts carry `plane: { "ctrl": { "obeys_mgmt_version": … } }` where mgmt artifacts carry the bare `plane: "mgmt"`. `obeys_mgmt_version` rides on the ctrl plane itself (it's a ctrl-plane fact, common to every ctrl artifact) and pins which **mgmt set** — the node's mgmt set version — this ctrl decision was made against; consumers reject ctrl whose `obeys_mgmt_version` is older than the mgmt set they currently hold (rollback-attack defense). The `version` claim here is the artifact's own **stream position**: ctrl artifacts are independent per-artifact streams, unlike mgmt's one-set-per-node versioning (see [Agent § Node layout](../../c0-tended-tunnels/mgmt-plane/agent#node-layout)).
 - **`signature`** — produced by a `control-plane/<name>` key. The `key_id` is the CP's SPIFFE ID. Agents verify the signature against a pubkey in the agent's `trust.authorized_ctrl_signers` (carried in `agent.json`, not in this artifact — see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)); ctrl signed by an unauthorized key is rejected.
 - **`active_links`** — the subset of mgmt's `links` bound (the per-node projection of `allowed_links`) this mesh-flor should currently bring up. In C1 this equals the full set produced by `links`. In B1+ the CP picks based on health (drain, fail-over). This is **all** the rete-wide topology information a per-node agent ever sees — it knows its own links, nothing else.
-- **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries, each an `in: {link, label}` → `out: {link, label}` swap. **Labels are per-link** (per-interface significance), so each is paired with its link name; the agent verifies that each `in.link`/`out.link` is in `active_links` and that every `(in.link, in.label)` is unique.
+- **`forwarding_table`** — MPLS-style label-forwarding rows for each transit hop this node carries, each an `in: {link, label}` → `out: {link, label}` swap. **Labels are per-link** (per-interface significance), so each is paired with its link name; the mesh vertex verifies that each `in.link`/`out.link` is in `active_links` and that every `(in.link, in.label)` is unique.
 - **`label_bindings`** — binds each accepted (initiator, target) flow from the mgmt allow lists to a per-link label: an **ingress** binding is `in: {link, label}` → local delivery; an **egress** binding is local origin → `out: {link, label}` (the first hop). Each binding's (scope, target, initiator) **must** appear in the corresponding `ingress.allow` or `egress.allow` flat list; this is the local verifier's check.
 
 **No `active_paths` field.** Per-node agents have no use for the rete-wide path enumeration: a flor vertex can only act on packets it actually sees, which means its own forwarding rows and label bindings. Knowing that label 17 globally corresponds to "alice → alpha → beta → kafka" buys nothing operationally — the vertex doesn't process the path, it processes labels. Keeping path enumeration out of per-node ctrl artifacts also matches the practical limit of local verifiability (see "What hijacked CP can and cannot do" below).
@@ -75,8 +75,7 @@ my-rete/
             ├── mgmt/            # signed by operator; committed
             │   └── …
             └── ctrl/            # signed by CP key; gitignored
-                └── vertices/
-                    └── rete.json
+                └── rete.json
 ```
 
 Ctrl artifacts are gitignored even in C1, where they're deterministic from operator YAMLs. The reasoning is lifecycle, not freshness: ctrl is runtime state, not authoring state. Committing it would conflate the audit log (mgmt) with the running configuration (ctrl) and create workflow drift at C1→B1+, where ctrl genuinely doesn't belong in git.
@@ -88,12 +87,12 @@ If an operator wants to record a snapshot of ctrl state for audit (e.g., "what f
 The same `retectl compile` invocation that produces mgmt artifacts also produces ctrl artifacts in C1. There's no separate command — they're emitted from the same source-of-truth YAMLs in one pass:
 
 ```
-retectl compile --node alpha --repo my-rete/
-# emits:
+retectl compile --repo my-rete/
+# emits, for each node — e.g. alpha:
 #   .flor/compiled/alpha/mgmt/agent.json
-#   .flor/compiled/alpha/mgmt/vertices/public.json
-#   .flor/compiled/alpha/mgmt/vertices/rete.json
-#   .flor/compiled/alpha/ctrl/vertices/rete.json
+#   .flor/compiled/alpha/mgmt/public.json
+#   .flor/compiled/alpha/mgmt/rete.json
+#   .flor/compiled/alpha/ctrl/rete.json
 ```
 
 The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl artifact is signed with the operator's CP signing key. In C0/C1 both keys live on the operator's workstation — same machine, separate files (`~/.flor/operator-mgmt.key` and `~/.flor/control-planes/primary.key`). They are *not* the same key; conflating them would couple mgmt-signing-authority lifecycle with CP-signing-authority lifecycle, which becomes painful as soon as B1+ wants to put the CP key on a different host (managed cloud or BYO on-prem).
@@ -103,7 +102,7 @@ The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl art
 - Mgmt artifacts go to `POST /publish/mgmt` on the coordinator.
 - Ctrl artifacts go to `POST /publish/ctrl`.
 
-Authentication for the publish side is via the existing `coordinator-publish` group (operator role). Internally the coordinator stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (`GET /artifact/mgmt/<node>` and `GET /artifact/ctrl/<node>`), both gated by `coordinator-sync`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `retectl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
+Authentication for the publish side is via the existing `coordinator-publish` group (operator role). Internally the coordinator stores mgmt and ctrl on parallel paths; agents fetch via parallel endpoints (the conditional mgmt set fetch, and `GET /artifact/ctrl/<node>/<name>?have=<v>` — per-artifact, conditional on the held stream version; see [C0 Coordinator](../../c0-tended-tunnels/mgmt-plane/coordinator)), both gated by `coordinator-sync`. The CP authority being a *different* SPIFFE principal (`control-plane/<name>`) from the operator does not yet require a second write group in C1 — `retectl compile` runs on operator hardware and publishes both streams under the operator's `user/<op>` identity. The hypothetical split (CP becomes an external writer pushing ctrl independently of the operator) is a B1+ design call and would introduce a new group only then.
 
 ## Label allocation
 
@@ -117,23 +116,29 @@ In B1+ the allocator runs continuously inside the CP and re-runs whenever active
 
 The validator surfaces label infeasibility (per-link label space exhausted) at `retectl compile` time in C1 — not during mgmt validation, since label feasibility is intrinsically a function of the chosen path set, not the bound.
 
-## Agent-side verification
+## Node-side verification
 
-Each agent fetches both streams and verifies them locally before applying. The flow on every sync:
+Verification is split by the [layering rule](../../c0-tended-tunnels/mgmt-plane/agent#supervision-contract): the **agent** authenticates artifacts — envelope and signature; it parses no vertex payload — and the **mesh vertex** verifies the semantic mgmt↔ctrl join, being the only party that parses both planes. The flow on every sync:
+
+**Agent (authenticity):**
 
 1. **Fetch mgmt** for this node from `/artifact/mgmt/<node>`.
 2. **Verify mgmt signature** against the agent's trusted mgmt-signer set — pinned at enrollment, carried in `agent.json`'s `trust` block, and rotated by the vouched-successor rule (see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)).
 3. **Fetch ctrl** for this node from `/artifact/ctrl/<node>`.
 4. **Verify ctrl signature** against one of the pubkeys in `agent.json`'s `trust.authorized_ctrl_signers`. Reject if signed by a key not in the authorized list, or if no authorized CP is listed at all.
-5. **Verify `obeys_mgmt_version`** ≥ the version of the mgmt artifact just verified. Reject if ctrl is older than mgmt (the CP hasn't caught up yet — wait for the next ctrl push).
-6. **Verify ctrl-vs-mgmt structural rules**:
+5. **Stage and restart** — stage verified mgmt as an immutable set and flip `mgmt/current`; land verified ctrl as a per-artifact slot (`ctrl/<name>@v<K>.json`); restart the mesh vertex with both as explicit context ([Agent § Node layout](../../c0-tended-tunnels/mgmt-plane/agent#node-layout), [§ Sync](../../c0-tended-tunnels/mgmt-plane/agent#sync)).
+
+**Mesh vertex (the join), at config load:**
+
+6. **Verify `obeys_mgmt_version`** ≥ the version of the mgmt set it holds. Reject if ctrl is older than mgmt (the CP hasn't caught up yet — wait for the next ctrl push).
+7. **Verify ctrl-vs-mgmt structural rules**:
    - Every entry in `active_links` is in the set produced by mgmt's `links` bound (dispatch on each rule's `type`; for `enum` that's literal membership).
    - Every `forwarding_table` `in.link`/`out.link` is in `active_links`.
    - Every `label_bindings` entry's (scope, target, initiator) appears in the corresponding flat `ingress.allow` or `egress.allow` list.
    - Every `(in.link, in.label)` is unique across the forwarding table and ingress bindings (per-link in-label uniqueness; out-labels live in the neighbour's space).
-7. **Apply** — combine mgmt's identities, allow lists, and link/adapter config with ctrl's `active_links`, `forwarding_table`, and `label_bindings` to derive the runtime state.
+8. **Apply** — combine mgmt's identities, allow lists, and link/adapter config with ctrl's `active_links`, `forwarding_table`, and `label_bindings` to derive the runtime state.
 
-If any step fails, the agent retains its previous (last-known-good) state and surfaces the failure to the operator (status, logs).
+If signature verification fails, the agent never activates the set — the node retains its previous (last-known-good) state and surfaces the failure to the operator (status, logs). If the vertex rejects the join at load, it exits with the config-rejected code (`EX_CONFIG` — see [Agent § Supervision mechanics](../../c0-tended-tunnels/mgmt-plane/agent#supervision-mechanics)); the agent surfaces it without retry-looping, and C1's commit-timeout guard rolls the node back to the retained previous state — the previous mgmt set and/or the previous ctrl slot, per the pending-confirm record (a rejected ctrl slot file is deleted and its rejection recorded, so sync does not loop on it).
 
 ## What hijacked CP can and cannot do — the security tradeoff
 
@@ -178,7 +183,7 @@ The shape of the artifact stream — envelope, signature scheme, distribution en
 
 By landing the stream in C1 with a degenerate producer (`retectl compile`) we exercise:
 
-- the dual-stream fetch and verification logic in agents,
+- the dual-stream fetch and verification logic (agent: signatures; mesh vertex: the join),
 - the `obeys_mgmt_version` cross-reference,
 - the typed-rule bounds dispatch,
 - the `authorized_ctrl_signers` issuance and rotation surface,
@@ -202,11 +207,14 @@ Separating CP from operator identity matters too: in C0/C1 they happen to live o
 
 A bounded ctrl stream could in principle be unsigned — agents already verify every decision against the signed mgmt bounds, and unverified decisions outside bounds are rejected anyway. So why add a second signature?
 
-Three reasons make it worth it:
+Through C1 the question is not even open: the ctrl producer is `retectl` on the operator's machine, and the **coordinator relays ctrl exactly as it relays mgmt** — an untrusted store-and-serve party sitting between producer and consumer. Unsigned ctrl would let a compromised coordinator forge permissible-but-unintended decisions: still inside mgmt bounds, but that class includes steering traffic through observers and black-holing — precisely the blast radius the CP *key* is supposed to gate, not the relay. Ctrl signatures in C1 are load-bearing for the same reason mgmt signatures are.
 
-- **Authenticity of the producer.** Bounds-checking only verifies that decisions are *permissible*; it doesn't verify *who* made them. A signature on ctrl tells the agent "this came from a CP the operator authorized," not just "this happens to satisfy mgmt." Distribution-path attacks (compromised coordinator, MITM on a fetch) can substitute a permissible-but-unintended ctrl decision; signing catches that.
-- **Clean revocation primitive.** Operator removes a CP's pubkey from `authorized_ctrl_signers` → agents stop accepting that CP's ctrl artifacts. No code change, no data flush, no out-of-band coordination. This is the same revocation pattern as identity revocation (remove from mgmt, propagate on next sync).
-- **Multi-CP coexistence.** As soon as B1+ wants regional CPs, A/B-tested CPs, or quorum CPs, each needs its own identity and its own pubkey in mgmt's authorized list. Without per-CP signatures the agent has no way to tell which CP made which decision.
+From B1+, delivery becomes a direct Coordinator→agent mTLS channel, which could in principle authenticate the producer — the tempting simplification is to drop the signature and lean on the channel. Four things the channel cannot provide keep the signature:
+
+- **Authenticity of the producer, independent of the fetch path.** Bounds-checking only verifies that decisions are *permissible*; it doesn't verify *who* made them. A signature on ctrl tells the agent "this came from a CP the operator authorized," not just "this happens to satisfy mgmt." Distribution-path attacks (compromised relay, MITM on a fetch) can substitute a permissible-but-unintended ctrl decision; signing catches that.
+- **Path-independence.** A signed artifact is valid no matter who hands it over. That is exactly what the edge roadmap needs — store-and-forward across partitions, neighbor relay, untrusted muxes (B2+) — and what restart recovery already relies on: the persisted last-known-good slot re-verifies as a self-authenticating artifact. Binding validity to "arrived over this TLS session" would foreclose every delivery topology except direct-dial and leave stored state proof-free.
+- **Authority ≠ channel, with separable lifecycles.** `service/coordinator` (serving identity) and `control-plane/<name>` (decision authority) have different blast radii and rotation cadences — the identity-separation argument above. That both keys sit hot in one process today is a *deployment choice, not a trust-model fact*; the signature is what lets that choice be revisited later (an HSM-backed signer, a split signer service, quorum CPs) without redesign. Collapsing authority into the channel would close that door.
+- **Clean revocation and attribution.** Operator removes a CP's pubkey from `authorized_ctrl_signers` → agents stop accepting that CP's ctrl artifacts — no code change, no data flush, no re-keying of the serving endpoint; the same revocation pattern as identity revocation (remove from mgmt, propagate on next sync). And every artifact — including a snapshot captured for incident review — carries proof of *which* CP decided, evidence a TLS session never leaves behind; multi-CP coexistence (regional, A/B, quorum) depends on exactly this per-CP attribution.
 
 The cost is ~zero — one signature verification per fetched ctrl, against a key the agent already pinned via mgmt. The security benefit is real even when the signing key is hot in B1+: forging ctrl still requires either the CP key itself or operator-policy authorization, both of which the bounded-autonomy model already accounts for.
 
