@@ -3,6 +3,7 @@
         "source-layout",
         "identity",
         "validate-and-compile",
+        "agent",
         "cli",
         "coordinator",
         "enrollment",

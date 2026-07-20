@@ -22,9 +22,9 @@ This is load-bearing security behaviour that `flor`'s agent will otherwise imple
 
 ## Decision
 
-### The agent is the sole verifier
+### The agent is the sole signature verifier
 
-The **agent** fetches every artifact and verifies signatures and the mgmt↔ctrl cross-rules; the **vertex** consumes already-verified configs handed to it by the agent. This matches the threat model: an artifact signature protects the **distribution path** (coordinator, network MITM, a tampered relay), not local-filesystem integrity — anyone who can rewrite `vertices/rete.json` on the node can equally rewrite the `flor` binary, so re-verifying inside the vertex guards nothing the signature is for. Local integrity is the node's own concern. (Vertex re-verification remains available as defence-in-depth; it is not the boundary.)
+The **agent** fetches every artifact and verifies envelopes and signatures — the authenticity of the producer; the **vertex** consumes agent-staged configs and, from C1, verifies the *semantic* mgmt↔ctrl cross-rules itself, being the only party that parses both planes (see the amended [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) and the [Agent layering rule](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent#supervision-contract)). This matches the threat model: an artifact signature protects the **distribution path** (coordinator, network MITM, a tampered relay), not local-filesystem integrity — anyone who can rewrite a staged `rete.json` on the node can equally rewrite the `flor` binary, so re-verifying inside the vertex guards nothing the signature is for. Local integrity is the node's own concern. (Vertex re-verification remains available as defence-in-depth; it is not the boundary.)
 
 ### Both signer sets live in `agent.json`, and they are not symmetric
 
@@ -32,11 +32,12 @@ Per the placement fixed in [ADR-0010](/docs/implementation/adr/0010-compiled-art
 
 ```json
 "trust": {
-  "ca_cert_path": "ca.crt",
   "authorized_mgmt_signers": [ { "spiffe_id": "spiffe://rete-lovers/management-plane/primary", "pubkey": "<base64>" } ],
   "authorized_ctrl_signers": [ { "spiffe_id": "spiffe://rete-lovers/control-plane/primary",    "pubkey": "<base64>" } ]
 }
 ```
+
+(The CA cert is not referenced here — it sits at its conventional place in the node's identity store.)
 
 The two sets have **different trust roots**:
 
@@ -62,8 +63,8 @@ The agent verifies `agent.json` against its **pinned/persisted** mgmt set (never
 
 Two supporting guards:
 
-- **Rollback defence.** The envelope's monotonic `version` is the high-water-mark; the agent rejects any artifact with `version` below what it holds. This blocks replaying an old `[key1, key2]` artifact to resurrect a retired `key1`.
-- **Persistence.** The agent durably persists `(trusted mgmt set, trusted ctrl set, version high-water-mark)`. Without it, a restart re-pins from enrollment and silently loses rotation, reopening the replay window.
+- **Rollback defence.** The envelope's monotonic `version` is the high-water-mark. For mgmt the agent keeps **a single mark for the node's set** — the set version, stamped uniformly across the set, so replaying any old set (e.g. an old `[key1, key2]` `agent.json` resurrecting a retired `key1`) is rejected wholesale; for ctrl it keeps **one mark per artifact stream**. The agent rejects anything below the held mark.
+- **Persistence.** The agent durably persists `(trusted mgmt set, trusted ctrl set, version high-water-marks — mgmt set-level, ctrl per-stream)`. Without it, a restart re-pins from enrollment and silently loses rotation, reopening the replay window.
 
 ### ctrl-signer rotation: ordinary mgmt authority
 
@@ -87,7 +88,7 @@ The asymmetry is not incidental tidiness — it is the containment property. Sel
 
 ### Trade-offs
 
-- The agent must maintain durable, integrity-protected local state (trusted sets + version high-water-mark); losing it degrades to the enrollment anchor and loses rotation.
+- The agent must maintain durable, integrity-protected local state (trusted sets + version high-water-marks); losing it degrades to the enrollment anchor and loses rotation.
 - The enrollment channel is an irreducible out-of-band root: the protocol cannot make first contact safe, only everything after it.
 - mgmt-signer rotation requires an overlap window (add-switch-retire) and operator discipline; a single-key operator who loses the key must re-enroll nodes.
 

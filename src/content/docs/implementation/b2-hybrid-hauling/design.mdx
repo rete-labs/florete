@@ -60,7 +60,7 @@ The vendor-agnostic/vendor-specific split is not just an R10 concern — it runs
 |---|---|
 | Operator YAML (mgmt) | **Vendor-agnostic** radio bounds: bands, power caps, duty cycle |
 | Coordinator RRA | **Vendor-agnostic** — produces radio ctrl artifacts in the shared resource vocabulary |
-| Distribution + `flor agent` | **None** — envelopes and signatures only; the agent never parses vertex payloads (C0 rule, unchanged) |
+| Distribution + `flor agent` | **None** — envelopes and signatures only; the agent parses no payload but its own (the C0 [layering rule](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent#supervision-contract), unchanged) |
 | Mesh vertex | **None** — sees links and adapters, never radios |
 | Link vertex (its [medium adapter](../glossary#medium-adapter)) | **Both** — consumes the vendor-agnostic vocabulary, translates it into vendor-specific R10 commands |
 | Radio driver / module (vendor) | **Vendor-specific only** — no Florete knowledge |

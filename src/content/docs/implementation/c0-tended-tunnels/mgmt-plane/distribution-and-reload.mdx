@@ -5,16 +5,16 @@ description: State distribution, sync mechanics, hot reload, and safety net for 
 
 ## Distribution & Reload
 
-- **Primary mechanism**: operator edits YAML → `retectl validate` → `retectl compile` → commits (audit trail) → `retectl publish` pushes the compiled tree to the coordinator. Each node's agent then runs `flor agent sync` during an announced maintenance window — `sync` fetches the node's per-node directory (`agent.json` + `vertices/flor.json`) from the coordinator over Florete and restarts the supervised vertex.
+- **Primary mechanism**: operator edits YAML → `retectl validate` → `retectl compile` → commits (audit trail) → `retectl publish` pushes the compiled tree to the coordinator. From there distribution is automatic: each node's **agent daemon polls the coordinator** — once at startup, then on a timer (`poll_interval` in `agent.json`'s `sync` block; operator-set, default a few minutes) — and applies a changed set as soon as it sees one: fetch → verify → stage → restart ([Agent § Sync](../agent#sync)). `flor agent sync` is the manual trigger for an immediate pass, a thin client of the agent's socket — useful when the operator doesn't want to wait out the poll interval.
 - **Git is for audit, not for distribution.** Nodes never hold a git credential. The rete repo is the operator's authoring workspace; its commits give you `git log .flor/compiled/alpha/` to answer "what config did alpha actually get?", but the wire path into nodes is always the coordinator.
 - **No commit-timeout guard in C0** (deferred to [C1](/docs/implementation/c1-manual-mesh/scope)): a sync activates the new artifacts and restarts the vertex, with no confirm-or-roll-back window. Remote-lockout risk is bounded instead by the out-of-band emergency-access path (see [Safety Net](#safety-net-server-nodes)); the Cisco-IOS `commit confirmed` guard arrives in C1.
-- **`--dry-run`**: show which artifact version would be installed vs. what's currently active; no restart. Catches stale-node situations before committing to a window.
-- **Expected disruption**: active QUIC connections drop on vertex restart. C0 assumes a maintenance window of a few minutes.
-- **Version stamping** (see [Compile Step](../validate-and-compile#compile-step)) is monotonic across the whole rete. The coordinator serves `?version=<n>` queries so operators can confirm which version each node fetched; mismatch = stale node (never synced, or sync failed).
+- **`flor agent sync --dry-run`** is the diagnostic: fetch + verify only, reporting the would-be set version against the active one — no stage, no restart. Confirms what a node would install, and that verification passes, before or after a publish.
+- **Expected disruption**: active QUIC connections drop on vertex restart — seconds per node, at that node's next poll after the publish. The "window" is therefore operator-side discipline, not a coordinated fleet event: publish when a brief drop is acceptable, and stay available to fix-forward until the fleet has converged.
+- **Versioning** (see [Compile Step](../validate-and-compile#compile-step)) is per-node and change-driven: each node's mgmt set carries a single version, stamped uniformly across its artifacts, that moves only when a publish touches that node — an untouched node's poll stays a no-op. What a node actually runs is a node-side fact — `flor agent status` reports the active versions; the coordinator only knows what is published, never what any node fetched.
 
 ## Hot Reload
 
-Full restart for every permission change is wasteful at server-node scale — waiting for a maintenance window to add one permission is hard to justify even in pilots. The spectrum of changes isn't all-or-nothing:
+Full restart for every permission change is wasteful at server-node scale — dropping live connections to add one permission is hard to justify even in pilots. The spectrum of changes isn't all-or-nothing:
 
 | Change | Needs restart? | Frequency |
 |---|---|---|
@@ -24,13 +24,13 @@ Full restart for every permission change is wasteful at server-node scale — wa
 | Identity rotation (new cert, same SPIFFE ID) | Yes — rebuild mTLS contexts | Low |
 | Peer UDP address change | Possibly — kills active QUIC sessions | Low |
 
-**C0 ships with full-restart only** — simpler, safer, one code path. The design rule: **build the vertex so ACL tables are swappable from day one** (hold ingress/egress rules behind an `Arc<Tables>` or equivalent), so the near-term post-C0 addition is narrow. The post-C0 flow:
+**C0 ships with full-restart only** — simpler, safer, one code path. The design rule: **build the vertex so ACL tables are swappable from day one** (hold ingress/egress rules behind an `Arc<Tables>` or equivalent), so the near-term post-C0 addition is narrow. The post-C0 flow respects the agent's [layering rule](../agent#supervision-contract) — the agent reads no vertex payload, so it neither diffs nor classifies:
 
-1. `flor agent sync` fetches new artifacts and diffs them against the current ones.
-2. If the diff is **ACL-only** (every changed field is an `allow` list), the agent signals the vertex to swap its tables atomically — no connection drop, no handshake interruption.
-3. Otherwise, fall back to the current full-restart flow.
+1. A sync pass (the poll, or a manual `flor agent sync`) fetches and verifies new artifacts as usual.
+2. The agent **delivers** the new verified config to the running vertex over its per-workload control channel.
+3. The vertex — which owns its own semantics — diffs it against its running state: if the change is **ACL-only** (every changed field is an `allow` list), it swaps its tables atomically and answers "swapped" — no connection drop, no handshake interruption; otherwise it answers "restart me" and the agent falls back to the full-restart flow.
 
-This handles the common case (permission edits) with zero disruption and leaves the rare structural changes on the existing safe path. Vertex code complexity stays low: one table swap plus a diff check.
+This handles the common case (permission edits) with zero disruption and leaves the rare structural changes on the existing safe path. Vertex code complexity stays low: one table swap plus a diff check — and the diff lives in the only component that understands the payload.
 
 ## Safety Net (server nodes)
 
@@ -47,11 +47,9 @@ Playbook for a change:
 
 1. Edit YAML (operator, on workstation).
 2. `retectl validate` — catch errors before anything reaches a node.
-3. `retectl compile` — regenerate `.flor/compiled/<node>/mgmt/{agent.json, vertices/flor.json}` for all nodes.
+3. `retectl compile` — regenerate `.flor/compiled/<node>/mgmt/{agent.json, flor.json}` for all nodes.
 4. `git add -A && git commit && git push` — commit both YAML and compiled artifacts for audit (nodes don't read this, but it's the shipment log).
-5. `retectl publish` — upload the compiled tree to the coordinator. From this moment nodes *can* fetch the new state; they won't until they sync.
-6. Announce window.
-7. On one node: `flor agent sync --dry-run` — confirm expected artifact version.
-8. `flor agent sync` — activate (fetch, install, restart the vertex).
-9. Smoke-test the published services. If the new state is bad, roll back by re-publishing the previous compiled tree (it's committed in git) and re-syncing — or fix from the out-of-band emergency-access path. (C0 has no auto-rollback; that guard lands in C1.)
-10. Repeat per node, or use a simple parallel script for homogeneous rollouts.
+5. `retectl publish` — upload the compiled tree to the coordinator. From this moment the change is live: every touched node picks it up at its next poll.
+6. To move faster than the poll on a specific node — or to spot-check one first — `flor agent sync` there (optionally preceded by `--dry-run` to preview).
+7. Smoke-test the published services. If the new state is bad, roll back by reverting the YAML (`git revert`), recompiling, and publishing — the ledger stamps fresh, higher versions carrying the prior content, and nodes converge onto it the same way. Never re-publish old compiled files verbatim: nodes that already synced the bad set have advanced their high-water-marks and would reject the old versions as replay. Or fix from the out-of-band emergency-access path. (C0 has no auto-rollback; that guard lands in C1.)
+8. Nothing to repeat per node — the fleet converges on its own. Chase only nodes whose `flor agent status` shows them stale; offline devices (a laptop in a bag) sync when they return.

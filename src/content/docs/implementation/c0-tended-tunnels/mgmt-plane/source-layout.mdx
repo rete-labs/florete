@@ -22,15 +22,16 @@ my-rete/
         ├── mgmt01/              # management node — bootstrap-applied manually (see Coordinator)
         │   └── mgmt/
         │       ├── agent.json
-        │       └── vertices/flor.json
+        │       ├── flor.json
+        │       └── coordinator.json
         ├── alpha/
         │   └── mgmt/
         │       ├── agent.json
-        │       └── vertices/flor.json
+        │       └── flor.json
         ├── beta/
         │   └── mgmt/
         │       ├── agent.json
-        │       └── vertices/flor.json
+        │       └── flor.json
         └── ...
 ```
 
@@ -72,11 +73,11 @@ Two parallel namespaces, two conventions:
 | Namespace | Form | Examples |
 |---|---|---|
 | SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/primary`, `--kind management-plane`, `Kind::ManagementPlane` |
-| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `<node>/mgmt/vertices/flor.json`, `~/.flor/retes/<scope>/` |
+| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `artifacts/mgmt/sets/<v>/`, `~/.flor/retes/<scope>/` |
 
 The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
 
-Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `vertices/flor.json` (read by the single `flor vertex run` instance the agent supervises in C0). C1 adds a second vertex artifact under `vertices/`; the agent.json shape is stable across both.
+Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `flor.json` (read by the single `flor vertex run` instance the agent supervises in C0), flat beside each other. C1 adds a second vertex artifact; the agent.json shape is stable across both.
 
 The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `retectl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
 

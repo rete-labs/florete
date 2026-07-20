@@ -49,7 +49,7 @@ The full list of motivators:
 6. **Determinism** — same-input same-output across machines; two operators independently compiling produce identical artifacts, detectable by diff.
 7. **Committed artifacts = inspectable, auditable shipments.** "What config did alpha actually get?" = `git log .flor/compiled/alpha/`. No need to reconstruct from YAML. Artifacts contain only path references (no secrets), so committing them is safe. The coordinator is the live wire path; git is the audit trail.
 
-This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C0 the per-node output is two artifacts (`agent.json` + `vertices/flor.json`); in C1 a third is added for the second flor vertex in the recursive stack. The split is between supervisor (agent) and data-plane (vertex), so each consumer's contract stays minimal.
+This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C0 the per-node output is two artifacts (`agent.json` + `flor.json`); in C1 a third is added for the second flor vertex in the recursive stack. The split is between supervisor (agent) and data-plane (vertex), so each consumer's contract stays minimal.
 
 ## Why CA-based identity (not pinned certs)
 
@@ -91,7 +91,7 @@ Splitting up front avoids the issue: `flor agent` is a first-class workload that
 
 This also maps cleanly to the HLD's [Execution Plane Agent concept](../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and the vertices it supervises are themselves workloads. Adding more vertex kinds (C1's link+mesh, future interrete layers) is just listing more entries under `vertices` in `agent.json`.
 
-How the agent actually launches a vertex — direct fork, systemd unit, future local workload-runtime interface — is intentionally not pinned in C0. The runtime contract is just "a vertex starts when given its config"; the rest is platform detail. The shape resembles kubelet's relationship to its container runtime; that analogy is intentional, but the WRI design is deferred.
+How the agent launches a vertex is pinned in the [Agent](agent) page: the OS service manager keeps the agent alive; the agent forks and supervises its workloads directly, with per-workload launch runtimes (system units, containers, a future WRI) reserved as evolution. The kubelet analogy stands; the WRI design itself remains deferred.
 
 ## Why one `workloads` list with typed `io[]` channels
 
@@ -247,7 +247,7 @@ A useful refinement available in either tier: **per-principal-class issuance pol
 
 **SPIFFE compatibility note.** C0/C1 produce SPIFFE-format-conformant X.509-SVIDs but don't implement SPIFFE *issuance* (the SPIRE Workload API). We're a SPIFFE-compatible trust domain whose certs any SPIFFE consumer (Istio, Linkerd, Vault, Envoy) can verify, but our own workloads don't yet receive SVIDs from a Workload-API endpoint — they hold static cert+key files installed at enrollment. The bounded intermediate adds the Workload API as a natural by-product: agents can dispense SVIDs to local workloads via SPIRE-compatible UDS, with rotation driven by the intermediate. We become SPIFFE-issuance conformant without abandoning the zero-trust posture. Until then, "SPIFFE compat" means format and trust shape, not issuance protocol. Don't oversell.
 
-What we do **now** in C0/C1: nothing on rotation automation. The operator-signed mgmt artifact already references certs by path, so future rotation can replace cert files in place without recompiling the artifact — the schema doesn't need changing.
+What we do **now** in C0/C1: nothing on rotation automation. The operator-signed mgmt artifact references principals by SPIFFE ID only (identity material lives in the node's identity store), so future rotation replaces store files in place without recompiling the artifact — the schema doesn't need changing.
 
 ## Why authoring UI must be local (and what cloud UI can do)
 
