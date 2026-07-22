@@ -3,11 +3,13 @@ title: Coordinator
 description: Management-node config distribution service for C0
 ---
 
-## Coordinator
+## Role
 
-The **coordinator** is the rete infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
+The **coordinator** is the rete infrastructure service that holds the most recently-published compiled tree and serves each node its own artifact set on demand. It runs on a designated **management node** (conventionally `mgmt01`) and is reached only over Florete — there is no public endpoint.
 
-The binary is named `coordinator`. It ships as a third bin target in the flor crate (alongside `flor` and `retectl`, ADR-0002) and is installed **only on the management node**. C0's coordinator is the degenerate, store-and-serve form of the Coordinator sketched for B1 — see [B1 · Coordinator](/docs/implementation/b1-cloud-control/coordinator) for where this grows a dynamic control plane; in C0 it does nothing but persist the operator-signed tree and hand out per-node slices of it.
+The binary is named `coordinator`. It ships as a third bin target in the flor crate (alongside `flor` and `retectl`, [ADR-0002](/docs/implementation/adr/0002-use-single-crate)); which hosts carry the binary is the installer's concern, not this page's — where the coordinator *service* runs is a config fact, settled by `services.yaml`. C0's coordinator is the degenerate, store-and-serve form of the Coordinator sketched for B1 — see [B1 · Coordinator](/docs/implementation/b1-cloud-control/coordinator) for where this grows a dynamic control plane; in C0 it does nothing but persist the operator-signed tree and hand out per-node slices of it.
+
+## Two services, one process
 
 It's declared in `services.yaml` as **two separate services** — one for reads (nodes) and one for writes (operators) — so Florete's per-service RBAC can gate them cleanly:
 
@@ -37,7 +39,7 @@ roles:
 
 **Why "coordinator-*" and not "mgmt-plane-*".** The groups gate access to the coordinator's HTTP endpoints, not to a plane. The plane (mgmt vs ctrl, when ctrl lands in C1) is an artifact-content distinction encoded in the URL path inside an already-authenticated tunnel — RBAC has no reason to project it. C1's ctrl-fetch endpoint will live in the same `coordinator-sync` group; ctrl-publish stays in `coordinator-publish` because C1's ctrl artifacts are still operator-produced. A B1+ split where the CP becomes an external writer is a B1+ design call; today there's no second writer, so a second write group would be speculative.
 
-**Group naming rationale.** `coordinator-sync` covers *all* node-role traffic on the node-facing service — artifact fetch today, metrics push later (see below) — and survives B1's push distribution without a rename. `coordinator-publish` is operator-role publishing. The two-service split exists purely to draw this one RBAC boundary between node reads and operator writes; both services are the same process.
+**Group naming rationale.** `coordinator-sync` covers *all* node-role traffic on the node-facing service — artifact fetch today, metrics push later ([Reserved, not built](#reserved-not-built)) — and survives B1's push distribution without a rename. `coordinator-publish` is operator-role publishing. The two-service split exists purely to draw this one RBAC boundary between node reads and operator writes; both services are the same process.
 
 **Reserved-name conventions:**
 
@@ -46,23 +48,151 @@ roles:
 
 **Why two services for one process.** The backend is a single mgmt01-local HTTP server, but Florete RBAC is per-service, so a single "coordinator" service would give every `node` principal both read *and* write access. Splitting the listener into two ports — one for reads (gated by `node` role via `coordinator-sync`) and one for writes (gated by `operator` role via `coordinator-publish`) — lets Florete enforce the read/write boundary without any authZ code inside the HTTP server.
 
-This split doesn't give per-node isolation of *reads* — every `node` principal can `GET /artifact/mgmt/<any-node>` as long as it reaches the read-service. Tightening this (so alpha can only fetch its own directory) requires passing the verified peer SPIFFE ID to the HTTP layer, which flor deliberately does **not** do today — flor is a pure L4/L5 forwarder (QUIC/mTLS + TCP bytes), and reaching into HTTP to inject `X-Florete-Peer-SpiffeID` headers would promote it to an L7 proxy. That's a meaningful architectural shift with knock-on design questions (which component owns L7? is it flor itself, an adjacent sidecar, a side-channel lookup API?), and it needs careful design in C1+ rather than a rushed solution now. Flagged in [Open Follow-ups](../#open-follow-ups) and tied to the broader L7 awareness topic there. For pilots, the exposed ACL-matrix metadata is tolerable.
+This split doesn't give per-node isolation of *reads* — every `node` principal can `GET /artifact/mgmt/<any-node>` as long as it reaches the read-service. Tightening this (so alpha can only fetch its own directory) requires passing the verified peer SPIFFE ID to the HTTP layer, which flor deliberately does **not** do today — `flor vertex` is a pure L4/L5 forwarder (QUIC/mTLS + TCP bytes), and reaching into HTTP to inject `X-Florete-Peer-SpiffeID` headers would promote it to an L7 proxy. That's a meaningful architectural shift with knock-on design questions (which component owns L7? is it `flor vertex` itself, an adjacent sidecar, a side-channel lookup API?), and it needs careful design in C1+ rather than a rushed solution now. Flagged in [Open Follow-ups](../#open-follow-ups) and tied to the broader L7 awareness topic there. For pilots, the exposed ACL-matrix metadata is tolerable.
 
-**Wire protocol (C0).** Both services speak plain HTTP over the Florete mTLS tunnel.
+## Wire protocol
 
-- `coordinator: GET /artifact/mgmt/<node>?have=<v>` — **conditional set fetch**: returns Not Modified while the node's published set version is still `<v>`, else the complete set (`agent.json` + the per-workload configs) packaged as a single response — internally coherent by construction, no partial or mixed reads possible. (Gated by `coordinator-sync`; no path/identity cross-check in C0 — see note above.)
-- `coordinator-publisher: POST /publish/mgmt` — accepts a new compiled tree from `retectl`. Only reachable by callers with `operator` role.
+**Both services speak plain HTTP over the Florete mTLS tunnel — and that is the design, not a placeholder.** Every semantic a wire protocol would normally encode already lives in the signed artifact contract — envelope claims, payload `schema_version` ladders, fail-closed gating ([ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model)/[0012](/docs/implementation/adr/0012-version-artifact-contract)) — and the coordinator is a relay obliged to store and serve bytes it *cannot* parse. An IDL layer (gRPC/protobuf) would be a second schema treating every artifact as opaque `bytes`: ceremony around a file transfer. ADR-0012 already rejected protobuf's permissive unknown-field model at the layer that matters; all three ends (`retectl`, `coordinator`, `flor agent`) ship from one crate compiling one schema module, so IDL-first solves a divergence problem this system doesn't have; and identity/authZ live at the vertex (L4/L5), leaving channel security and metadata unused. What HTTP *does* buy is real: `curl --socks5-hostname` through the operator's SOCKS5 is a working diagnostic for a logs-only C0. This is IPC inside a tunnel — two endpoints plus named reservations, not a REST surface:
 
-**The store is latest-only — deliberately no history.** Version history for audit is git's job (the committed compiled tree); rollback is a fresh compile of reverted YAML, never a re-serve of old artifacts, which nodes would reject as replay ([Distribution & Reload](../distribution-and-reload)).
+- `coordinator: GET /artifact/mgmt/<node>?have=<v>` — **conditional set fetch**: Not Modified while the node's published set version is still `<v>` (`?have=` optional — omitted means "send it all"), else the complete set as one [set document](#packaging-the-set-document). Gated by `coordinator-sync`; no path/identity cross-check in C0 — see note above.
+- `coordinator-publisher: POST /publish/mgmt` — **atomic whole-tree publish** from `retectl`. Only reachable by callers with `operator` role.
 
 **As a relay, the coordinator reads only the envelope's routing core** — the `plane` discriminator, `version`, `node`, `name` (plus `schema_version`, informationally) — via a lenient probe; payloads and signatures are opaque bytes it stores and serves unchanged, whatever their schema version, including majors it has never heard of. The core is frozen precisely so relays never gate contract evolution ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
 
-The `/mgmt` path segment matches what C1's ctrl-plane already specifies, so C1 adds `GET /artifact/ctrl/<node>/<name>?have=<v>` (per-artifact and conditional on the held stream version — ctrl artifacts are independent streams with no set semantics) and `POST /publish/ctrl` siblings without reshaping the C0 endpoints.
+## Packaging: the set document
 
-The caller of the read endpoints is the node's `flor agent`, acting as the `node/<node>` principal via the local vertex's SOCKS5 listener. C0 doesn't need anything more elaborate — no streaming, no watch. Agents poll on their own cadence via `flor agent sync`; when nothing changed, the poll costs one small conditional read.
+**One shape in both directions — a flat array of whole envelopes:**
 
-**Metrics.** There is no separate `metrics` service in C0, and no metrics *upload* in C0 at all. Uploaded metrics are a planned *future endpoint on the coordinator itself* (C1+/B1) — it would ride the node-facing service under the `coordinator-sync` group, which is why that group is named for the role rather than for artifact fetch. C0 observability stays node-local (see [scope · Maintenance](../../scope#maintenance)).
+```json
+{
+  "artifacts": [
+    { "schema_version": "1.0", "plane": "mgmt", "version": 42, "node": "alpha", "name": "agent",
+      "generated_at": "…", "payload": { … }, "signature": { … } },
+    { "schema_version": "1.0", "plane": "mgmt", "version": 42, "node": "alpha", "name": "flor",
+      "generated_at": "…", "payload": { … }, "signature": { … } }
+  ]
+}
+```
 
-**Management-node bootstrap (chicken-and-egg).** The coordinator can't fetch its own artifacts from itself before it's running. Resolution: the management node is bootstrapped manually. The operator runs `retectl compile`, the enrollment bundle for mgmt01 carries that node's compiled `agent.json` and `flor.json`, and the operator starts `flor agent run` against that local material. Once it's up (with the coordinator service listening on `127.0.0.1:9000` via Florete), the operator runs `retectl publish` and from then on `mgmt01` refreshes itself via the normal `flor agent sync` flow. The manual step is genuinely one-shot per management node.
+Each array element is a **complete signed envelope**, byte-for-byte as the compiler emitted it (the shape in [The envelope](../validate-and-compile#the-envelope)); `node` and `name` live *inside* each envelope, in the routing core, so the array is self-describing: no external index, no filenames, no ordering assumptions. `POST /publish/mgmt` sends every node's envelopes in one such document; `GET /artifact/mgmt/<node>` returns the identical document filtered to that one node's members. The coordinator groups by the probed `(node, name)` and holds each envelope as a **raw byte span** (`serde_json::value::RawValue`-class), so slicing and re-serving never re-serialize signed bytes — byte preservation is what makes the agent's signature verification meaningful ([Agent § Sync](../agent#sync)).
 
-**Availability.** Coordinator downtime doesn't break running traffic — nodes keep running their last installed artifact. The only thing that fails is publishing new state. HA (two management nodes with replicated state) is a post-C0 concern; pilots can tolerate short outages.
+**The per-node `node` field is redundant on a single-node fetch, and kept deliberately.** One struct — `{ "artifacts": [ envelope, … ] }` — serves both directions, so producer and consumer compile one packaging type; and the agent re-checks that every returned envelope's `node` equals the node it asked for, so a relay cannot hand it a misfiled or cross-node set. A few constant bytes buy a single code path plus a coherence check. **No paths on the wire**: the agent derives placement from `(plane, name)` by its own "located by name, never by path" convention — which also structurally kills the tar-extraction path-traversal class. The document is exactly what a future push/watch frame would carry, so packaging survives pull→push unchanged.
+
+A fetch response carries the set version in a `Flor-Set-Version` header — informational, for `curl`-level diagnostics; the agent trusts only the signed stamps inside the envelopes.
+
+## Publish: atomic, monotonic, idempotent
+
+A publish **replaces the whole published tree** — compile is whole-rete ([Compile Step](../validate-and-compile#compile-step)), so publish is too. A node absent from the new tree is simply no longer published: its next fetch answers `404`, and it keeps running last-known-good. Acceptance is a two-layer gate, both layers reading only the frozen routing core — the coordinator never gates payload contracts:
+
+1. **Structural (`400`)**: every artifact's routing core parses; `plane` is `mgmt` (C0); artifacts group by `node` with no duplicate `(node, name)` and exactly one `name: "agent"` root per node; every member of a node's group carries the same `version` stamp. A malformed upload is rejected whole; nothing is stored.
+2. **Monotonic (`409`)**: for each node present in both the incoming and stored trees, the incoming set version must be ≥ the stored one, and equal versions require byte-identical members. Any regression — or equal-version-different-bytes, a compiler-discipline violation — rejects the publish whole. There is deliberately **no force-override**: agents reject regressed versions as replay ([ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)), so a forced regression would not roll anything back — it would silently brick sync. Rollback is roll-forward: revert the YAML, recompile, publish ([Distribution & Reload](../distribution-and-reload)).
+
+Re-publishing the identical tree is an idempotent no-op `200` — `retectl publish` is safe to re-run.
+
+**Atomicity uses the agent's primitive at the coordinator's own coherence unit.** The published tree's coherence unit is a single document, so the single-file `rename(2)` replace applies directly — no staging sets, no pointer file; the same rule that gives the agent's mgmt sets their pointer indirection gives the coordinator none ([Agent § Node layout](../agent#node-layout)). The accepted document is written to `tree.json.tmp` under the state root, fsynced, renamed over `tree.json`. Serving happens from an **in-memory index** — an atomically-swapped snapshot built at accept — so a fetch racing a publish sees the old tree or the new one, never a mix: "publish-in-progress" is not an observable state, and an interrupted upload never becomes current. Disk exists for restart recovery only: at startup the coordinator loads `tree.json`, re-probes it, and rebuilds the index; a missing file is the fresh-coordinator state (`503`).
+
+## Fetch: conditional, stateless about readers
+
+`GET /artifact/mgmt/<node>?have=<v>` resolves against the current snapshot: if the node's published set version equals `<v>`, the answer is `304 Not Modified` — the cheap poll; otherwise the full set document. The caller is the node's `flor agent`, acting as the `node/<node>` principal via the local vertex's SOCKS5 listener, polling on its own cadence (`flor agent sync`); C0 needs nothing more elaborate — no streaming, no watch.
+
+The coordinator keeps **no per-node fetch state** — it knows what is published, never what any node fetched, let alone activated. "Which version is this node running" is a node-side fact: `flor agent status` and `sync --dry-run` today, telemetry in B1. Statelessness about readers is also what keeps B1's watch and HA additive rather than a redesign.
+
+## Storage
+
+The coordinator's durable state lives under its spawn-injected `FLOR_STATE_ROOT` (`state/coordinator/` in the scope root — [Agent § Node layout](../agent#node-layout)); it derives no paths from names and receives none in config:
+
+```
+state/coordinator/
+└── tree.json          # the last accepted publish document, atomically replaced
+```
+
+**Latest-only — deliberately no history.** Version history for audit is git's job (the committed compiled tree); rollback is a fresh compile of reverted YAML, never a re-serve of old artifacts, which nodes would reject as replay ([Distribution & Reload](../distribution-and-reload)).
+
+## Error surface
+
+Small and HTTP-native; callers read the status plus a one-word JSON body. The two endpoints share no status — reads and writes fail in disjoint ways — so they get separate tables.
+
+**Fetch** (`coordinator`, node caller):
+
+| Status | `error` | When | Agent's move |
+|---|---|---|---|
+| `304` | — | set unchanged at `?have=` | sync is a no-op — the cheap steady state |
+| `404` | `unknown_node` | node not in the published tree | keep last-known-good, surface in `flor agent status` |
+| `503` + `Retry-After` | `not_published` | nothing published yet (fresh coordinator) | retry next poll; expected during bootstrap |
+
+**Publish** (`coordinator-publisher`, operator caller):
+
+| Status | `error` | When | Operator's move |
+|---|---|---|---|
+| `200` | — | accepted, or idempotent re-publish of the identical tree | done |
+| `400` | `malformed_tree` | structural gate failed | `retectl` surfaces the reason; nothing stored |
+| `409` | `version_conflict` | version regression, or equal version with different bytes | recompile from current repo state, re-publish |
+
+"Version mismatch" and "publish-in-progress" as agent-visible states do not exist by construction — the first is the ordinary `304`/full-set outcome of the conditional fetch, the second is precluded by snapshot serving.
+
+## The coordinator's own artifact
+
+The coordinator is itself a supervised workload, so it has a config artifact — and its production needs no new machinery. **`retectl compile` emits it, triggered by the reserved services**: for the node hosting `coordinator`/`coordinator-publisher` (validator rule 5), the compiler emits the supervision entry `{ "name": "coordinator", "run": ["coordinator"] }` into that node's `agent.json` and a `coordinator.json` beside it — envelope `(node: mgmt01, plane: mgmt, name: "coordinator")`, mgmt-signed, stamped with the node's set version, a full set member under all coherence checks. It reaches the node like every other artifact: in the enrollment bundle first, then by normal `flor agent sync`. The self-hosting loop is safe — the agent fetches and verifies the complete set *before* restarting anything, and payload-byte equality means the coordinator restarts only when its own config actually changed.
+
+**This is built-in platform-workload knowledge, not a general facility.** For every workload flor runs, the compiler supplies the *launch recipe*: no YAML carries a `run` argv, and the validator restricts `run` to the argvs it knows. What differs between the two C0 cases is **discovery**. Vertices are **declared** — `nodes.yaml` carries vertex entries, so the compiler emits a supervision entry per declared vertex (exactly one per node in C0, several from C1), inventing nothing. The coordinator is found by **reserved name** among ordinary `services.yaml` entries.
+
+That asymmetry is real — `services.yaml` otherwise describes workloads Florete only *wires*, never runs — and it is the right trade through C1. There is exactly one coordinator (validator rule 5 puts both its services on one node); its entries ship in the rete template, so the operator never types the magic name; and rules 5 and 6 enforce it, so breaking it is a clear validation error rather than silent weirdness — the same reserved-name pattern already carrying `coordinator-sync`, `coordinator-publish`, `node`, and `operator`. A pointer field (`coordinator: <service>` in `rete.yaml`) would buy indirection with no variance to justify it, and add a dangling-reference failure mode needing its own rule. When the referent finally does vary — B1+ Coordinators that split and join — the answer is placement as a Coordinator *decision space*, not a name in the facade. C0 gives an operator no way to declare a workload for the agent to run, deliberately ([Open Follow-ups](../#open-follow-ups)).
+
+Its **payload is deliberately near-empty**:
+
+```json
+{
+  "schema_version": "1.0",
+  "plane": "mgmt",
+  "version": 42,
+  "node": "mgmt01",
+  "name": "coordinator",
+  "generated_at": "2026-04-20T12:00:00Z",
+  "payload": {
+    "schema_version": "1.0",
+    "listen": {
+      "sync":    "127.0.0.1:9000",
+      "publish": "127.0.0.1:9001"
+    }
+  },
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "spiffe://rete-lovers/management-plane/primary",
+    "value": "<base64>"
+  }
+}
+```
+
+`listen.sync` / `listen.publish` — named for the roles, matching the group names — are projected from the two reserved services' `addr` fields: the same values the compiler writes into mgmt01's vertex payload as the outbound `tcp` `upstream` entries for `service/coordinator` and `service/coordinator-publisher`. This is the established projection pattern ([ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model), like `agent.json`'s `inbounds`): duplication compiler-guaranteed consistent, so neither process reads the other's payload.
+
+**Two principals, one workload.** The artifact and supervision-inventory `name` is `coordinator` — the same entity as the service principal of that name, so no registry collision. `coordinator-publisher` exists only as a principal in the vertex payload: no artifact, no supervision entry. The one process binds both loopback addresses.
+
+**Schema ownership sits outside the flor contract** — exactly as [Agent § Artifact handling](../agent#artifact-handling) frames it: the agent verifies and delivers this artifact opaque; its payload schema is owned by the `retectl`↔`coordinator` pair, versions on its own `schema_version` ladder, and is gated fail-closed by the coordinator at startup (a rejected payload exits `78 EX_CONFIG`; the agent surfaces it without backoff-looping). Even though both ends are flor's own, this dogfoods the tenant config contract from C0.
+
+**What is deliberately absent**, each by an existing rule: filesystem paths (the store location is node-derivable — spawn-injected `FLOR_STATE_ROOT`); identity material (the coordinator is a target-only workload: flor terminates mTLS and delivers plain loopback TCP, so the process holds no keys); trust/signer blocks (the agent is the sole signature verifier, and publish authorization is RBAC at the vertex, not L7); a node list (derived from the published tree itself); limits and timeouts (hardcoded in C0 — a future knob is a payload minor bump, never an envelope change).
+
+**There is no operator-authored coordinator config.** The coordinator's YAML source *is* the normal rete YAMLs: the reserved `services.yaml` entries carry all operator intent it consumes (`at:`, the two `addr`s). No `coordinator.yaml` exists. Two lines keep this stable through B1: **process config vs. served data** — `coordinator.json` configures the process (where to listen); the published tree is *data*, arriving via `POST /publish`, and B1's rete-wide bounds-and-objectives artifact ([B1 · Coordinator](/docs/implementation/b1-cloud-control/coordinator#facade-vs-consumed-model--and-the-three-artifact-flows)) is also data input through publish machinery, not config growth. And if a real knob ever appears (retention count, watch timeout), it needs a facade home — but that home is the **general, still-undesigned question** of how an operator authors a managed workload's config, of which `coordinator.json` is the degenerate first instance ([Open Follow-ups](../#open-follow-ups)); C0 projects nothing beyond `listen`, and this page reserves no general facility.
+
+## Run story
+
+**Supervision is the agent's, with nothing coordinator-specific.** On the management node the coordinator is an ordinary inventory entry — `{ "name": "coordinator", "run": ["coordinator"] }` — spawned with the uniform environment ([Agent § Supervision contract](../agent#supervision-contract)): it parses the config `FLOR_ARTIFACT` points at, binds its two loopback listeners, and persists under `FLOR_STATE_ROOT`. It follows the supervised-program contract: `SIGTERM` is drain-and-exit-0; a rejected config is exit `78` (surfaced, not retried); anything else is a crash retried under capped backoff — including a busy listen port, which may free up. Its stderr is captured and line-tagged by the agent into the node's journal.
+
+**Management-node bootstrap (chicken-and-egg).** The coordinator can't fetch its own artifacts from itself before it's running. Resolution: the management node is bootstrapped manually, once. The operator runs `retectl compile`; the enrollment bundle for `mgmt01` carries that node's complete initial set — `agent.json`, `flor.json`, **and `coordinator.json`** ([Enrollment](../enrollment)); `flor enroll` installs it and starts the agent, which spawns the vertex and the coordinator like any supervised workloads. Once the two services are reachable over Florete, the operator runs `retectl publish` — the first Florete-over-Florete call — and from then on `mgmt01` refreshes itself via the normal `flor agent sync` flow, coordinator config included. The manual step is genuinely one-shot per management node.
+
+## Reserved, not built
+
+Named seams for later milestones; none changes a C0 shape:
+
+- **Watch (B1)** — B1's "push" is a **client-initiated watch**: the agent holds a long-lived request open and the server answers on change. That is `?wait=<timeout>` added to the *same* conditional GET — additive precisely because the C0 fetch is version-conditional from day one (the Consul-blocking-query / k8s-`?watch=` shape). The reason it is client-initiated is **dial-path reuse, not reachability**: the agent already maintains the connection to the coordinator (it polls it), so a watch is that connection held open — no new service to publish, no ACL, no link. It is *not* that the coordinator couldn't dial the agent: an agent may publish itself as a service, and from C1 a published service is reachable through the mesh regardless of NAT (NAT traversal is a link-layer concern for direct links, orthogonal to service reachability). Reusing the client's existing dial is simply the cheaper construction. What actually churns at machine pace is **ctrl** (B1); mgmt stays human-paced forever, and pull survives as the permanent manual-mode tier.
+- **C1 ctrl siblings** — `GET /artifact/ctrl/<node>/<name>?have=<v>` (per-artifact and conditional on the held stream version — ctrl artifacts are independent streams with no set semantics) and `POST /publish/ctrl`. The `/mgmt` path segment exists now so these land without reshaping C0 endpoints.
+- **Schema-ceiling header** — [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract) requires the fetch protocol to eventually carry the consumer's payload-contract ceiling so producers can emit within a lagging fleet's reach. The header is named now — `Flor-Schema-Ceiling` — and sent from C1/B1; the C0 coordinator ignores unknown request headers by construction.
+- **Metrics push (C1+/B1)** — a future *upload* endpoint on the node-facing service, riding the `coordinator-sync` group (which is why that group is named for the role, not for artifact fetch). There is no metrics service and no upload in C0 at all; observability stays node-local ([scope § Maintenance](../../scope#maintenance)). Telemetry is a different data class — high-churn, unsigned, loss-tolerant — and gets its own protocol answer there; its needs never reshape the artifact path.
+- **Config knobs** — none in C0; if one appears, its facade home is the undesigned operator-authored-passthrough question, not a coordinator-local invention ([above](#the-coordinators-own-artifact), [Agent § Evolution sketches](../agent#evolution-sketches)).
+
+## Non-goals
+
+Documented deferrals, none reopened here: **HA** (see below); **push distribution** (the watch seam is the whole answer); **deltas** (sets are small; the conditional GET already makes the steady state one `304`); **per-node read isolation** (the L7 question, [above](#two-services-one-process)); **fetch tracking / audit store** (git is the history; readers are stateless to the coordinator); and **no IDL/gRPC migration before B1** — the protocol question is answered for C0, and reopening it earns nothing while the artifact contract carries the semantics.
+
+## Availability
+
+Coordinator downtime doesn't break running traffic — nodes keep running their last installed artifact. The only thing that fails is publishing new state. HA (two management nodes with replicated state) is a post-C0 concern; pilots can tolerate short outages.
