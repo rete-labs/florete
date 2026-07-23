@@ -75,7 +75,7 @@ Each studied against three fixed questions: *where does the allocator live, what
 - Node fast-path split: link vertex vs radio driver — who owns the fast-path scheduler state for a scheduled MAC?
 - Vendor/third-party slow-path schedulers as rete apps: their interface to the Coordinator, and how their decisions enter the ctrl chain.
 - RRA ↔ TCE/PCE coupling: one joint optimization or staged?
-- The ctrl-artifact schema for radio decisions (power caps now; grants, slot maps, beam schedules later — a `radio` payload alongside forwarding state?).
+- The ctrl-artifact schema for radio decisions (power caps now; grants, slot maps, beam schedules later): a vendor-agnostic `radio` section in the **link-vertex's** config — the medium adapter's counterpart to the mesh-vertex's forwarding table, each delivered to its own vertex, not one payload beside the other.
 - Time: the two-clock-domain split is fixed in [Time Synchronization](../time-sync), with the designs in [Slot Clock](../slot-clock) and [Network Clock](../network-clock); open questions live there.
 
 [^dot11s]: [IEEE 802.11s](https://en.wikipedia.org/wiki/IEEE_802.11s) — the 802.11 amendment for link-layer mesh networking (path selection at L2).

@@ -25,7 +25,7 @@ The single most load-bearing decision: **radio slot time and network time are se
 
 The bridge (this *is* R8's relationship, restated as requirements):
 
-- The radio exports its slot clock upward through R10's control path — a **frame counter** and **RX timestamps** in that counter's units — so the host and the ctrl plane can *reference* radio time (see [frame numbering](../slot-clock#frame-numbering-not-just-phase)).
+- The radio exports its slot clock upward through R10's control path — a **frame counter** (a dimensionless shared index) and **RX timestamps** carried as *(frame, ns offset)*, ns being hardware-agnostic where raw counter ticks would not be — so the host and the ctrl plane can *reference* radio time (see [frame numbering](../slot-clock#frame-numbering-not-just-phase) and [units at the interface](../slot-clock#what-crosses-r10)).
 - The host **never disciplines slot phase**: host time is orders of magnitude too coarse, and pushing it down would re-create the fast-timescale dependency R9 bans.
 - **Events are stamped in slot time; reports in network time.** A radio-level observation (a burst received at frame N, an MCS shift) is meaningful only in slot-clock units and is stamped so at R10; the agent's telemetry *reports* packaging such events for delivery carry network-time stamps. The Coordinator correlates the two through the reported mapping (next).
 - The mapping between the two clocks (frame N ↔ host time T, with drift) is **telemetry** — reported, consumed by the Coordinator, never authoritative for either side.
