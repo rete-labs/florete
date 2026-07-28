@@ -117,7 +117,7 @@ Two layers with different owners, by design:
 
 **Health and exit codes.** C0 has no readiness channel: a workload is considered up when it has run for a liveness window (a few seconds) without exiting. Failure modes are separated by a minimal **exit-code vocabulary** shared by everything the agent runs: `0` — clean stop (after `SIGTERM`); `78` (`EX_CONFIG`) — artifact rejected: the workload cannot serve this config, so the agent does *not* backoff-loop it, it surfaces the error immediately; anything else — crash, retried under backoff. Readiness (and richer health) arrives with the per-workload control channel post-C0.
 
-**stderr of every supervised workload is captured by the agent** and forwarded, line-tagged with the workload name, to the agent's own stderr — which the OS wrapper directs to journald / launchd logging. This is the seam [#122 (Design C0 observability)](https://github.com/rete-labs/florete/issues/122) builds on; log content and level conventions live there.
+**stderr of every supervised workload is captured by the agent** and forwarded, line-tagged with the workload name, to the agent's own stderr — which the OS wrapper directs to journald / launchd logging. This is the seam [Observability](../../observability) builds on; log content and level conventions live there.
 
 ## Sync
 
