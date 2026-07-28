@@ -1,0 +1,309 @@
+---
+title: Observability
+description: OpenMetrics- and tracing-based, node-local for C0
+---
+
+## Posture
+
+C0 observability is **node-local by constraint** ([Scope · Maintenance](../scope#maintenance)): every flor process logs to stderr, the host's system logger stores the stream, and nothing leaves the node — no collector, no upload, no dashboards. The upload path arrives as a metrics push to the coordinator's node-facing service (C1+/B1, sketched under [Collection](#collection-where-each-signal-goes)).
+
+Within that constraint, this page covers the scope's five maintenance events — loss of connectivity, crashes and abnormal terminations, slowdown of traffic flows, excessive resource usage, security issues — for all of flor's own running components: the vertex, the agent, the coordinator, and (in its small, operator-tool way) `retectl`. Tenant workloads are out of scope: the [supervised-program contract](../mgmt-plane/agent#supervision-mechanics) routes their stderr, and everything else about their observability is their own business.
+
+Two consumers set the bar for every choice below: an **operator reading the host log during an incident** (`journalctl` on Linux, the redirect file on macOS), and a **pilot user exporting logs** to attach to a bug report ([user-guide obligations](#user-guide-obligations)). The future third consumer — the Coordinator's Monitor step ([B1 sketch](/docs/implementation/b1-cloud-control/coordinator#microservice-decomposition-sketch), where node observations feed the control loop) — consumes the counter layer through a transport that does not exist yet; C0's job is only to make sure the counters will not need re-instrumenting when it does.
+
+## Two signals
+
+C0 emits exactly two, and the boundary between them is deliberate:
+
+- **Metrics** — OpenMetrics counters in a per-process registry, incremented **explicitly** in code. Aggregate, cheap, always on. Their eventual consumers are the operator, and the Coordinator's control loop from B1.
+- **The event stream** — log lines carrying **span context**, written to stderr. Detailed, situational, node-local, retained by the host logger.
+
+<Callout title="The event stream is never a source for metrics">
+Counters are incremented at the same places events are emitted, but **from the counter's own call, never derived from the event**. The reason is mechanical, not stylistic: a metric derived from log events would depend on the log filter — set `RUST_LOG=warn` and the numbers silently change. A counter must be invariant under log configuration. The corollary is worth stating too: the two can disagree (an event suppressed by [flood-safety](#the-flood-safe-layer), a level filtered out), and when they do, **the counter is right**.
+</Callout>
+
+What the two *do* share is a [vocabulary](#vocabulary): the same token means the same thing whether it labels a metric or fields an event, which is what lets one bounded/unbounded rule govern both.
+
+**The event stream is built on the [`tracing`](https://crates.io/crates/tracing) crate**, and this page uses its four concepts throughout — worth fixing here, because the design below leans on all of them:
+
+| Term | What it means here |
+|---|---|
+| **event** | a single log record — what a `tracing::warn!` or a bridged `log::warn!` produces |
+| **field** | a typed key-value carried *beside* an event's message (`initiator = …`) rather than interpolated into its text |
+| **span** | a period covering one operation — a connection, a sync, a request. Every event emitted inside it inherits its fields as context, including events from code that knows nothing about spans |
+| **Layer** | a pluggable stage in the process-wide subscriber that formats, filters, or acts on events and spans |
+
+Spans here provide **local context** only — which connection, which sync, which request an event belongs to. They are not distributed traces: nothing correlates them across nodes, by design (see [Collection](#collection-where-each-signal-goes)). Why `tracing`, what it replaces, and when an event must be a `tracing::` one rather than a `log::` one are settled under [Facade](#facade-tracing-adopted-in-c0-and-used-sparingly).
+
+## The classification rule
+
+Within the event stream, whether something becomes a line or a counter increment is decided by one rule, applied again whenever a new event is added later:
+
+1. **Anything a peer or the network can trigger at wire rate is a counter.** A per-occurrence line would turn a rogue-connection flood — precisely a security event we must observe — into a second, self-inflicted DoS of the log. Counters have constant cost per event and never suppress; the detail (which address, which cert error) may *additionally* go into a flood-safe line.
+2. **State transitions and lifecycle moments are log lines, edge-triggered.** A workload started, a set activated, a peer became unreachable, a peer recovered. Never per-attempt: a vertex retrying a dial logs the transition into failure once and the recovery once; the attempts themselves are counter increments. This matches the reconnect-tolerance convergence model of the [agent's lifecycle](../mgmt-plane/agent#supervision-mechanics) — retry loops are normal operation and must not narrate themselves.
+3. **Instantaneous quantities are sampled at readout, not stored.** Open-connection count, per-connection RTT and loss (from the QUIC stack's own stats), resource usage. They exist at the moment of a [snapshot](#readout); between snapshots there is nothing to maintain.
+
+### The flood-safe Layer
+
+Rule 1's "additionally" is enforced by a **Layer**, not by rate-limiting code at each call site — one implementation, one place to test, no per-site state to get wrong. It is a C0 component.
+
+**The key is `(callsite, one bounded field)`.** A *callsite* is `tracing`'s static identity for a single macro invocation in the source — one per source location, created once at compile time, the same for every event that line ever emits. So for this denial:
+
+```rust
+// core/transport/endpoint/verifier.rs:212 — one callsite
+tracing::warn!(
+    target: LOG_TARGET,
+    initiator = %id,
+    acl = "ingress",
+    "Connection denied by ACL"
+);
+```
+
+the key is `(verifier.rs:212, "spiffe://acme.rete/user/mallory")`: at most one line per window (order of ten seconds) for *that* line of code about *that* initiator, then suppression with a count flushed at window end (`suppressed 412 similar`). Keying per callsite keeps one flooding site from muting unrelated ones; adding the field means a legitimate denial for `user/alice` still appears while `user/mallory` floods.
+
+**`initiator` is this family's choice, not the rule.** Which field joins the callsite is per event family, resolved by a documented precedence in the Layer — `initiator` where the event has one, else `reason`, else the callsite alone. A handshake failure has no authenticated identity to key on, so it keys on `reason`; the closed enum keeps it bounded just as an identity would.
+
+**Whatever is chosen must be bounded** — that is the actual invariant. Socket addresses and anything else attacker-controlled must never enter the key: the suppression map is *state*, and state keyed on attacker-controlled values is itself a DoS vector. The unbounded values still appear in the line that does get through, as fields; they just never become map keys.
+
+**It applies to `tracing::` events only.** Records bridged from the `log` facade all share one static callsite *per level* — every `log::warn!` in the codebase is the same callsite — so they cannot be rate-limited per site and pass through unlimited. That is exactly why [flood-prone events must be `tracing::` events with fields](#facade-tracing-adopted-in-c0-and-used-sparingly): a path that can flood is converted, not exempted.
+
+<Callout title="What suppression loses — and what it cannot lose">
+An attacker who can trigger suppression can hide *detail* inside it: with denial lines suppressed, the one interesting denial is invisible among the flood's. That is accepted — C0's answer to "what happened during the flood" is the counter, which never suppresses: magnitude, duration (across snapshots), and attribution labels survive any flood. The lines are a convenience view; the counters are the record.
+</Callout>
+
+## Vocabulary
+
+Metric labels and event fields draw on one vocabulary. Two invariants hold globally; everything else is per-context.
+
+**Bounded values may be metric labels; unbounded values are event fields only.** This is not a metrics convention imposed on the design — it falls out of the architecture. Florete distinguishes **names** (identities: stable, operator-authored, few) from **locators** (layer-private addresses: ephemeral, many, [never names of a layer's users](/docs/overview/high-level-design#addressing--routing)). Names are labelable; locators are not.
+
+**A token names an axis; each metric or event family declares its own closed value set.** `result` on a sync is `unchanged`/`applied`/`failed`; on a coordinator request it is `ok`/`not_modified`/`rejected`/`error`. There is no global enum and no attempt to unify them — the sets are documented with the family that uses them. What *is* global: **values are always closed enums, never free text and never a formatted error message.** A `reason` built from `{e}` would blow up cardinality on the first novel error string; the human-readable error belongs in the event's message, the closed code in `reason`.
+
+**Common core** — two axes, used everywhere with per-family values: `result` (how an operation ended) and `reason` (why it failed).
+
+**Vertex**
+
+| Token | Meaning | Cardinality | Metric label |
+|---|---|---|---|
+| `initiator` | TLS principal originating the connection | bounded | yes |
+| `target` | TLS principal terminating it | bounded | yes |
+| `dir` | `to_target` / `from_target` | closed | yes |
+| `acl` | `ingress` / `egress` | closed | yes |
+| `link_peer` | peer vertex identity at a link (C1+) | bounded | yes |
+| `client_sock_addr` | local IP client at a northbound listener | unbounded | never |
+| `link_peer_sock_addr` | link peer's UDP locator, where one exists | unbounded | never |
+
+**Agent**: `workload` (bounded), `cause` — `crash`/`sync`, `signer` (the signing principal on a verified artifact — bounded), `set_version` (monotonic, unbounded over time → **field only**).
+
+**Coordinator**: `operation` — `artifact_fetch`/`publish`, `node` (bounded), `result`.
+
+Three naming decisions worth their reasons:
+
+- **`initiator` / `target` / `signer`, not `principal`.** A bare `principal` is ambiguous: Florete has TLS principals (`user`, `service`, `node`, `vertex`) *and* signing-only plane principals (`management-plane`, `control-plane`). Naming by **role in the operation** rather than by credential mechanism resolves it and reuses terms the [scope](../scope#use-case) already defines. `tls_principal` is reserved for the rare event that genuinely cannot distinguish the role.
+- **`link_peer…`, not `peer`.** The prefix names the relationship and layer; the suffix names the representation. So `link_peer` is the peer vertex's identity and `link_peer_sock_addr` its UDP locator *where one exists* — over radio links, or in a mesh overlay, there is no socket address and the identity stands alone. `peer` unqualified would also have collided with the northbound TCP client, which is a different thing entirely (`client_sock_addr`).
+- **`operation`, not `endpoint` or `route`.** `endpoint` already means the QUIC [TransportEndpoint](../data-plane) in the data plane, and `route` would collide with network routing. `operation` also describes intent rather than URL shape, so the coordinator's paths can change without touching a metric.
+
+<Callout title="One collision to know about in code">
+`target` is also `tracing`'s macro argument for the emitting subsystem (`tracing::debug!(target: LOG_TARGET, target = %target, …)` — legal, since the two occupy different syntactic positions, but confusing to read). This page therefore calls that concept the **component** (`socks5_inbound`, `stats`), and reserves *target* for the connection's terminating principal.
+</Callout>
+
+## Event coverage
+
+The five maintenance events, the signal that actually reveals each, and where the signal comes from. "Designed here" means new instrumentation this page specifies; "supervision design" means it already falls out of the [agent page](../mgmt-plane/agent#supervision-mechanics); "delegated" means the OS provides it and flor deliberately does not duplicate it.
+
+| Event | Revealing signal | Emitter | Instrument | Source |
+|---|---|---|---|---|
+| Crashes, abnormal termination | exit codes, restart/backoff, crash-loop flag, liveness window | agent | lines + `flor_agent_workload_restarts_total` | supervision design |
+| Loss of connectivity (data path) | outbound connect failures, handshake timeouts, connection closes by cause | vertex | counters + edge-triggered lines | designed here |
+| Loss of connectivity (mgmt path) | sync outcomes against the coordinator | agent | `flor_agent_sync_total{result}` + edge-triggered lines | designed here |
+| Slowdown of traffic flows | byte-rate deltas across snapshots; per-connection RTT/loss samples | vertex | counters + sampled quantities | designed here |
+| Excessive resource usage | per-service CPU/memory accounting | OS | `systemctl status` / cgroup accounting, `ps`, Activity Monitor | delegated |
+| Security: unauthenticated access | mTLS handshake failures by reason | vertex | `flor_vertex_handshake_failures_total{reason}` + flood-safe lines | designed here |
+| Security: unauthorized access | ACL denials per initiator | vertex | `flor_vertex_acl_denials_total` + flood-safe lines | designed here |
+| Security: DoS | the same counters, read as rates; connection churn per initiator | vertex | counters across snapshots | designed here |
+
+Three honest gaps, stated rather than papered over:
+
+- **Slowdown has no baseline in C0.** Nothing records "normal", so nothing can *detect* "slow" — detection needs collection and history, which is the B1 Monitor's job. What C0 provides is the raw material for a human: byte counters and RTT samples in every snapshot, retained by the host logger, so an operator diagnosing "it feels slow" can compare now against an hour ago by searching the log for `stats`.
+- **Memory leaks are trends, not moments.** The OS shows current usage (delegated); the trend only exists across observations. Same answer: OS accounting now, automated trend detection when collection exists.
+- **flor's visibility starts at the QUIC handshake.** A pre-handshake packet flood (garbage UDP at the socket) is dropped inside the QUIC stack and largely below flor's ability to attribute; interface-level counters belong to the OS. C0 sees its consequences (handshake failures, resource pressure), not the packets.
+
+**Resource usage is delegated deliberately** (not by omission): systemd accounts CPU and memory per service unit out of the box, launchd/macOS has `ps` and Activity Monitor, and the [user guide](#user-guide-obligations) documents reading them. The known gap — the whole scope shares one unit, so per-child split needs `ps` rather than `systemctl status` — is pilot-tolerable. Self-sampled per-process gauges join the snapshot when a collector exists to consume them ([reserved](#reserved-not-built)).
+
+## Counters: the metrics-ready layer
+
+**Counters are Prometheus-model metrics from day one — only the transport is deferred.** Each process owns a typed metric **registry** (the [`prometheus-client`](https://crates.io/crates/prometheus-client) crate — the official Prometheus Rust client: typed counter/gauge families keyed by derived label structs, an explicit registry object that fits the [DI style](/docs/implementation/adr/0003-use-di-framework), OpenMetrics text encoding as a plain function call, and none of the exporter/server machinery C0 must not build). What C0 fixes is the part that is expensive to change later — the data model:
+
+- **Naming** follows Prometheus conventions: `flor_<component>_` prefix (`flor_vertex_`, `flor_agent_`, `flor_coordinator_` — the coordinator's *config* sits outside the flor contract, but it is still flor's own binary and shares the namespace), `_total` suffix on counters, base units in names. Tenant workloads never appear in this namespace.
+- **Labels are bounded by construction**, per the [vocabulary](#vocabulary) rule: identities are operator-authored and small, failure reasons are closed enums. Socket addresses, ports, connection IDs — anything unbounded — never become labels; they appear only as event fields.
+- **No histograms in C0.** Bucket boundaries want tuning against a real consumer, and a histogram serialized into a log stream is noise. Counters plus sampled RTT lines cover pilot diagnosis; histograms are an additive registry change when the push transport lands.
+- **Stored vs. sampled.** The registry holds only what must survive between readouts — monotonic counters. Instantaneous quantities (rule 3 above) are read live at snapshot time; when a transport exists they become on-demand collectors against the same registry, which is the standard pattern, not a redesign.
+
+The starter set — normative for naming style, deliberately small, grown by need:
+
+| Metric | Labels | Covers |
+|---|---|---|
+| `flor_vertex_handshake_failures_total` | `reason` (closed set from the TLS/QUIC error taxonomy, e.g. `untrusted`, `name_mismatch`, `expired`, `timeout`) | unauthenticated access |
+| `flor_vertex_acl_denials_total` | `initiator`, `acl` (`ingress`/`egress`) | unauthorized access |
+| `flor_vertex_connections_opened_total` | `initiator`, `target` | activity baseline, churn |
+| `flor_vertex_connections_closed_total` | `initiator`, `target`, `cause` (`drain`/`remote`/`error`/`timeout`) | connectivity loss |
+| `flor_vertex_connect_failures_total` | `target`, `reason` | connectivity loss (outbound) |
+| `flor_vertex_bytes_total` | `initiator`, `target`, `dir` (`to_target`/`from_target`) | slowdown, via rates across snapshots |
+| `flor_agent_workload_restarts_total` | `workload`, `cause` (`crash`/`sync`) | crashes vs. config-driven restarts |
+| `flor_agent_sync_total` | `result` (`unchanged`/`applied`/`failed`) | mgmt-path connectivity |
+| `flor_coordinator_requests_total` | `operation` (`artifact_fetch`/`publish`), `result` (`ok`/`not_modified`/`rejected`/`error`) | serving health |
+
+A cardinality note on the pair: metrics carrying both `initiator` and `target` produce a cross-product. At C0 scale (≤20 principals each way) that is a few hundred series — fine — but it is the one place cardinality could creep, so carrying both is a per-metric decision rather than a blanket rule. `flor_vertex_handshake_failures_total` deliberately carries neither: a failed handshake often has no authenticated identity to attribute, which is why the attempted one (when there is any) belongs in the event's fields, not the metric's labels.
+
+Sampled at readout, not stored: open connections, per-connection RTT and loss estimates (the QUIC endpoint's own connection stats), active workload state (already in `status`).
+
+**What is deliberately not built in C0**: no `/metrics` listener, no push, no scrape, no metrics database, no new sockets. The C1+/B1 transport is a *push* to the coordinator, for the same reason B1's config watch is client-initiated ([Coordinator § Reserved, not built](../mgmt-plane/coordinator#reserved-not-built)): nodes already dial the coordinator, so a push reuses that connection, whereas a pull/scrape would invert the topology and make the collector responsible for reaching every node — a fan-out the poll model already avoids. Whether that push is Prometheus remote-write or periodic OpenMetrics text is a C1 decision that the registry serves either way. See [Reserved, not built](#reserved-not-built).
+
+## Readout
+
+**Every process periodically snapshots its own counters into its own log stream.** With per-workload control channels [reserved rather than built](../mgmt-plane/agent#local-ipc), the vertex has no channel to hand counters to the agent in C0 — its log stream *is* its counter surface, and the system logger's retention is what turns point-in-time counters into history.
+
+- **Format: one OpenMetrics-style sample per line**, under the component `stats` — `stats: flor_vertex_bytes_total{initiator="user/alice",target="billing",dir="to_target"} 1048576`. Greppable at 2am (`journalctl --grep stats` on Linux, `grep stats` on the macOS file, then by metric name), zero invented syntax, and trivially machine-convertible because each line is the industry exposition format.
+- **Cadence: changed-only every 300s** (`FLOR_STATS_INTERVAL` seconds overrides; `0` disables). Changed-only keeps a quiet node's log quiet; an unchanged counter's last value is in an earlier snapshot, which is what retention is for. The interval is a node-local knob, not operator intent — an artifact field is reserved for the day fleet-wide tuning matters.
+- **Full snapshot on demand: `SIGUSR1`** dumps the complete registry plus sampled quantities immediately — the incident readout, no waiting for the timer. Unix-only, which C0 is; Windows arrives in C1 together with the control channel that supersedes this.
+- **Full snapshot at drain**: the `SIGTERM` handler emits a final complete snapshot before exit, so a clean stop never loses the tail.
+
+**`flor agent status` reports agent-owned state only.** Over [`agent.sock`](../mgmt-plane/agent#local-ipc), structured: per-workload state (running / crash-looping / stopped, pid, uptime, restart counts, last exit code and time), sync state (last result and time, active set version), and the agent's own counters. It does **not** proxy vertex counters in C0 — that requires the per-workload control channel; when the channel lands, aggregation into `status` is additive. Until then the operator's incident pair is `flor agent status` (is it up, is it syncing) plus the host log (what is it doing).
+
+## The log stream
+
+**Ownership: every process writes its own stderr; the agent owns its children's.** Per the [supervision design](../mgmt-plane/agent#supervision-mechanics), the agent captures each child's stderr and re-emits it line-tagged with the workload name onto its own stderr, which the OS service wrapper directs to journald (Linux) or a log file (macOS, via the launchd plist's stderr path, rotated by an installer-shipped config). Multi-rete hosts separate scopes by service instance (`flor-agent@<scope>`); within a scope, the workload tag separates streams. A child line arriving without flor's own format (a panic backtrace, a stray print) is re-emitted tagged at WARN — the crash itself is separately surfaced by the agent's exit-status line and restart counter. The pipe's natural backpressure bounds a stderr-flooding child; the flood-safe primitive exists so flor's own components never flood by design.
+
+**Two sink classes, not two operating systems.** What a line must contain depends on what the sink adds, and there are exactly two answers — so the format switches on the sink, never on a compiled-in OS assumption:
+
+| | **Metadata sink** — journald | **Plain-byte sink** — launchd's redirect file, a pipe, a terminal, CI |
+|---|---|---|
+| The sink adds | its own receive timestamp, the service identity, and a priority it parses off the line | nothing whatsoever |
+| flor adds | an sd-daemon `<N>` priority prefix, so `journalctl -p warning` filters correctly | the level rendered as a word |
+| Color | never | only when stderr is a tty |
+| Timestamp, target, message, fields | identical | identical |
+
+Selection is a **capability probe, not a platform check**: `$JOURNAL_STREAM` (set by systemd when the stream it handed us is the journal) picks the metadata sink; its absence picks the plain-byte sink — which is what macOS always gets, since launchd redirects a daemon's stderr to a plain file and adds nothing to it. `FLOR_LOG_FORMAT=auto|plain|journal` overrides for CI, containers, and hosts that wire stderr unusually. The agent preserves a child's `<N>` prefix when re-tagging (children inherit the probe's answer through the same environment). The tty check fixes the current logger's known gap — colorized output when stderr is not a terminal; the prefix and the probe are small additions to the same in-house logger.
+
+**macOS has no metadata sink here, deliberately.** The platform's structured logger (`os_log` / unified logging) is not where launchd sends a daemon's stderr, so using it means each process calling that API directly — which bypasses the agent's stderr pipe and with it the [single-ownership seam](../mgmt-plane/agent#supervision-mechanics) that makes every child line attributable to its workload name. One shared file per scope keeps a single path on both platforms. Native structured sinks per OS are [reserved, not built](#reserved-not-built).
+
+### Timestamps and the clock
+
+**Every line carries a timestamp flor wrote; the sink's own stamp is never the authoritative one.** Two independent reasons, and the first already binds in C0:
+
+- **The plain-byte sink supplies nothing.** On macOS, flor's own stamp is the *only* time information a line carries — so self-stamping is not future-proofing there, it is the difference between an exportable log and an unusable one. It is also what makes a time-bounded export possible without `journalctl --since`: a lexically sortable ISO-8601 prefix is what `grep`/`awk` can slice.
+- **Rete time is coming, and no sink can produce it.** [B2's network clock](../../b2-hybrid-hauling/network-clock) names log timestamps as a rete-time consumer — cross-node correlation at ~10 ms, which is most of what a timestamp is *for* in a distributed system. Rete time is a **per-rete virtual clock** the agent maintains as coefficients over the host's monotonic clock, and that design's hard rule is that **the host clock is never disciplined**: a multi-rete node needs one clock per trust domain, and stepping the host's clock is the host owner's business, not any rete's. A sink stamps from the host clock by definition, so only the emitting process can stamp in rete time.
+
+The stamp therefore comes from a **clock abstraction, not a direct wall-clock read at the call site** — a one-line indirection in C0 that is the whole of the migration later. In C0 that clock *is* the host wall clock, rendered ISO-8601 with offset at millisecond precision (millisecond because ~10 ms is the rete-consistency target these stamps will eventually have to honor). When rete time lands, the same field carries it and every flor line in the rete becomes correlatable — no call-site change, no format change, nothing relearned by whoever reads logs. journald keeps adding its receive stamp throughout, which stays useful as exactly that: *host* time, for lining flor's lines up against the rest of the system's.
+
+Two consequences worth writing down now rather than discovering later:
+
+- **The clock source is announced, never inferred.** Each process logs its clock source at startup and at any transition (`clock: host → rete (step +1.42s, ε=8ms)`). Not cosmetic: rete time may not exist yet when a process starts, and B2 permits exactly one forward step at bootstrap — a reader who sees stamps jump must be able to tell a clock correction from a stalled process.
+- **Monotonicity improves across the migration.** C0's host wall clock can step backward under NTP, so C0 stamps are not monotonic — journald's are not either. Rete time is slew-only after bootstrap, so the change makes the stream *better* behaved; until then nothing reading these stamps may assume monotonicity.
+
+**Levels** — the convention every flor component follows, default filter INFO, controlled by `RUST_LOG` (standard `env_logger` syntax, per-module overrides included):
+
+| Level | Meaning | Examples |
+|---|---|---|
+| ERROR | operator action needed; the component cannot proceed as configured | artifact rejected (`EX_CONFIG`), listener bind failed, crash-loop declared |
+| WARN | degraded or self-healing; worth watching | sync failed (will retry), peer became unreachable, ACL denial (flood-safe), suppression summaries |
+| INFO | lifecycle and state transitions; the default record of what happened | started/stopped, set `v<N>` activated, workload restarted, peer recovered, `stats` snapshots |
+| DEBUG | per-event detail, flood-safe where peer-triggered | per-connection open/close detail, handshake failure with remote address |
+| TRACE | development only, never in pilots | packet-level and QUIC-stack internals |
+
+### Facade: `tracing`, adopted in C0 and used sparingly
+
+**C0 adopts `tracing` as the logging facade and subscriber**, replacing `env_logger` as the output layer. The line format above is unchanged — it is reproduced by a custom `FormatEvent` — and `RUST_LOG` keeps working, since `EnvFilter` accepts the same syntax (including per-component directives). Records from the `log` facade are captured by `LogTracer`, so third-party crates and every existing `log::` call site flow through the same filter and formatter.
+
+The reason for adopting it now, rather than in C1, is **span context**: a span attached to a connection is inherited by every event emitted inside it, including events from code that knows nothing about spans. In the vertex's SOCKS5 path this turns unattributable lines into attributed ones with no change to the call sites that emit them:
+
+```text
+before:  DEBUG socks5_inbound: Cannot resolve target 'typo.example.com': …
+after:   DEBUG socks5_inbound: conn{initiator=…/user/carol client_sock_addr=127.0.0.1:43974 target=typo.example.com} Cannot resolve target 'typo.example.com': …
+```
+
+Under concurrency that is the difference between a readable log and an unreadable one, and it is why the decision could not wait: C0 is already rewriting the output layer for the [sink classes](#the-log-stream) and the [self-stamped clock](#timestamps-and-the-clock), and that layer is written once either way.
+
+**Instrument sparingly — spans mark operations, never packets.** C0's spans: one per proxied connection in the vertex, one per sync in the agent (with `set_version` as a field), one per request in the coordinator. Nothing on a per-packet or per-datagram path, where span creation would be a real cost rather than a rounding error. `retectl` gets none — a sequential CLI has no concurrency to attribute.
+
+**When an event must be a `tracing::` event rather than a `log::` one.** The `log` bridge carries a fixed field set (`message`, `log.target`, `log.module_path`, `log.file`, `log.line`) — a bridged record is an opaque string plus source location, and `log`'s own key-values are not forwarded. Therefore:
+
+> Anything a Layer must **act on** — not merely print — is a `tracing::` event with fields. Anything only a human reads may stay `log::`.
+
+In practice: flood-prone events (handshake failures, ACL denials, connect failures, resolve failures) become `tracing::` events with fields, because the [flood-safe Layer](#the-flood-safe-layer) keys on callsite and `initiator` and cannot do either through the bridge. New code — the agent and coordinator — uses `tracing::` throughout; there is no reason to add new `log::` call sites once the facade has moved. Existing non-flood-prone `log::` calls stay as they are and keep working.
+
+**Fields, not interpolation, for anything that is data.** `tracing::debug!(target = %target, reason = "not_rete_name", "Target unresolvable")` renders like the interpolated version today and is machine-actionable later; `log::debug!("Cannot resolve target '{target}'")` is a string forever. The message stays a short, stable phrase with no interpolated values — that is what keeps it both greppable and matchable by callsite.
+
+**Two consequences found by implementing this, not by reasoning about it:**
+
+- **Span level gates context.** An `info_span!` disappears under `RUST_LOG=warn`, taking the context of the WARN lines inside it with it — a regression against hand-interpolated context. Connection and operation spans are therefore `error_span!`: they exist whenever anything is logged at all.
+- **`env_logger` was silently stripping ANSI.** Its buffer swallowed escape codes written into it; a `tracing` writer passes bytes through, so error-stack's own emphasis leaked into non-terminal output. The terminal check must therefore also set error-stack's color mode — the tty gate has two sources, and one of them was masked.
+
+## Identity in observability data
+
+**Connection-level attribution by SPIFFE identity: yes.** The difference between "something is flooding us" and "`user/mallory` is flooding us" is most of the diagnostic value of the security counters, and the cardinality risk that makes per-identity labels dangerous elsewhere is absent by construction — the identity set is operator-authored, small, and closed ([the vocabulary rule](#vocabulary)). Unauthenticated peers have no identity to attribute: they are counted in `reason` buckets, and their socket addresses appear only in flood-safe DEBUG/WARN lines as fields, never as labels. Request-level attribution stays out of reach by design — flor is L4/L5; that is the deferred [L7 question](../mgmt-plane#open-follow-ups).
+
+The consequence, stated: logs and snapshots carry a **per-identity activity trail** (who connected where, when, how many bytes) that outlives the connections. In C0 that trail is node-local, inside the host's existing security boundary, retained on the system logger's schedule — acceptable for pilots. The moment an upload path is designed (C1+/B1), this becomes a data-handling question — retention, aggregation, who may read what — and must be answered there, not inherited silently. It is also the point at which the trail becomes attractive to an external consumer such as a SIEM ([Collection](#collection-where-each-signal-goes)), which sharpens rather than softens the question.
+
+## Restart and retention
+
+**Counters are process-lifetime by design; the log stream is the durable record.** A restart zeroes the registry — and that is fine precisely because the readout path already moved the history out of the process: periodic snapshots survive in the host log, a clean stop emits a final snapshot, and a crash loses at most one interval's tail — while the crash itself is captured by the agent's supervision lines and restart counter, which live in the process that did *not* crash. The agent's own crash is the host logger's to remember, and its durable supervision facts (version high-water-marks) are already [persisted state](../mgmt-plane/agent#node-layout) — config state, not metrics. Nothing metrics-shaped is written to disk; `state/agent/` stays supervision-only.
+
+Retention is therefore the host logger's, and it differs per platform in ways the [user guide](#user-guide-obligations) must state:
+
+- **Linux / journald** — retention is journald's, and the trap is that **persistence is distro-dependent**: `Storage=` may be `volatile`, in which case the whole record dies with the boot, which is precisely the boot worth investigating. Node setup must check it.
+- **macOS / launchd** — retention is the redirect file's, and **rotation is not automatic**. System-mode installs ship an `/etc/newsyslog.d/` fragment; user-mode installs cannot write there, so C0's user-mode macOS story is an uncapped file the user guide documents truncating. A named C0 gap, with a small post-C0 fix: an installer-managed periodic rotation job.
+
+## Collection: where each signal goes
+
+C0 collects nothing. But the shape collection will take determines whether C0's instrumentation survives it, so it is recorded here — as a forward sketch, not a commitment. **There are three tiers, not two, and the middle one never leaves the node.**
+
+| Signal | Volume | C0 | B1+ | Why |
+|---|---|---|---|---|
+| **Counters** | small, bounded | local snapshots into the log stream | **pushed continuously** to the coordinator | small enough to ship always; the only signal the control loop can consume |
+| **Event stream** | large, situational | local, host-logger retention | **still local** | the volume-to-value ratio is wrong to ship continuously |
+| **Diagnostic bundle** | bounded, episodic | manual export (user guide) | **uploaded on trigger** | the bridge — sent only when something is already known to be wrong |
+
+**Why the event stream is not shipped**, stated as a decision rather than an omission. First, bandwidth is a scarce resource in the environments Florete targets: the [Edge Mesh](/docs/implementation/b2-hybrid-hauling) premise is nodes on radio links with hard resource budgets, and continuously uploading the highest-volume, lowest-value-per-byte signal from those nodes is the wrong trade. Second, the Coordinator's Monitor→Analyze→Plan loop consumes **time series**, not prose — shipping logs would not feed the control loop at all, it would only make the coordinator a log database.
+
+**The diagnostic bundle is the tier that connects them.** When a counter or a supervision event indicates trouble — a crash-loop declared, sync failing repeatedly, a denial rate spiking — the node uploads a *bounded* bundle: the flight-recorder ring for the failing span, recent WARN/ERROR lines, and a counter snapshot. Bounded by construction, sent only on a trigger. This is the "report an issue with logs attached" idea promoted from a manual user command into an automatic mechanism, and it is what the [flight-recorder Layer](#reserved-not-built) exists to produce. **There is no trace collector**: what would justify one is served by episodic diagnostic upload, which is a far smaller thing.
+
+**Cross-node correlation needs none of this.** Rete time (from the [self-stamped clock](#timestamps-and-the-clock)), plus `initiator`/`target` and version numbers, already lines events up across nodes — the cheap majority of what distributed tracing would buy, at zero protocol cost. Correlation IDs for flor's *own* control operations (publish → sync → restart across nodes) remain a tractable later addition to the sync protocol; distributed tracing of *user* traffic stays blocked at the L4/L5 boundary regardless of tooling ([the deferred L7 question](../mgmt-plane#open-follow-ups)).
+
+**External log consumers stay possible, and are not ours to build.** A SIEM, or any log-aggregation stack, ingests from the host logger — journald, syslog, a file — which is exactly where the event stream already lands. We build no integration and block none. That such consumers may be wanted on some nodes and not others (a cloud node shipping a full stream; an edge node shipping a reduced or locally-processed one) is the general shape rather than a special case: **stream verbosity and upload scope are per-node policy**, which in Florete's model eventually means operator-authored mgmt bounds with the Coordinator choosing within them — lowering a node's verbosity under congestion, raising it during an investigation. Nothing here is designed now; the placement is recorded so it lands in the right layer when it is.
+
+## retectl
+
+An operator CLI, not a daemon: its observability is human-readable stderr, meaningful exit codes, and `RUST_LOG` verbosity when needed — no counters, no snapshots. Its audit story is elsewhere by design: the git history of the rete repo (what was authored) and the coordinator's log plus `flor_coordinator_requests_total{operation="publish"}` (what was published, when).
+
+## User-guide obligations
+
+What this design requires the [user guide](https://github.com/rete-labs/florete/issues/14) to document:
+
+- **Viewing and following logs, per OS**: `journalctl -u flor-agent@<scope> -f`, `-p warning`, `--grep`, `--since` on Linux; `tail -f` and `grep` on the macOS log file (`/Library/Logs/flor/<scope>.log` in system mode, `~/Library/Logs/flor/<scope>.log` in user mode), where time-range slicing works off the ISO-8601 prefix flor writes.
+- **Exporting a time-bounded slice** to attach to a bug report — on both platforms, including which scope and which workload tags matter.
+- **Checking retention at node setup**: journald `Storage=persistent` on Linux; on macOS, that the file is rotated (system mode) or how to truncate it (user mode).
+- **Reading resource usage per OS**: `systemctl status` / cgroup accounting on Linux, `ps` / Activity Monitor on macOS, including the per-child split.
+- **The incident sequence**: `flor agent status`, then `SIGUSR1` for a full stats snapshot, then the platform's log search for `stats` history.
+
+## Reserved, not built
+
+Recorded so nothing above forecloses them; none is C0 work:
+
+- **Metrics push to the coordinator (C1+/B1)** — tier 1 of [Collection](#collection-where-each-signal-goes). The node-facing service grows a push endpoint under the `coordinator-sync` group ([why the group is named for the role](../mgmt-plane/coordinator)); nodes push their registries on a cadence; resource identity (`rete`, `node`, `workload`) attaches as labels at the transport boundary — from the spawn environment, never baked into metric families. Wire format — Prometheus remote-write vs. periodic OpenMetrics text — is decided there; the registry serves either. An external TSDB (e.g. VictoriaMetrics, which natively ingests remote-write) is then a *sink behind or beside* the coordinator; the coordinator itself stays a consumer, because observations feed its [Monitor step](/docs/implementation/b1-cloud-control/coordinator#microservice-decomposition-sketch).
+- **Flight-recorder Layer** — a ring buffer of recent events held in the *span's own extensions*, dumped only when that span ends badly. The answer to "the data path cannot be logged at production levels", and the payload of the [diagnostic bundle](#collection-where-each-signal-goes). Spans are what make it possible: the buffer has a natural per-connection home.
+- **Episodic diagnostic upload (B1+)** — tier 3 of Collection: bundle plus recent WARN/ERROR lines plus a counter snapshot, triggered by a counter or supervision event, never continuous.
+- **Runtime log-level control** — `tracing-subscriber`'s `reload::Layer` swapped by signal in C0's shape, or over the per-workload control channel once it exists; lets an operator raise verbosity for one component during an incident without a restart.
+- **Counter aggregation into `flor agent status`** once per-workload control channels exist — vertices report registries upward; `status` becomes the node's single readout.
+- **Readiness and health** beyond the liveness window — arrives with the control channel, per the [agent design](../mgmt-plane/agent#supervision-mechanics).
+- **Histograms** (handshake and connect latency first), when the push transport gives buckets a consumer to be tuned against.
+- **Self-sampled resource gauges** (per-process RSS/CPU in the snapshot), when a collector consumes them; C0 delegates to the OS.
+- **Observability policy as mgmt bounds** — per-node stream verbosity and upload scope authored by the operator and narrowed by the Coordinator, per [Collection](#collection-where-each-signal-goes).
+- **Windows logging** (C1, with Windows itself): a third sink class — Event Log, or a service-managed file — chosen by the same capability probe, so the switch stays in one place.
+- **Native structured sinks per OS** — journald's native protocol (fields become queryable journal fields: `journalctl FLOR_PRINCIPAL=…`) and macOS `os_log`. Both trade the single stderr pipe, and with it the agent's line-tagging seam, for queryability; worth revisiting when the per-workload control channel changes stderr ownership anyway.
+- **Clock uncertainty in snapshots** — once rete time exists, the stats snapshot carries the clock's ε alongside the counters, so a collector can weight cross-node correlation by the quality of the clock that stamped it ([B2 · Network Clock](../../b2-hybrid-hauling/network-clock)).
+- **"Report an issue with logs attached" command** (post-C0), packaging the export steps the user guide documents manually.
+
+Explicitly **not** reserved, because it would break an invariant: deriving counters from events. Counter increments stay explicit at the call site, so metrics remain invariant under log configuration.
+
+**Non-goals restated** from the [scope](../scope#maintenance): external collection, upload, or dashboards in C0; distributed tracing at any near milestone.

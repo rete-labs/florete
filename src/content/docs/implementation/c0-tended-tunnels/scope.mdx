@@ -77,7 +77,7 @@ We need means to detect and resolve problems that arise in production environmen
 
 For C0 we need the bare minimum to run the production pilots successfully.
 
-**C0 observability is node-local.** `flor` logs to stderr, captured by the host's system logger (journald on Linux, launchd on macOS); the user guide documents how to view and export those logs, and `flor agent status` gives a local state readout. Nothing is shipped to an external collection server in C0 — that upload path arrives with B1's coordinator.
+**C0 observability is node-local.** `flor` logs to stderr, captured by the host's system logger (journald on Linux, launchd on macOS); the user guide documents how to view and export those logs, and `flor agent status` gives a local state readout. Nothing is shipped to an external collection server in C0 — that upload path arrives with B1's coordinator. The full design — log conventions, metrics-ready counters, and their readout — is [Observability](../observability).
 
 ### Environments
 
