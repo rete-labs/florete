@@ -234,11 +234,6 @@ In practice: flood-prone events (handshake failures, ACL denials, connect failur
 
 **Fields, not interpolation, for anything that is data.** `tracing::debug!(target = %target, reason = "not_rete_name", "Target unresolvable")` renders like the interpolated version today and is machine-actionable later; `log::debug!("Cannot resolve target '{target}'")` is a string forever. The message stays a short, stable phrase with no interpolated values — that is what keeps it both greppable and matchable by callsite.
 
-**Two consequences found by implementing this, not by reasoning about it:**
-
-- **Span level gates context.** An `info_span!` disappears under `RUST_LOG=warn`, taking the context of the WARN lines inside it with it — a regression against hand-interpolated context. Connection and operation spans are therefore `error_span!`: they exist whenever anything is logged at all.
-- **`env_logger` was silently stripping ANSI.** Its buffer swallowed escape codes written into it; a `tracing` writer passes bytes through, so error-stack's own emphasis leaked into non-terminal output. The terminal check must therefore also set error-stack's color mode — the tty gate has two sources, and one of them was masked.
-
 ## Identity in observability data
 
 **Connection-level attribution by SPIFFE identity: yes.** The difference between "something is flooding us" and "`user/mallory` is flooding us" is most of the diagnostic value of the security counters, and the cardinality risk that makes per-identity labels dangerous elsewhere is absent by construction — the identity set is operator-authored, small, and closed ([the vocabulary rule](#vocabulary)). Unauthenticated peers have no identity to attribute: they are counted in `reason` buckets, and their socket addresses appear only in flood-safe DEBUG/WARN lines as fields, never as labels. Request-level attribution stays out of reach by design — flor is L4/L5; that is the deferred [L7 question](../mgmt-plane#open-follow-ups).
