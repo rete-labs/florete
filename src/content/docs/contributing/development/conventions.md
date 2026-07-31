@@ -30,6 +30,28 @@ We propagate errors with [`error-stack`](https://docs.rs/error-stack), wrapping 
 - **Describe what was being attempted**, not what failed underneath — `change_context(Error::new("Failed to sign CSR"))` is more useful at the call site than re‑stating the lower error.
 - **Avoid `map_err` for error wrapping** — it discards the underlying error and breaks the `Report` chain, so debug output loses the original cause. Reach for it only when `change_context` is not available, which is rare: the underlying error must implement `std::error::Error + Send + Sync + 'static`. The usual culprits are errors carrying borrowed data (`&'a str` inside), non-`Send`/`Sync` errors (hold an `Rc`/`RefCell`), or types from a library that aren't wired up as `Error` at all. If you do reach for `map_err`, fold any salient detail from the discarded error into the new message.
 
+#### Logging an error: stack for faults, one line for expected outcomes
+
+A `Report`'s two formats are not interchangeable, and picking by habit produces unreadable logs. Choose by **what the error means**, not by what is convenient:
+
+- **Faults get the full stack — `{e:?}`.** Something is broken and the operator needs the causal chain and source locations: a file that should exist is missing, a listener cannot bind, an artifact fails verification. These are ERROR or WARN.
+- **Expected negative outcomes get one line — `{e}`.** Rejected user input, an unresolvable name, an unsupported request. Nothing is broken; the code is doing its job. `Display` prints the top context and no source locations. These are typically DEBUG.
+
+```rust
+// Expected: the user asked for a host that isn't a .rete name.
+tracing::debug!(target: LOG_TARGET, "Target unresolvable: {e}");
+
+// Fault: the config we were told to load isn't there.
+tracing::error!(target: LOG_TARGET, "Failed to load vertex config: {e:?}");
+```
+
+Why it matters: a source location in the resolver tells an operator nothing when a user simply mistyped a hostname, and on a peer-triggered path a multi-line stack *per occurrence* is a log flood. Reserve the stack for the cases where reading it is the point.
+
+Extra rules:
+
+- **Don't interpolate what the span already carries.** If the enclosing span has `target`, the message should say `"Target unresolvable"`, not `"Cannot resolve target '{host}'"` — the value appears once, in the span.
+- **Span level gates context.** An `info_span!` disappears under `RUST_LOG=warn`, taking the context of the WARN lines inside it with it — a regression against hand-interpolated context. Connection and operation spans should be therefore `error_span!`: they exist whenever anything is logged at all.
+
 ### API Design
 
 #### Make impossible states unrepresentable
