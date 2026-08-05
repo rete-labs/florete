@@ -3,6 +3,7 @@
         "scope",
         "data-plane",
         "mgmt-plane",
+        "installer",
         "observability"
     ],
     "defaultOpen": true

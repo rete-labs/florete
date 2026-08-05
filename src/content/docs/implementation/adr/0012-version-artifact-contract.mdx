@@ -85,7 +85,7 @@ Every change already visible on the roadmap lands as a minor: new adapter and li
 
 ### What this does not version
 
-- **Spawn-injected runtime context** — the `FLOR_*` environment contract a supervisor passes at spawn: intra-node, same-install conventions rather than a document. It needs no schema version; anything that ever crosses a machine or authority boundary must instead graduate to an enveloped artifact rather than grow a second versioning regime.
+- **Spawn-injected runtime context** — the `FLORWL_*` environment contract a supervisor passes at spawn: intra-node, same-install conventions rather than a document. It needs no schema version; anything that ever crosses a machine or authority boundary must instead graduate to an enveloped artifact rather than grow a second versioning regime.
 - **The source YAML facade** — compiled away ([ADR-0009](/docs/implementation/adr/0009-config-compiled-facade)); its evolution is `retectl` UX, versioned with the tool.
 - **The enrollment bundle and the sync/fetch protocol** — separate contracts with their own lifecycles. One requirement is reserved here: the fetch protocol must carry the consumer's schema ceiling.
 

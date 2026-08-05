@@ -1,0 +1,782 @@
+---
+title: Installer
+description: How flor's binaries reach a host
+---
+
+Installing puts the **host-level machinery** on a host: flor's executables and the per-OS service wrappers — everything that sits *below every rete*, on the same boundary the [agent's no-node-global-state invariant](../mgmt-plane/agent#role) draws. Everything per-rete — identity material, artifact sets, runtime state, a running agent — arrives later, per scope, with [enrollment](../mgmt-plane/enrollment). The contract between the two steps is one sentence: **install leaves a host ready to enroll; enroll never installs.**
+
+This page is the design, written for whoever implements or changes the installer. [Shape](#shape) is the map — structure, flow, and the rules that hold across both. The [Decision Log](#decision-log) at the foot records what was settled and what was rejected, and is where to start before changing any of it. Everything between the two is the reasoning that connects them.
+
+**What a person needs in order to install flor is not here.** The commands in order, the verification steps, the per-platform notes: that is the install guide, [#14 (User guide)](https://github.com/rete-labs/florete/issues/14), and this page deliberately does not duplicate it.
+
+## Shape
+
+**STRUCTURE**
+
+```log
+  subject     a host joining a rete as a node
+
+  boundary    install leaves a host ready to enroll; enroll never installs
+              install  host-level machinery, below every rete
+              enroll   per-rete: identities, artifacts, activation, …
+
+  executables one release version over four names, shipped whole to every host
+              flor              agent daemon + node CLI
+              flor-vertex       agent-spawned
+              flor-coordinator  agent-spawned
+              retectl           operator tooling, present everywhere
+
+  facades     install.sh     ~100 lines of shell: detect, fetch, verify, unpack, exec
+                             user mode is the one-liner; system mode is download,
+                             read, then sudo sh install.sh --system
+              flor install   the core: Rust, cross-platform, shared by every facade
+
+  modes       user     personal devices, the invoking user   Linux+systemd, macOS
+              system   servers, a flor service user          Linux+systemd only
+              flor install picks the mode, by flag or by privilege; every other
+              command infers it from where its own executable sits — in a system
+              prefix means system mode, anywhere else means user mode
+              the system-prefix list is per platform, and empty on macOS
+
+  directories bin · lib · state · config · runtime
+              XDG in user mode, FHS under /usr/local in system mode
+              one env override each, except bin
+              state   two files, both private to this channel: the receipt and
+                      install.lock — nothing else here is the installer's
+                      retes/<scope>/ is created by enroll and owned by the agent
+              config  config.toml — user-editable
+
+  wrappers    one host-level template per install, activated per scope by enrollment
+              systemd   template unit — one file serves every scope
+              launchd   plist rendered per scope — derived state, copies
+
+  receipt     install-receipt.json: phase, schema version, release version, the
+              release it replaced, files placed
+              phase is installing while a run is in flight and installed after it,
+              and its only job is recognising an interrupted run of our own
+              what it lists is what the installer owns; the version it names as
+              previous is the way back; its absence means no installation of ours
+
+  channel     one: github releases
+                  install.sh                       byte-identical at the repo root
+                                                   and as an asset; version
+                                                   hard-coded, digests fetched
+                  flor-v<ver>-<os>-<arch>.tar.gz   musl-static on Linux
+                  SHA256SUMS                       archives and install.sh
+                  <signature>                      reserved, deferred
+              every asset attested by CI to its workflow, commit and repository
+              crates.io holds the name; it is not an install path in C0
+```
+
+**FLOW**
+
+```log
+  install     one command does both, and the receipt is what makes it an upgrade
+  & upgrade   * marks a step only an upgrade takes
+                 1  detect os and arch
+                 2  fetch the release's SHA256SUMS and its archive, and verify
+                 3  unpack, and exec flor install from the unpacked set
+                 4  select the mode, create the state directory, take the lock
+                 5  write the receipt, phase installing, recording the release
+                    being replaced and which scopes are active
+              *  6  stop those agents
+                 7  stage and rename in the executables and the wrapper template
+              *  8  re-render every per-scope wrapper copy
+                 9  replace the receipt, phase installed
+              * 10  restart exactly what step 6 stopped
+                11  report the mode, the directories, the version, any PATH
+                    shadowing, each surviving scope's enable command, and on an
+                    upgrade the version it came from and what it restarted;
+                    exit non-zero if a start failed
+
+              everything before the swap is a free abort; after it, the way out is
+              completing the upgrade or the manual downgrade
+              stopping first is what keeps the host at one version, and it is
+              required of every channel — a reboot mid-swap is the residual window
+              every package manager accepts too
+              health is flor agent status, never the installer's verdict
+              aborts  unstoppable unit  clear the phase, abort, name the scope
+                      failed start      report it, and exit non-zero
+
+  uninstall   removes the installation
+              gone   wrappers (template and copies), runtime roots, binaries,
+                     the receipt
+              kept   scope roots, which were never its
+                     config.toml, admin-owned once created
+                     install.lock, since nothing reads it and removing it
+                     would mean releasing the lock to delete the file
+                     the flor user, whose uid owns the surviving scope roots
+              what survives is enrolled-but-inactive, resumable with no bundle
+              --purge removes the state, config and runtime directories entirely,
+              private keys included; nothing survives it
+
+  downgrade   no guard and no mechanism: any release installs over any other,
+              because compatibility is a rete question and the agent's to answer
+              the way back  flor version names the release this one replaced;
+                            install that one — one command, nothing to re-enable
+```
+
+**RULES**
+
+```log
+  ownership     the channel owns the host — files, wrappers, service lifecycle,
+                required of every channel alike; the agent owns the rete —
+                artifacts, node state, migrations, identity, layout compatibility
+                the installer never touches retes/
+
+  activation    flor install never changes activation state — a fresh install
+                starts nothing, an upgrade restores exactly what it stopped
+
+  file list     the installer owns what it places — bin, lib, wrappers, its own
+                receipt and lock — and refuses to write over a path in that set
+                that its receipt does not list; retes/ and config.toml are not
+                its files, and state left there is not its business
+
+  output        user messages to stderr, log records to syslog, always — the
+                per-command default level decides what is normally seen, info for
+                commands that perform a change and error for the rest
+                redirect with --log-stderr or FLOR_LOG_DESTINATION, lift with
+                RUST_LOG; a user needs none of them
+
+  integrity     the piped path proves integrity within a release page and never
+                authenticity; authenticity is the manual path's, through
+                attestation over every asset
+
+  permissions   the wrappers state their modes explicitly rather than inheriting
+                a service manager's defaults
+
+  pinning       the URL is the pin: a script installs the version hard-coded in it,
+                and the release it came from is the version you get
+
+  resolution    a run name resolves against the lib directory, before PATH, and the
+                lib directory is ../lib/flor from the running executable — which
+                reproduces both mode columns and survives relocation
+
+  detection     every command infers its mode from its own prefix, against a
+                per-platform system list, and can act only on its own install;
+                flor install alone decides rather than infers
+
+  announcement  mode and every resolved directory are printed, never deduced from
+                a running system
+
+  versioning    one release version identifies the installed set; every
+                cross-component contract carries its own version
+
+  platforms     Linux with systemd on x86_64, and macOS on Apple Silicon
+```
+
+## What installing is
+
+**Installing places the executables and the service-wrapper machinery, and nothing per-rete.** Before enrollment there is nothing to run, so a fresh install starts no service ([Agent § Supervision mechanics](../mgmt-plane/agent#supervision-mechanics)). The invariant is both stronger and narrower than "installing starts nothing", because an upgrade is the same command: **`flor install` never *changes* activation state.** A fresh install starts nothing, an upgrade restores exactly the set it stopped, and a scope the operator had already stopped stays stopped.
+
+**The set it places is flor's own, and it contains supervised workloads.** `flor-vertex` and `flor-coordinator` are workloads the agent runs, and the installer is what puts them on the host — so the boundary is not "the runtime, not workloads" but *flor's own executables, not third parties'*. The installer has no concept of a third-party workload: it does not enumerate one, fetch one, or place one. How such a workload should eventually reach a host — as a signed artifact through the coordinator, from a registry, baked into an image, or several of those at once — is a B2 question this page deliberately leaves open, and nothing in the installer's shape presumes an answer.
+
+**The channel owns the host; the agent owns the rete.** Placing files, updating the service wrappers, and stopping and starting the services around a swap are *host* business, and every supported channel does them — `install.sh` here, maintainer scripts and post-install hooks elsewhere. Artifacts, node state, migrations and identity are *rete* business and belong to the agent, which is why **the installer never touches `retes/`**. The line falls where the knowledge does: wrappers are the only OS-specific artifacts in the system, so the component deliberately kept OS-agnostic must not be the one rendering them, while node state outlives every installation of every channel and so cannot belong to whichever one happens to be installed.
+
+**What a plain uninstall leaves behind is deliberately not that same fresh state.** It is a host that can resume without an enrollment bundle: scope roots, host configuration and the service user survive, so a reinstall plus `flor agent enable` brings the node back. That is a property worth having on purpose rather than by accident — see [Uninstall](#uninstall).
+
+**Not every flor deployment is an install.** The installer's subject is a **host joining a rete as a node**. B1's cloud coordinator is not that — it is a hosted service with its own deployment pipeline (container stacks, infrastructure-as-code), needing far more than a node does, and bypassing `install.sh` entirely is the right outcome rather than a gap. The open-source on-prem coordinator stays installer-delivered indefinitely, per the [permanent manual tier](../mgmt-plane#evolution): the two are different deployments of one role, not a migration.
+
+## Artifact composition
+
+**An install carries the full executable set the host may need — not the subset its present role uses.** Two parts, and the second is why this is a rule rather than a list of three names:
+
+- **Every executable the node's agent could be asked to `run`** — `flor-vertex` and `flor-coordinator`. The agent's inventory names executables, so *which* of them runs is decided by the node's artifact set, and moving a service becomes a publish rather than a re-install. This sets ground for [B1 · Coordinator's placement entry](/docs/implementation/b1-cloud-control/coordinator): with binaries already present everywhere, the first Orchestrator ships **decisions only** — no registry, no image pull.
+- **The node's own supervisor and CLI** — `flor`: the agent, plus `install`, `uninstall`, `enroll`, `id`, `version`.
+- **The operator tooling** — `retectl`. Present on every install deliberately: the operator's workstation *is* an enrolled node ([Enrollment § Operator Bootstrap](../mgmt-plane/enrollment#operator-bootstrap)), so the two sets were never disjoint; the binary is small beside the daemons; and the plausible evolution runs the other way — `retectl` growing into an advanced-user tool (query the coordinator, publish a local service) would make a node-vs-operator split wrong retroactively. A `--without-retectl` knob was considered and dropped: its only payoff is bytes, and it would have to be threaded through every facade, the receipt, and every upgrade path.
+
+
+<Callout title="Shipping a CA-capable binary is not shipping CA authority">
+`retectl` on any node can run `ca init` — and produce a CA for a rete nobody trusts. A rete's authority lives in its CA private key, which never leaves operator hardware, and in the mgmt-signer pubkeys embedded in artifacts ([ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)). Code is not capability here.
+</Callout>
+
+**The set is named, not counted — one file per name is an implementation detail.** The supervision contract resolves a `run` argv to an executable **by name**, against the installation ([Agent § Supervision contract](../mgmt-plane/agent#supervision-contract)). Two consequences the design commits to, and together they are what keep packaging cheap to decide later:
+
+- **Nothing may assume a name maps to its own file.** A **multi-call binary** — busybox-style argv[0] dispatch, extra names as links into one file — is therefore a pure packaging choice, decidable in the flor repo whenever size pressure appears, most plausibly on B2's embedded targets. It is feasible on every target *including Windows*: argv[0] dispatch is portable, and where symlinks need privilege the extra names are hard links or plain copies. **C0 ships plain separate binaries** — there is no size problem to solve yet.
+- **Nothing may assume two names map to the same file.** This is the clause that matters for open core, below.
+
+**Open core: a build may add or replace executables; the installer does not change shape.** B2's vendor boundary is [R10](/docs/implementation/b2-hybrid-hauling/link-contract#the-interface-floor-the-vendor-owns-the-fast-path-mac), a host interface *below* Florete — the vendor's radio driver and fast-path MAC ship with the radio and never pass through this installer. What can be proprietary on our side of R10 is code written under a vendor's NDA, and B2's design already puts each such piece where a separate executable is natural:
+
+- a **vendor slow-path scheduler** is admissible as a rete app whose decisions enter the ctrl chain ([Radio MACs § Scheduler ownership](/docs/implementation/b2-hybrid-hauling/radio-macs#no-infrastructure-asymmetry)) — a supervised workload, a new `run` name, an opaque payload: precisely the path `coordinator` already dogfoods;
+- a **vendor medium adapter** lives inside a link vertex, and C1 already runs link and mesh vertices as separate processes over FlorIO — so a vendor build ships a link-vertex executable of its own beside `flor-vertex`. This is the reason the vertex is its own executable rather than a `flor` subcommand: a proprietary vertex is then an ordinary member of the executable set, not a private build of the binary that also holds enrollment and the CLI. Which vendors get which is a B2 decision; the installer is indifferent, because every case is just "a different executable set".
+
+So the open/proprietary split is a **build and channel** question ([below](#distribution-and-integrity)), not an installer-architecture one: a vendor install is this same `flor install` over a different executable set from a different origin, and nothing in the flow needs to know which parts are open.
+
+## Versioning
+
+**One release version identifies the whole installed set.** `flor`, `flor-vertex`, `flor-coordinator`, and `retectl` are built and released together from one crate ([ADR-0002](/docs/implementation/adr/0002-use-single-crate)), so a host runs *flor 0.1.1* rather than four independently-moving numbers. The property that buys is worth more than the bytes it costs: executables that talk to each other — agent↔coordinator sync, agent↔vertex spawn, retectl↔coordinator publish — can never be skewed *on one host*, and "what version is this node on" has exactly one answer. Splitting the vertex out of `flor` (for the [open-core reason above](#artifact-composition)) costs nothing here precisely because of it. The crate version is that number today; should packaging ever split the crate, the **release version** remains the user-facing identity and the crate version becomes an implementation detail of how it is built.
+
+**Release version is identity; contract versions are compatibility — never conflate them.** Re-releasing all three binaries because one payload schema moved is a release-mechanics cost, not a compatibility cost, because every cross-component contract already carries its own version independent of any binary's: the envelope is the near-frozen distribution contract, and each payload family carries its own `schema_version` gated by its consumer ([Agent § Artifact handling](../mgmt-plane/agent#artifact-handling), amending [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)). This is also what makes a future split safe rather than scary: when the coordinator moves to its own repo and cadence — the open-core direction — the contracts between it and everything else are *already* versioned, so the split creates a release-coordination problem, not a compatibility one. Per-binary versions would buy independent cadence at the price of an N×M compatibility matrix somebody must test and document; that trade is wrong while everything still ships together, and unnecessary afterwards.
+
+**The installer's own compatibility axis is the agent's node-layout contract.** Install roots, the scope-root shape, wrapper files, socket locations — the agent defines all of them, while workloads receive already-resolved paths through injected context and know nothing of layout ([Agent § Supervision contract](../mgmt-plane/agent#supervision-contract)). So the question "can this binary run against what is on disk?" is always asked of the *agent's* layout contract, never the vertex's or the coordinator's. C0 needs no explicit marker for it (see [Downgrade](#downgrade)); whether C1 expresses it as a dedicated layout number or as SemVer on the release version is best decided when rollback lands and actually consumes it.
+
+## Distribution and integrity
+
+**One channel in C0: prebuilt static binaries from GitHub Releases.** Linux binaries are musl-static — no glibc version matrix, runnable on any distro and later on embedded userlands (see [Evolution](#evolution-facades-and-channels)). A channel is not a URL but a standing promise: a verification story, a section of the guide, and an upgrade path that has to keep working. C0 ships exactly one, and no pilot user is worse off for it.
+
+Each release publishes three kinds of asset and nothing else:
+
+| Asset | What it is |
+|---|---|
+| `flor-v<version>-<os>-<arch>.tar.gz` | one archive per platform — `macos-arm64`, `linux-x86_64` |
+| `SHA256SUMS` | one digest line per asset of that release, `install.sh` included |
+| `install.sh` | the bootstrap script of *that* release, byte-identical to the file in git |
+
+**The names are chosen for the two readers that must parse them**, a human and a hundred lines of shell. The version leads, so a directory of downloads sorts by release; the OS is spelled the way its users say it; the architecture is spelled the way *that platform* spells it — `arm64` on macOS, `x86_64` on Linux — which is also exactly what `uname -m` returns there, leaving the script one small mapping (`Darwin` → `macos`) instead of a table of Rust target triples. The format is `tar.gz` on both platforms because `tar -xzf` behaves identically under bsdtar and GNU tar: a binary the user cannot extract is a worse failure than a slower download, and at these sizes a better ratio buys seconds.
+
+`SHA256SUMS` is the conventional name and format — `sha256sum -c SHA256SUMS` is what an admin types from memory. It is deliberately not a structured `manifest.json`: nothing in C0 reads one, and its two plausible consumers — a per-platform minimum OS, and the [package generators](#evolution-facades-and-channels) — are both post-C0, where an index is a purely additive addition rather than a second file to keep in step and eventually to sign.
+
+### `install.sh` lives in git and ships as an asset
+
+**One file, byte-identical in two places, with the version it installs hard-coded in it.** `install.sh` sits at the root of the flor repository; the release commit bumps its version constant beside the crate's own; CI publishes those very bytes as a release asset and lists them in `SHA256SUMS`. The root is not an aesthetic choice — that path *is* the audit URL a guide prints, it is where every project distributed this way keeps it (nvm, Homebrew's install repo, `docker/docker-install`), and it puts the file on the repository landing page, where finding it needs no directory name.
+
+Three properties follow, and together they are why the script is not generated per release:
+
+- **It has a history.** `git log install.sh` shows every change to the one file users are told to pipe into a shell, reviewed in a diff like any other source.
+- **Its version cannot lie.** A script that hard-codes what it installs installs that and only that — which is what lets the URL be the pin, below.
+- **The asset can be checked against the tag.** A release asset can be replaced by anyone holding a token, silently; a tagged file in git cannot change without leaving evidence, and less still with signed commits. Since both copies are the same bytes, fetching the asset and diffing it against the tag is a real check that needs no tooling at all.
+
+**The archives' digests are fetched, not embedded.** The script is committed before the archives it installs exist, so it cannot carry their hashes; it fetches `SHA256SUMS` from its own release and checks what it downloaded against it. Embedding them would not be stronger anyway — whoever can replace an archive on a release page can replace the digest list beside it, so a same-page digest proves integrity *within* that page and never authenticity. That is a limit of the arrangement rather than of the mechanism, and the next section states it instead of dressing it up.
+
+**The URL is the version pin.** `…/releases/latest/download/install.sh` installs the current release; `…/releases/download/v0.1.0/install.sh` installs that one. There is no `FLOR_VERSION`, no re-exec of another release's script, and no origin parameter: a second channel means a second script — which was always the real answer — rather than a runtime knob with nothing on the other end. The raw tag URL of the same file is documented as the auditable copy. A `main`-branch URL is never published, because it would name no version while installing whatever is current.
+
+### What C0 claims, and what it declines to claim
+
+Two documented paths, each with its own limit:
+
+| | **piped** — `curl … \| sh` | **manual** — download, verify, run |
+|---|---|---|
+| Trust in the origin | TLS to GitHub | TLS to GitHub |
+| The archive is what the release published | checked against `SHA256SUMS` | `gh attestation verify` |
+| The script is what the repository holds | not checked — it *is* the checker | `gh attestation verify`, or a diff against the git tag |
+| Authenticity: these bytes came from our source | **no** | **yes** |
+
+**`curl … | sh` rests on TLS to the origin, permanently.** No digest the script carries and no signature we ever publish changes that, because the script would be the thing checking itself. Saying so is the design rather than a gap in it, and it is why the second column exists.
+
+**The manual path's authenticity mechanism in C0 is GitHub artifact attestations.** `gh attestation verify <file> --repo rete-labs/flor` checks a signed provenance statement binding that file's digest to the workflow, commit and repository that produced it — for an archive and for `install.sh` alike. It costs one `actions/attest-build-provenance` step and two permission lines in the release workflow, is free for public repositories, and needs no key management. An attestation already binds the digest, so a `sha256sum -c` after it adds nothing; without `gh`, the fallbacks are integrity-only — the digest list, and the diff against the git tag.
+
+**The trust anchor must outlive the channel, and that is a dated obligation rather than a present gap.** Attestations are a property of *GitHub Actions*: a vendor build from a vendor's CI cannot produce them. What covers both is a **detached signature over `SHA256SUMS`** — verified out of band by the operator, never by `install.sh` — one signature over the one file that lists every asset, the script included, which is precisely why the script is in there. C0 defers it in time but not in shape; the tool and the file name stay open, against criteria worth stating now: verifiable with what a Linux or macOS admin already has, issuable from CI without a long-lived secret, and a public key short enough for the guide to print.
+
+**Why this is enough for C0, stated honestly:** pilots are operator-assisted and the operator is the Florete core team; the [enrollment bundle](../mgmt-plane/enrollment#per-node-enrollment) — real bearer material, private keys — is already couriered out-of-band under weaker assumptions than the public binaries enjoy. The binary channel is not the weakest link at this stage.
+
+Also deferred until the audience outgrows pilots: reproducible builds, and macOS notarization (see [Platforms](#platforms)). The C1 hosted-landing-page question, if answered yes, is what raises this bar first.
+
+**crates.io holds the name; it is not an install path.** The crate is published once at the C0 release, because the name is currently unclaimed and worth holding — but the guide documents one way to install flor, and this is not it. `cargo install flor` leaves four binaries in `~/.cargo/bin` and no supported installation: cargo installs self-contained tools, has no lib-directory convention anywhere in its ecosystem, and nothing there resolves a helper binary the way [the agent resolves a `run` name](#directories) does, so the question is not which directory to pick. What `cargo install` should eventually mean stays open ([flor#22](https://github.com/rete-labs/flor/issues/22)).
+
+## Install
+
+Two stages with a deliberate asymmetry: the fetch is a script, everything real is product code.
+
+**`install.sh` is a bootstrap facade** — target size ~100 lines, auditable by eye, which is the answer to "`curl | sh` for a security product": detect OS and architecture → fetch that release's `SHA256SUMS` and the archive for this platform → verify → unpack to a temp dir → `exec flor install` *from the unpacked archive*, so it installs the binaries it is part of and there is no bootstrap circularity. Mode flags pass through. Unsupported platforms fail with a plain statement rather than a 404 — notably Intel macOS, and any Linux that is not x86_64 (see [Platforms](#platforms)).
+
+**The two modes are two documented shapes rather than one command with a flag**, because what differs is who becomes root:
+
+```bash
+# a personal device — user mode, no privilege
+curl -fsSL https://github.com/rete-labs/flor/releases/latest/download/install.sh | sh
+
+# a server — system mode, deliberately two steps
+curl -fsSLO https://github.com/rete-labs/flor/releases/latest/download/install.sh
+less install.sh
+sudo sh install.sh --system
+```
+
+**The installer escalates nothing on its own.** A product whose own documentation teaches `curl … | sudo sh` has taught the habit that makes every later hardening note ridiculous, and a script that calls `sudo` internally is the same act with the operator's attention removed. A server install is already a deliberate, SSH-mediated operation, so the extra command costs nothing — and the download-and-read step is where it belonged anyway.
+
+**`flor install` is the installer core**, a subcommand of the product binary: Rust, cross-platform, unit-testable, and shared by every future facade instead of re-implemented per platform in shell. It:
+
+- **places what surrounds it** — the executables it installs come from its own directory, the unpacked archive it was exec'd from, and it fetches nothing. One rule then serves the script, an [image build](#evolution-facades-and-channels) against a staged tree, and anything else that verifies a tree and calls into it; a lone `flor` in a directory installs nothing but itself;
+- **selects the mode** — `--system` / `--user`, defaulting by privilege (root → system, else user). This is the one thing it decides rather than detects ([Modes](#modes));
+- **takes the installation's lock** — an advisory `flock` on `install.lock` in the state directory, held for the run, and taken by install, upgrade and uninstall alike, so two of them can never interleave a swap. The *held lock* is the lock and the file's existence means nothing — which is what keeps a killed installer or a power loss from stranding the host, since a kernel-held lock dies with its holder while a lock file does not;
+- **writes its receipt with `phase: installing` before placing anything**, stages files and renames them in, then replaces the receipt with `phase: installed` — which is what makes a crashed run recognisable as *ours* (below);
+- **places the executables and service-wrapper machinery** per the [directory table](#directories), creating the state directory for its own two files. It does not create `retes/`: that is `flor enroll`'s, which makes it along with the scope root beneath it;
+- **is idempotent** — re-running converges; running a newer version over an older install is the [upgrade](#upgrade);
+- **writes an install receipt** — `install-receipt.json` in the state directory: a `phase`, a receipt `schema_version`, the release version, **the release it replaced**, and the exact list of files placed. The previous release is what makes going back possible at all, since nothing else on the host names the version that worked ([Downgrade](#downgrade)). It records neither the mode — a property of *where the receipt is*, each mode having its own state directory — nor an origin, which would be tautological in a file only this channel writes;
+- **reports, and starts nothing** — the mode, every resolved directory, the release version, any [PATH shadowing](#directories) it found, the `usermod` line that grants operator access in system mode, and each surviving scope's `flor agent enable` command. On an upgrade it also names the version it came from with the command line that would return there, and which scopes it restarted; it exits non-zero if a start command failed;
+- **never enrolls, and never enters a scope tree** — it creates no scope inside `retes/`, unpacks no bundle, and migrates nothing, in any mode. On a first install nothing is started, because nothing was active; on an [upgrade](#upgrade) it stops the active agents and restores exactly that set afterwards, and everything it touched in between was its own.
+
+**The installer owns a file list, and refuses to write over a file it does not own.** What it owns is what it places: the executables in bin and lib, the wrapper template and every rendered per-scope copy, its own receipt and lock. A path in that set which its receipt does not list belongs to somebody else, and the install stops and names it — the rule every package manager applies, and the only ownership question answerable from the files themselves. `retes/` and `config.toml` are outside the set: the first is the agent's, the second is the admin's once created, and **state left in the state directory is not the installer's business** — installing over it is the ordinary resume path, not an error.
+
+The `phase` is what makes this decidable on the one ambiguous case, a crash mid-run. The receipt goes down *first*, saying `installing`, and is replaced at the end saying `installed`; a run that finds its own receipt mid-flight resumes, and an upgrade rewriting paths its own receipt lists is not a collision at all. Writing it first is not a receipt describing an intention — with a phase field it states a fact.
+
+**What the check catches is collisions, not coexistence.** Two channels that write the same paths collide, and the second one stops: a Linux package manager placing our wrapper at `/etc/systemd/system/flor-agent@.service` meets our system-mode install there. A channel that keeps to its own hierarchy simply coexists — a Homebrew formula cannot own files in a user's home at all, and `brew services` names its plists its own way. Requiring every channel to render *our* wrappers at *our* paths would rule Homebrew out entirely, which is too high a price for a check whose absence is survivable. Two installations side by side are then the node admin's business, and the invariant that actually matters — **one agent per scope** — is the agent's to enforce.
+
+### Modes
+
+**Mode is chosen at install time**, and C0 supports fewer combinations than a two-by-two suggests:
+
+| | Linux with systemd | macOS |
+|---|---|---|
+| **User mode** — personal devices, runs as the invoking user | yes |  yes |
+| **System mode** — servers, dedicated `flor` service user | yes | no |
+
+Two decisions produce that shape:
+
+- **Non-systemd Linux not in scope for C0** — we're not targeting them because for personal devices and servers they're exotic; for embedded they're the norm, but support will come in B2 (and system mode only, naturally).
+- **macOS is user mode only.** Its role here is personal devices — the milestone has no macOS server node (can be added later, if ever needed).
+
+<Callout title="Mode is not privilege">
+User mode does not mean *never asks for root*. A user-mode install may escalate once for a specific host-level need — a tun device, a privileged port, a privileged helper — and that remains the direction for the [richer local inbounds](../mgmt-plane/agent#evolution-sketches) sketched later: a small helper installed on demand, not a daemon running as root permanently. "We might need root eventually" is therefore not an argument for system mode today.
+</Callout>
+
+### Directories
+
+C0 follows the XDG base directories — **on macOS too**, since macOS is [user mode only](#modes) and one user layout works for both. Static files first, variable after; only the second group is written after install, which is why the two groups sit under different prefixes.
+
+| Directory | Holds | User mode | System mode |
+|---|---|---|---|
+| **Bin** | `flor`, `retectl` — what people type | `~/.local/bin/` | `/usr/local/bin/` |
+| **Lib** | `flor-vertex`, `flor-coordinator` — agent-spawned only | `~/.local/lib/flor/` | `/usr/local/lib/flor/` |
+| **State** | `retes/<scope>/` scope roots, the receipt, the lock, the marker | `$XDG_STATE_HOME/flor/` — `~/.local/state/flor/` unset | `/var/lib/flor/` |
+| **Config** | `config.toml` — the syslog socket, and nothing else in C0 | `$XDG_CONFIG_HOME/flor/` — `~/.config/flor/` unset | `/etc/flor/` |
+| **Runtime** | `agent.sock`, FlorIO sockets (C1+) | `$XDG_RUNTIME_DIR/flor/<scope>/` — `$TMPDIR/flor/<scope>/` on macOS | `/run/flor/<scope>/` |
+
+The state directory has two owners, and the installer is responsible for only two files in it:
+
+```
+<state-dir>                # /var/lib/flor in system mode; FLOR_STATE_HOME overrides
+├── install-receipt.json   # the installer's: phase, what is installed, what it replaced
+├── install.lock           # the installer's: the flock target; its existence means nothing
+└── retes/<scope>/         # the agent's, created by flor enroll — one scope root per
+                           # enrolled rete, and Agent § Node layout owns everything in it
+```
+
+**Two classes of directory, and only the first is this page's.** Everything above is **flor's own** layout on the host. What the agent hands a *supervised workload* — its config, its state directory, its runtime — is a separate, deliberately smaller set, injected already-resolved so no workload ever derives a path or learns this table ([Agent § Supervision contract](../mgmt-plane/agent#supervision-contract)). Keeping the two apart is what stops "flor's state directory" and "a workload's state directory" from being the same words for different things.
+
+- **Node material is state — not data, not configuration** — and the XDG bases say so structurally, which makes the system-mode counterparts fall out rather than be chosen. `XDG_DATA_HOME` is *analogous to `/usr/share`*: read-only, distributor-provided, architecture-independent. `XDG_STATE_HOME` is *analogous to `/var/lib`*: machine-managed, persists across restarts. A node's scope trees are mutable, host-specific, and acquired at runtime — the second, unambiguously — so `$XDG_STATE_HOME/flor` pairs with `/var/lib/flor`, consistent in both modes. What a node holds is not the user's data; it is **this machine's state of participation in a network**.
+- **The installer's own bookkeeping is state too**, despite describing a static installation. The receipt and the lock are not application data in the `share/` sense — not assets, not distributor-provided, not the same on two hosts — but records *produced* at install time. It is worth being precise about whose they are: **`flor install`'s, not the agent's**, and private to this channel — a package manager writes neither and needs neither, because its own database is its receipt. They sit beside `retes/` rather than inside it, because they exist before any enrollment and outlive all of them, and because the two directories have different owners.
+- **The config directory has exactly one entry in C0, and its format states a rule.** Nothing a *node* holds is configuration: artifacts are compiled, signed, fetched from the coordinator, replaced wholesale under a machine-managed version; the identity store is enrollment-delivered and re-enrollment-rotated; agent state is bookkeeping. None is a file an admin authors, which is what `/etc` exists for — the line kubelet draws between `/etc/kubernetes` and `/var/lib/kubelet`, with flor entirely on the second side. What does belong there is **host** configuration, and C0 has precisely one such setting: where the syslog socket is ([Logging](#logging)). It is TOML, and the rule generalises to whatever joins it: **host configuration authored by a machine's admin is TOML; rete state authored by an operator is YAML.** The two differ in what a mistake costs and who is present when it is made — rete YAML is a document tree, edited in a repo, reviewed in a diff, and validated by `retectl` before it can reach a node, while this file is two flat keys edited over SSH on a host that is already misbehaving, with no validator between the edit and the restart. That is the setting where significant indentation and implicit typing are worst and least detectable.
+- **The lib directory is resolved relative to the running executable, not as an absolute constant.** `../lib/flor` from the directory the executable sits in, after resolving symlinks — which reproduces both columns above exactly (`~/.local/bin` pairs with `~/.local/lib/flor`, `/usr/local/bin` with `/usr/local/lib/flor`) and costs nothing today, while making a relocated tree work. That matters for every facade that *pours* our prebuilt archive rather than building flor: a Homebrew formula installs into `/opt/homebrew/Cellar/flor/<version>/`, and a `flor` there resolving its daemons to an absolute `~/.local/lib/flor` would find a directory Homebrew never populated. The precedent is the ordinary relocatable-install one, the same one mode detection borrows — Git computing its exec-path from `argv[0]`, Python deriving `sys.prefix` from the interpreter's own location.
+
+  The `flor` component stays in the path even where a prefix is already namespaced — inside a Homebrew keg it reads as `…/flor/<version>/lib/flor/` — and that redundancy is accepted rather than special-cased, because one rule that is occasionally verbose beats two rules that are each right somewhere. A facade wanting its own idiom (Homebrew's own is `libexec/`) does not need us to rebuild: `FLOR_LIB_DIR` is the seam, and Homebrew's `write_env_script` — a wrapper in `bin` that sets the environment and execs the real binary in `libexec` — is a first-class formula mechanism for exactly this. Shipping such a wrapper *ourselves* would be the wrong half of that trade: it would put a shell script in front of every invocation on every platform to serve one packager who already has the tool.
+- **`lib`, not `libexec`.** `/usr/libexec` is not portable — Arch and its derivatives have no such directory, and Debian policy discourages it — so agent-spawned executables go in `/usr/local/lib/flor/` and `~/.local/lib/flor/`, matching each other.
+- **Executables are split by who invokes them.** `flor` and `retectl` go on `PATH` because humans type them; `flor-vertex` and `flor-coordinator` are spawned by the agent and never typed. The lib directory is also where the agent resolves a `run` name ([Agent § Supervision contract](../mgmt-plane/agent#supervision-contract)) — *before* `PATH`, not through it — and that ordering justifies the separate directory by itself: a `PATH`-injected `flor-coordinator` cannot become the thing the agent spawns.
+- **Both Linux system prefixes resolve the same state, config and runtime directories**, and that is correct: a host has one node, whoever put the binaries on it. It is also why a distro package and our system-mode install genuinely contend — they share `/etc/flor`, `/var/lib/flor` and the wrapper paths — which is what the [file-ownership rule](#install) is there to catch.
+- **`flor install` places under `/usr/local` only; there is no `--prefix`.** A single prefix cannot express both candidate layouts, because `/opt` bundles are self-namespaced and `/usr/local` is not: the same option would have to produce `/opt/flor/lib/flor-vertex` and `/usr/local/lib/flor/flor-vertex`, which differ by more than their prefix. Offering one string that silently means two different shapes is worse than offering none, and the case it would serve — distro packaging — does not run `flor install` at all ([declarative facades](#evolution-facades-and-channels)) and sets its own paths. Relocation, the other thing a prefix is reached for, is covered by the relative lib rule above.
+- **`/etc/flor` and `/var/lib/flor` have no `local` variant, so system mode and a package install contend by construction.** There is no `/usr/local/var/lib` to retreat to, and config belongs in `/etc` wherever the binaries live. This is why the [ownership rule](#install) is a **refusal**: two owners of one state directory is not a situation that can be made safe, only avoided. User mode is unaffected — it shares nothing with a system package.
+- **macOS runtime is `$TMPDIR`**, launchd's per-user mode-0700 directory under `/var/folders/…`, because macOS has no `XDG_RUNTIME_DIR` — the single per-OS branch in the whole layout. One constraint it imposes: `sun_path` is 104 bytes there, so scope names must keep `$TMPDIR/flor/<scope>/agent.sock` inside it, which the [name validator](../mgmt-plane/agent#artifact-handling) already keeps conservative.
+- **User-mode `PATH`:** the installer prints the shell-profile line for `~/.local/bin` and edits no dotfiles in C0 — one less way to surprise a pilot user; revisit if guide feedback demands it.
+- **A user-mode agent runs while its user is logged in**, and stops when they log out — a systemd user unit without lingering, a LaunchAgent, identically on both platforms. That is correct for a personal device, whose only rete consumer is that user. C0 does not enable `loginctl enable-linger`: an always-on node is a server, and servers use system mode. (A user-mode install on a server is the one case that would want lingering; it is out of C0 scope, and the operator can enable it by hand.)
+- **The two modes are independent installs, not one choice a host makes.** Every row above differs between them, so a system install and a user install share no file: two binary sets, two state trees, two receipts, two service scopes. C0 therefore does not *refuse* the combination — refusing would be extra code enforcing a property nothing needs. What it declines to promise is that the two **retes** sit comfortably together: a user-mode vertex and a system-mode one both bind real UDP ports, and that contention is the multi-rete port-offset ergonomics deferred elsewhere. Untested and unencouraged in C0; not a supported configuration, and not a rejected one either.
+
+**Mode is a property of the prefix, and every directory follows from it.** A binary asks where it is — symlinks resolved first, so the answer is about the real tree — and compares that against a **build-time list of system prefixes**: `/usr/local/bin` and `/usr/bin` on Linux, **empty on macOS**, one location under `%ProgramFiles%` on Windows when C1 arrives. In the list means system mode and the system column; anywhere else means user mode and the user column. A list rather than one constant, because every other channel installs somewhere else by design — a deb in `/usr/bin`, Homebrew in `/opt/homebrew`, cargo in `~/.cargo/bin` — and each must resolve correctly. Making it per platform is also what turns "[macOS is user mode only](#modes)" into a rule the mechanism enforces rather than one the prose asserts: with no system prefix on Darwin, nothing there can resolve to system mode, and `--system` has nowhere to go. `flor` and `retectl` do this identically, so the answer never depends on which of them ran, or on who invoked it, or on what else is installed on the host. Two properties fall out:
+
+- **A binary can only act on its own install.** `/usr/local/bin/flor uninstall` cannot reach a user-mode tree, and `~/.local/bin/flor agent status` cannot query a system-mode agent. This is what makes the two installs *independent* rather than merely differently-pathed — under a search order, a user-mode command would reach across into system state whenever one existed. It is also why no command goes looking for the other mode's install: in one direction the path is fixed, but in the other it would mean guessing at users' home directories.
+- **Which install you act on is which binary you invoke** — decided by `PATH` order where both exist, which is the one place the arrangement is genuinely ambiguous to a human. So the mode and every directory it resolved are printed by `flor version` and named in the agent's startup line: **announced, never deduced from a running system**, the same discipline the [log sink class](../observability#the-log-stream) follows for the same reason. And because the real question is not "does another install exist" but *which binary will run*, `flor install` closes it directly: after placing files it resolves `flor` on `PATH`, and if the winner is not the one it just installed it says so, and where the winner lives — the warning pip, npm and rustup all give, about the failure that actually bites.
+
+**`flor install` is the one command that cannot detect** — it runs from an unpacked archive, wherever that landed — which is exactly why mode is [chosen there](#install), by flag or by privilege, and recorded in the receipt. Every later command reads the answer off the filesystem instead of re-deciding it.
+
+**Spawned executables detect nothing.** `flor-vertex` and `flor-coordinator` receive every path they need already resolved through the [spawn environment](../mgmt-plane/agent#supervision-contract), so detection is a property of the two binaries humans type — the same invoked-by split that put the two groups in different directories to begin with.
+
+**Each directory can still be overridden independently**, which is how development and CI escape the layout entirely:
+
+| Directory | Override |
+|---|---|
+| State | `FLOR_STATE_HOME` |
+| Config | `FLOR_CONFIG_HOME` |
+| Runtime | `FLOR_RUNTIME_DIR` |
+| Lib | `FLOR_LIB_DIR` |
+
+The names mirror the XDG variables they shadow, so there is no mapping to learn. These four are **environment-only by necessity**, unlike every other flor setting: finding `config.toml` means knowing the config directory first, so the directories cannot be configured in the file they would have to be read from. Development and CI set them together — a repo helper script exports all four at once, pointing state and config at a scratch tree and `FLOR_LIB_DIR` at `target/debug/`, which is what makes the agent spawn the vertex you just built rather than the installed one. There is no bin override: what runs is whatever you invoked.
+
+**There is no `FLOR_MODE` either**, and the absence is deliberate. The four variables already cover everything mode selects *on disk*; what it selects beyond disk — which service manager `flor agent enable` talks to, which service user a scope root belongs to — follows the binary, and a mode variable would let those two answers disagree. A dev tree is therefore user-mode-shaped, and the overrides are for running `flor agent run` and the vertex against a scratch layout, not for the activation commands.
+
+### Service registration
+
+Settled boundary, restated from [Agent § Supervision mechanics](../mgmt-plane/agent#supervision-mechanics): **the installer ships the machinery, enrollment activates it per scope.** The installer places one wrapper per host — a template, instantiated per scope — and activates nothing; [enrollment](../mgmt-plane/enrollment) or `flor agent enable` does that.
+
+The wrapper carries the same four obligations everywhere, and only the spelling is per-OS:
+
+1. **Run the agent for one scope** — the scope naming the instance, one instance per enrolled rete.
+2. **Restart it on failure.** The OS keeps the agent alive; the agent keeps its workloads alive. Neither layer reaches into the other's job.
+3. **Do not restart it on exit `78`.** `78` (`EX_CONFIG`) means *this config is not servable* — a rejected artifact, or node state this release cannot read. Looping on it converts a clear stop into noise. Where a service manager cannot express the exemption, the fallback is the agent's own refusal plus that manager's restart throttling: the refusal still does its work, the logs are just louder.
+4. **Own the per-scope directories it can** — create the runtime root at start, remove it at stop, so no stale socket outlives an instance.
+
+| | Linux — systemd | macOS — launchd | Windows, C1 — SCM |
+|---|---|---|---|
+| Wrapper | `flor-agent@.service` template unit | plist template, rendered per scope (launchd has no template units) | one service per scope |
+| Placed in | `/etc/systemd/system/` (system), `~/.config/systemd/user/` (user) | `~/Library/LaunchAgents/` | service database |
+| Instance named | `flor-agent@<scope>` | `tech.florete.flor-agent.<scope>` | `flor-agent$<scope>` |
+| Activated by | `systemctl enable --now flor-agent@<scope>` | `launchctl bootstrap gui/$UID <plist>` | `sc config start=auto` + `sc start` |
+| Stopped by | `systemctl stop flor-agent@<scope>` | `launchctl bootout gui/$UID/<label>` — also unloads the plist | `sc stop` |
+| Refreshed after a wrapper change | `systemctl daemon-reload` (`--user` in user mode) — one template serves every instance | re-render each scope's plist, then `bootout`/`bootstrap` it | rewrite each scope's service config |
+| Runs as | `User=flor` + `Group=flor` (system); omitted in user mode, where it is the invoking user | the invoking user | the service account |
+| Run, restart | `ExecStart=`, `Restart=on-failure` | `ProgramArguments`, `KeepAlive` | SCM recovery actions |
+| Exempt `78` | `RestartPreventExitStatus=78` | no equivalent — throttling plus the agent's refusal | recovery policy |
+| Per-scope dirs | `StateDirectory=flor/retes/%i` + `StateDirectoryMode=0700`, `RuntimeDirectory=flor/%i` + `RuntimeDirectoryMode=0750` | agent creates them | agent creates them |
+| Stderr goes to | the syslog socket, [always](#logging) | the syslog socket, [always](#logging) | Event Log |
+
+Three mappings deserve their reasoning stated rather than read off the table.
+
+**systemd's directory directives are per-instance, and that is the point.** An instance is one rete scope, so it owns its scope root (`<state-dir>/retes/<scope>/`) and its runtime root, and nothing above them. The shared parent — flor's state directory itself, holding the installer's own bookkeeping and the `retes/` directory every scope lives under — is **installer-owned, not systemd-owned**: it outlives every instance and belongs to no one rete, which is the [no-node-global-state invariant](../mgmt-plane/agent#role) written as directives. The pair differ only in lifetime, as their names say: systemd removes the `RuntimeDirectory` when an instance stops and leaves the `StateDirectory` in place. Units land in `/etc/systemd/system`, systemd's location for admin-placed units, as opposed to `/usr/lib/systemd/system` where a distro package would put its own.
+
+**Permissions are stated, never defaulted — and ownership is enrollment's to establish, not systemd's to repair.** `StateDirectoryMode=` defaults to `0755`, which would leave `/var/lib/flor/retes/<scope>/` — the directory holding the [identity subtree](../mgmt-plane/agent#node-layout) — world-traversable, so the design names `0700` explicitly. `RuntimeDirectoryMode=0750` is the one deliberate loosening: `agent.sock` must be reachable by an operator CLI without root ([CLI § State directory](../mgmt-plane/cli)), and membership in the `flor` group is that grant — worth being an explicit group rather than a slack mode bit, because it permits reading node state and triggering a sync. But **no private key's mode may depend on a service manager starting later.** In system mode `flor enroll` runs as root, and it creates the scope root already owned by the service user and already restricted: `retes/<scope>/` `0700 flor:flor`, `identity/` `0700`, every `*.key` `0600` — each created *with* its final mode rather than chmod-ed afterwards (write into a mode-`0600` temp file in the target directory, then rename), because a key must not exist world-readable even for the instant between two syscalls. The directives then agree with what is already on disk instead of fixing it. Above the scope root nothing changes hands: flor's state directory and its `retes/` stay **root-owned `0755`** — the installer's, per the split one paragraph up — which is also what keeps a compromised agent from rewriting the receipt describing the installation it runs from. User mode keeps the same modes with the invoking user as owner, so a shared machine leaks nothing either.
+
+**The `flor` user and group are created by `flor install` in system mode**, `sysusers.d`-shaped, and are among the facts a [generated package](#evolution-facades-and-channels) would declare instead. Joining a human to that group is *not* the installer's act: it prints the exact `usermod` line and adds nobody. An install asked to place software should not silently grant a person the ability to read node state and trigger syncs — and the operator should not have to discover the requirement from a permission error either, which is why the line is printed rather than left to the guide.
+
+**A rendered wrapper is derived state, and Linux is the platform that hides this.** systemd has template units, so one file serves every scope and replacing it updates all of them. launchd has none, so each scope carries a *copy* rendered from the template — and Windows services in C1 will be the same shape. A copy is reproducible at any time from template plus scope name, which makes rendering idempotent wherever it happens (enroll, `flor agent enable`, upgrade) and means the [receipt](#install) lists the template, not the copies. It also makes the copies the [upgrade](#upgrade)'s responsibility: a release that changes the plist must re-render every scope that has one, or those scopes stay on the old wrapper indefinitely.
+
+Two clarifications the word "template" invites. The unit is a template **over scopes**, not over modes: `User=` is rejected outright by systemd's user manager, so the system and user variants are two renderings of one source file, chosen once at install time by the [mode](#modes) — one unit per *install*, not one per host, which is what keeps the [two installs independent](#directories). And a scope root's own permissions are not derived from the wrapper at all; they are enrollment's, per the paragraph above, which is why re-rendering a wrapper can never disturb them.
+
+### Logging
+
+flor logs to a **syslog socket on every C0-supported platform** and owns no log file anywhere, so the installer ships no logging rotation and no log directory.
+
+The installer's whole part is one setting. **Where flor logs is host configuration**, so it writes `config.toml` into the [config directory](#directories) — the one C0 entry there:
+
+```toml
+[log]
+destination = "unix:/dev/log"   # or "stderr" for attached debugging
+```
+
+One string carries both the kind and the path, so the setting has a single leaf and `FLOR_LOG_DESTINATION` can override it without any flattening scheme ([why that matters](../observability#the-log-stream)). What the installer writes:
+
+- **Linux:** `unix:/dev/log`, which systemd guarantees.
+- **macOS:** the host must run a real syslog daemon — `rsyslog` or `syslog-ng`, routine via Homebrew — because Apple's `/var/run/syslog` is a shim into unified logging that silently drops INFO records and offers no per-workload filter ([why, in detail](../observability#the-log-stream)). **The installer detects rather than asks**: it probes a short candidate list of the paths those daemons conventionally listen on, plus `/dev/log` where a config creates it, and writes the first that accepts a datagram. The user guide ships a copy-paste daemon snippet that binds one of those paths, so the common case needs no hand-editing at all. Apple's socket is deliberately **not** a candidate: selecting it would silently produce the broken arrangement above, and a clear "install a syslog daemon" message beats a log that appears to work and then loses every INFO record.
+
+**The file is created if absent and never overwritten.** It exists to be hand-edited, so an upgrade leaves an existing one alone and *reports* when the release's defaults have moved; the macOS probe runs only when the file is being created, not on every upgrade. A plain uninstall keeps it and `--purge` removes it — dpkg's conffile behaviour, both halves of it: the edit survives an upgrade and a removal, and only a purge takes it away.
+
+An admin who prefers a different daemon edits the one line and restarts the agents. A host where nothing answers is misconfigured, and the agent says so at startup rather than discarding its own diagnostics.
+
+**Two streams, two audiences, and the installer is no exception.** User messages go to stderr and are written for the person who typed the command: what happened and what to do next, never a formatted exception. Log records go to the configured syslog destination, carrying the spans, source locations and stacks that whoever reconstructs the failure later will want. stdout is left for a command's *data*, so `flor agent status | jq` stays meaningful and `flor install` writes nothing there at all.
+
+**Every binary logs normally; what differs is the default level, per command.** Nothing in the code decides whether it is allowed to log — a shared routine called from the daemon and from a CLI writes the same records either way, and the filter decides which of them are emitted. `flor install` resolves the destination as its first act, from `config.toml` if it exists and from the default or the macOS probe if it does not, and logs its run at `info`.
+
+**The default level is where the judgement lives.** Commands whose actions belong in the node's record default to `info` — `install`, `uninstall`, `enroll`, `agent enable` and `disable`, each of which *performs* the change it describes. Everything else defaults to `error`: a command that merely asks another process to act has nothing to add to the record, so `flor agent sync` contributes nothing by default while the daemon that executes the sync logs it at `info`. Read-only commands and all of `retectl` default the same way, and `RUST_LOG` lifts any of them when someone is debugging.
+
+Two things make an `error` default safe rather than lossy. The first is that **`ERROR` means this component could not do its job for a reason that is not its caller's input**: a bad path or a malformed flag is a user message and, at most, a `DEBUG` record, or a node's stream fills with other people's typos and stops being worth alerting on. The second is that the filter suppresses *noise*, never severity — anything genuinely wrong is still recorded, which is what a bug report needs from a first run.
+
+Redirecting the stream needs no new surface: `--log-stderr`, else `FLOR_LOG_DESTINATION`, else `[log] destination`, else the default — so a developer exports one variable in a shell rather than typing a flag per invocation. No log file is created in any case; flor owns none.
+
+## Upgrade
+
+**Per-node, manual, and the same command as installing** — re-run `install.sh` at the newer version. The receipt is what makes it an upgrade rather than a first install. The sequence:
+
+1. **Fetch and verify** the new archive (identical to install), and **take the lock**, so a second installer cannot interleave with this one.
+2. **Write the receipt with `phase: installing`**, recording the release being replaced and which scopes are currently active. That record has to be durable rather than in memory: a crash between here and step 6 would otherwise lose the one fact a re-run cannot reconstruct, and the *no change to activation state* rule would fail in exactly the situation worth surviving.
+3. **Stop the active agents** through their service wrappers — `systemctl stop flor-agent@<scope>`, `launchctl bootout gui/$UID/tech.florete.flor-agent.<scope>`. On macOS that bootout also unloads the plist, which is what makes step 5's re-render trivially safe: nothing holds the copy being replaced. The wrapper's own escalation does the work — `SIGTERM`, grace, `SIGKILL`, matching the [supervised-program contract](../mgmt-plane/agent#supervision-mechanics) — and the installer implements no killing of its own. **If a unit will not reach stopped within its timeout, the installer clears the phase, aborts, and names the scope**, having changed nothing else. With nothing enrolled there is nothing to stop and the sequence is just swap-and-receipt.
+4. **Rename-swap the binaries.** Per-path atomicity: a crash leaves each path old-or-new, never truncated, and no `ETXTBSY` if some process we did not stop still holds the old inode — a hand-started `flor vertex run` from [debugging](../mgmt-plane/cli), say.
+5. **Replace the service wrappers, and re-render every per-scope copy.** The host-level wrapper — the template unit, the plist template — is rename-swapped like any other installed file, and on Linux that is the whole step plus a `systemctl daemon-reload` (`--user` in user mode): one template serves every instance. macOS has no template units, so the per-scope plists [rendered at enrollment](#service-registration) are copies, and a release that changed the plist would otherwise leave every existing scope running the old one — the failure is silent and unbounded in time, since nothing later re-reads the template. So the upgrade re-renders **every scope under `retes/`, active or not**: a scope stopped today is resumed by `flor agent enable` tomorrow, and must not come up on a wrapper two releases old. The rule the platforms share, stated because Linux hides it: *anything rendered from a shipped template is refreshed by the upgrade that ships a new template.*
+6. **Replace the receipt with `phase: installed`** — one atomic rename, and the commit point of the whole run. The receipt describes **what is installed, not what is running**, so it must become true the moment the files on disk do; and because the phase lives in the same file, there is no second write to get wrong and no window in which a valid tree sits behind a stale marker.
+7. **Restart exactly what step 3 stopped, then report** — `systemctl start flor-agent@<scope>`, `launchctl bootstrap gui/$UID <plist>` against the file step 5 wrote — and print what was started, the release this one replaced, and the command line that would return there. **It reports; it does not judge**: it exits non-zero if a start command *failed*, and it does not wait out a liveness window or query `agent.sock` to decide whether a scope is well. Health is the agent's own verdict, one command away in `flor agent status`, and the report names it.
+
+**Stopping first is what keeps a host at one version**, and it is required of every channel rather than being this one's courtesy: a deb's maintainer scripts restart the service, an RPM's `%post` does the same, and a channel that genuinely cannot is expected to ask for a reboot. Per-path atomicity leaves each path old-or-new, but only a stopped agent cannot spawn a vertex from a half-swapped set.
+
+**Everything before the swap is a free abort.** The phase is one field and clearing it undoes the run completely, so an abort at step 3 leaves a host running its previous release. Past step 4 the recovery is completing the upgrade — re-run the idempotent installer — or installing the previous release ([Downgrade](#downgrade)). One residual window is accepted rather than guarded, and it is the one every package manager accepts too: a reboot between the stop and the restart brings enabled instances back against a tree that may be mid-swap. The marker that would have prevented it was never enforceable, since a hand-run workload bypasses it, and it would have worked on this channel and no other.
+
+Nothing in this sequence is platform-specific but step 5: the receipt is a file, and stopping and starting go through whatever wrapper the [platform mapping](#service-registration) named — while the wrapper refresh is the one place a platform's rendering, if it has any, gets paid for. Windows inherits the sequence unchanged in C1: its service manager restarts on boot as systemd does, a half-swapped `.exe` set is the same hazard, and its per-scope services are rendered copies like macOS's.
+
+An upgrade drops active tunnels exactly as a config sync restart does — same maintenance-window expectation, same [safety-net](../mgmt-plane/distribution-and-reload#safety-net-server-nodes) backstop for the node you are upgrading over.
+
+**Binary vs. artifact-schema skew** is governed by [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract); the operational rule it implies for C0 fleets: upgrade binaries first, publish schema-dependent state after. The coordinator tolerates any order — it stores and serves, never parses what it relays.
+
+### Migrations are not the installer's
+
+**A release that changes the shape of node state does not migrate it from here.** The installer never enters `retes/`, so it neither snapshots nor migrates nor restores; the agent migrates what it owns, and an explicit operator-invoked command handles what must not happen automatically. None of it is C0 code — the first release has nothing to migrate *from* — and the design is [tracked separately](#deferred-from-c0).
+
+*Because* the alternative concedes every channel but this one. `install.sh` is a C0 scope reduction rather than the shape this ends in: dpkg, pacman and Homebrew will each place files their own way and none will run our migration logic, while all of them can be asked to stop a service and replace a file. So a guarantee that must hold everywhere cannot live in the installer, and node state is exactly such a guarantee. The industry agrees to an unusual degree — Django, Rails, Elasticsearch and GitLab all migrate in the application, and `pg_upgrade` is explicitly separate from the package step.
+
+### Downgrade
+
+**The installer does not judge direction: any release installs over any other.** There is no forward-only guard, no `--force`, and no downgrade mechanism either — going back is installing the older release, which is the same command doing the same thing:
+
+```bash
+flor version                        # names the release this one replaced
+curl -fsSLO https://github.com/rete-labs/flor/releases/download/v0.1.0/install.sh
+sh install.sh                       # user mode; add --system under sudo for a server
+```
+
+*Because* whether an older binary can serve this node's state is a **rete** question, and the installer cannot answer it — only the agent knows what shape the trees are in. A guard here would be judging what it cannot see. In C0 it always works, since nothing migrates; once something does, an older release that cannot read the trees is caught by the agent refusing to start and saying so, and the migration design owns making that refusal precise.
+
+Nothing needs re-enabling afterwards, because nothing was disabled: the upgrade restored the activation it found, and so does this.
+
+The rule underneath, unchanged: **node-local state is monotonic**, exactly as the artifact high-water-marks are ([Agent § Sync](../mgmt-plane/agent#sync)). Even a supported rollback would move binaries only — rete state rolls back by the [forward-republish playbook](../mgmt-plane/distribution-and-reload), never by replaying old sets.
+
+**What C1 picks up:** retained previous binary sets and a `--rollback` that needs no network, landing with the artifact-side confirm/auto-rollback guard so that one confirm-or-roll-back story covers binaries and state instead of two mechanisms invented apart.
+
+**Fleet upgrade is a loop over nodes** — the parallel-SSH style of the distribution playbook's last step. A coordinated fleet upgrade (ordering, canary, binaries delivered as artifacts) is deliberately not designed in C0; the [evolution section](#evolution-facades-and-channels) records the door.
+
+## Uninstall
+
+Two levels, and one rule tells them apart: **uninstall removes the installation; `--purge` removes the node's participation and everything authored for it.**
+
+- **`flor uninstall`** — stops and deactivates every `flor-agent@<scope>` instance (`systemctl disable --now`, `launchctl bootout`), then removes what it placed: the wrapper files — template *and* every rendered per-scope copy, the same pair [upgrade refreshes](#upgrade) — the runtime roots, the binaries, and the receipt. The service manager's reload ends it, so no unit file it no longer has stays loaded.
+- **`flor uninstall --purge`** — additionally deletes the scope roots (private keys included), `config.toml`, and flor's state, config and runtime directories themselves. Nothing survives it.
+
+Four things survive a plain uninstall, each for its own reason rather than as a list to memorise:
+
+- **The scope roots**, which were never the installer's to remove — identity subtree, artifact sets, agent state.
+- **`config.toml`**, admin-owned once created, so an uninstall is no more entitled to discard an edit than an upgrade is — dpkg's `remove` keeps conffiles and only `purge` deletes them, and the reasoning transfers exactly.
+- **`install.lock`**, because **nothing reads it** — no decision anywhere turns on whether the file exists, only on whether the lock is held — so leaving it changes no behaviour, while removing it would mean releasing the lock in order to delete the file, and handing a concurrent installer a lock on something about to disappear. `--purge` has to accept exactly that race, since it removes the directory; a plain uninstall has no reason to.
+- **The `flor` user and group**, precisely *because* the scope roots do. They are owned `flor:flor`, and a reinstall that created a fresh service user could be assigned a different uid, leaving the survivors owned by a number that no longer means anything. A service user with no files is harmless; an orphaned ownership is not.
+
+A scope that survives an uninstall is **enrolled but inactive**, not "ready to enroll": reinstalling and running `flor agent enable` resumes it with no bundle and no operator involvement. That property belongs to enrollment's own two-step shape rather than to this page — see [Enrollment § Activation and resume](../mgmt-plane/enrollment#activation-and-resume).
+
+## Platforms
+
+| Target | Architecture | Wrapper | C0 status |
+|---|---|---|---|
+| Linux, systemd-based (Ubuntu, Debian, Fedora, Arch, …) | x86_64 (musl-static) | systemd template unit | **supported** |
+| macOS, Apple Silicon | arm64 | launchd LaunchAgent (user mode only) | **supported** |
+| Linux without systemd | same binaries run | none shipped; manual | unsupported |
+| Linux, aarch64 | — | — | B2, on B2's demand |
+| Intel macOS | — | — | not a target; clear installer error |
+| Windows | — | SCM service | C1 ([scope](/docs/implementation/c1-manual-mesh/scope)) |
+| Embedded Linux | ARMv7+ ([B2 constraints](/docs/implementation/b2-hybrid-hauling/scope)) | image-integration | B2-era ([evolution](#evolution-facades-and-channels)) |
+
+**Two targets, and the third was cut on evidence rather than on cost.** Every target is a build, a test surface and a support promise. No C0 pilot host is aarch64 Linux, so the third build waits for B2, which needs it for its own reasons; adding it then is a CI flag plus a test pass, not a redesign.
+
+**macOS is Apple Silicon only.** Dropping x86_64 halves the Darwin release matrix (no universal-binary step, no Intel CI runner, no legacy-macOS testing) for a platform Apple stopped shipping in 2020; C0's pilot fleet is M-series. `install.sh` fails on `x86_64`-Darwin with a plain statement rather than a 404.
+
+**The macOS floor is whatever the build imposes, and `install.sh` checks it.** A minimum version stated in prose and enforced nowhere drifts from what CI actually produces, so the number is the one the Rust `aarch64-apple-darwin` target and the release runner impose, recorded where the guide and the script can both use it. The script's refusal is the enforcement.
+
+One consequence of the fetch path worth recording: the curl/tar route sets no quarantine attribute, so unsigned binaries run without Gatekeeper involvement — **codesigning and notarization are deferred** until a browser-download channel exists (the C1 landing-page question), at which point they become mandatory, not optional.
+
+**Windows is C1**, including whether it arrives as a PowerShell one-liner or an MSI ([C1 Scope](/docs/implementation/c1-manual-mesh/scope)). The sequence it inherits is already designed for it: a half-swapped `.exe` set is the same hazard, its per-scope services are rendered copies like macOS's, and its service manager restarts on boot as systemd does.
+
+## Deferred from C0
+
+Cut deliberately, to ship. Each names the milestone that picks it up, so none of them is a hole:
+
+- **Binary rollback** — retained previous binary sets, `flor install --rollback`, and the layout-compatibility marker they need → **C1**, alongside the artifact-side confirm/auto-rollback guard ([Downgrade](#downgrade)).
+- **Node-state migrations** — the agent's and an operator-invoked command's, not the installer's ([Migrations](#migrations-are-not-the-installers)). Tracked as its own design, since nothing in C0 has anything to migrate from.
+- **`flor install --dry-run`** → **C1** with rollback: most of its value was reporting the compatibility verdict that C0 has no marker for. C0's install is idempotent and its guard is a refusal, which covers the accident dry-run would have caught.
+- **crates.io as an install path** — the crate is published to hold the name, and what `cargo install` should eventually mean is open ([Distribution](#distribution-and-integrity)). It is not a documented way to install flor in C0.
+- **A layout-compatibility marker**, and any check of it — it belongs with the migration design, and until something migrates there is nothing for it to say.
+- **aarch64 Linux** → **B2** ([Platforms](#platforms)).
+- **Every channel but the release archive** — packages, taps, container and embedded images, Kubernetes, Windows → [Evolution](#evolution-facades-and-channels).
+- **The project signing key, reproducible builds, macOS notarization** → whenever a second channel or a browser-download path first exists ([Distribution](#distribution-and-integrity)).
+- **A structured release index** (`manifest.json`-class) → whenever something actually reads one: a per-platform minimum OS, or the package generators ([Evolution](#evolution-facades-and-channels)).
+- **Cross-mode *rete* coexistence** — the two installs are [independent by construction](#directories) and C0 refuses neither; what stays deferred is running the two retes side by side comfortably (port-offset ergonomics) and testing the arrangement at all. C0 pilots deploy servers as system, personal devices as user.
+
+Kept despite being cuttable, with reasons: **`flor uninstall`** stays because it is the receipt read backwards (nearly free), and because leaving private keys behind is a security decision rather than a tidiness one; **the install lock** stays because it is one `flock` and the alternative is a corrupted swap nobody can diagnose; **system-mode service-user creation** stays because running the daemon as root would contradict the milestone's own [secure-from-day-one](../scope#security) constraint.
+
+## Evolution: facades and channels
+
+The durable core is **the layout knowledge** — unit and plist templates, sysusers/tmpfiles-class facts, binary set, roots — kept as concrete files and build-time constants in the flor repo, because the installer itself needs them there. The rule that makes them worth keeping is that **no facade gets a second copy of those facts**: a package generator, an image build or a tap reads what the installer reads, and never re-derives the layout from this page. The failure mode being avoided is not a missing generator — it is a layout that lives only as prose, so that a deb or a tap re-derives it and then drifts. Nothing below is designed or committed; each is recorded so the C0 shape doesn't foreclose it.
+
+**Script facades — call `flor install` on a live host:**
+
+- `install.sh` (C0, this page).
+- **Windows (C1):** a PowerShell one-liner or MSI whose custom action calls the same core, grown a Windows SCM backend — the payoff of putting the core in Rust rather than in shell.
+
+**Image facades — one call applies the layout at *build* time against a staged root, and there is no installer at runtime.** The seam follows from `flor install` [placing what surrounds it](#install); the flags that would express it (`--root`, `--offline`) are **not in the C0 command surface** and are named here as deferred rather than promised, since nothing calls them yet. One seam, two very different-looking users:
+
+- **Container images (post-C0), in the container-as-node shape.** Agent plus its vertices in one container, the agent forking children exactly as it does on a host; the platform keeps the *container* alive, filling the role systemd fills elsewhere. First consumer is our own [container-based testbed](../scope#dev-env), then server admins who deploy everything as containers, then B1's per-customer coordinator stacks. What such a deployment must settle is **networking**, not supervision: a vertex binds real UDP and serves local inbounds, so host networking is the default expectation and port-mapping a service mesh is mostly wrong. The multi-process container is deliberate — that is what a supervisor is — and worth stating before someone calls it an anti-pattern.
+- **Embedded image builds (B2-era).** The same call against a staged rootfs; Yocto-class recipes wrap it. Pairs with [enrollment's](../mgmt-plane/enrollment#per-node-enrollment) bake-the-bundle-into-the-image provisioning.
+- **Kubernetes (Helm chart), when service-mesh-in-K8s becomes a target.** DaemonSet-shaped (Istio's ztunnel is the reference), where "install" largely dissolves — the image is the install and enrollment arrives as a Secret. The overlap worth naming: **kubelet and `flor agent` both supervise**, and the resolution is a choice between two shapes, never both at once. *Container-as-node* (above) keeps the agent forking and asks nothing new of anyone. *Platform-native* — a container per workload in a pod, or a pod per workload — has the agent **stop forking** and delegate through its reserved per-entry **launch runtime** ([Agent § Supervision contract](../mgmt-plane/agent#supervision-contract) — `fork` today; system units, containers, or remote WRI later), keeping only what is Florete's: verify, stage, sync, identity. That second shape also answers whether `flor install` needs a special mode — it does not, because the chart becomes the installer and `flor install` falls back to applying layout at image-build time. **The further a deployment moves from container-as-node, the less of the installer is involved at all.** Needs its own design when a milestone pulls; nothing here forecloses either shape.
+
+**Declarative facades — the package manager owns placement and lifecycle; packages are generated from the same layout files; `flor install` keeps hands off, and [stops](#install) rather than writing over a file it does not own.** Two C0 properties are what make these a build step rather than a redesign: the layout facts are single-sourced, per the rule above, and the [lib directory is relative to the executable](#directories) — so a facade can *pour* the prebuilt archive into its own prefix instead of having to build flor with different constants. A Homebrew formula installing into `/opt/homebrew/Cellar/flor/<version>/` works for exactly that reason.
+
+- **A Homebrew tap and AUR** — near-zero-infra wrappers over the release archives; the natural first additions post-C0, and the pair that put the two properties above under test.
+- **Own apt/yum repositories (~C1/B1):** debs/rpms generated from the *prebuilt* release binaries (nfpm-class tooling, no per-distro source builds), served from a self-hosted or hosted repo. One deb repo covers the Debian family, one rpm repo the Fedora/RHEL family. Package payload: binaries in `/usr/bin`, unit in `/usr/lib/systemd/system`, `sysusers.d`/`tmpfiles.d` fragments, near-empty maintainer scripts.
+- **Distro-maintained packages (if ever):** source builds under distro policy with a sponsoring maintainer — trust optics, never on the critical path.
+
+**Deliberately skipped, reasons on record:** a Launchpad **PPA** (source builds on Canonical's builders, ongoing Rust-vendoring pain; an own apt repo serves strictly more distros for less), **Flatpak** (sandboxed desktop-app format with no system-service story — wrong shape for a daemon; a future GUI companion could be one, the daemon never), **Snap** (daemons are possible but confinement fights a socket-binding network daemon for niche reach), **AppImage** (a portable binary — the static tarball already is one).
+
+**Doors kept open, not designed:**
+
+- **Binaries delivered as artifacts**, within operator-signed bounds — coordinated fleet upgrade, and the vendor-preinstall model where a device ships with flor and receives updates from the rete it subscribes to. Enabled by ship-everything plus the receipt (the same property behind [B1's decisions-only placement](/docs/implementation/b1-cloud-control/coordinator#open-questions-deferred)) and by the agent's reserved consumed-artifact references. One constraint worth recording before anyone designs it: **delivery must stay separable from activation** — embedded persistence is frequently `noexec` or A/B-image-slot shaped (RAUC/Mender/OSTree class), so "write a file, `chmod +x`, run it" cannot be assumed as the activation step.
+- **The hosted per-rete landing page** (C1 open question) with per-platform one-liners — also the thing that first triggers the deferred signing and notarization work above.
+
+## Decision Log
+
+### What installing is
+
+**INST-C0-01. Install leaves a host ready to enroll; enroll never installs.**
+Installing places host-level machinery — binaries and per-OS service wrappers, everything below every rete. Everything per-rete arrives later, per scope, with [enrollment](../mgmt-plane/enrollment). The subject is a **host joining a rete as a node**, so B1's hosted coordinator — a service with its own deployment pipeline — bypasses `install.sh` by design rather than by omission.
+*Because* the boundary is the same one the agent's [no-node-global-state invariant](../mgmt-plane/agent#role) already draws, and a second, differently-placed line would make one of them wrong.
+*Rejected* an installer that also enrolls — it would need bearer material at install time, and would make reinstalling cost a re-issued bundle.
+
+**INST-C0-02. The installer knows only flor's own executables, and decides nothing about third-party ones.**
+It places the platform set — which *includes* the workloads flor itself supervises, the vertex and the coordinator — and has no concept of a third-party workload: it does not enumerate, fetch, or place one. How such a workload eventually reaches a host is deliberately not decided here.
+*Because* the only property C0 needs is that nothing in the installer's shape presumes an answer. Its set is fixed and compiler-known — the agent's inventory `run` names are validator-restricted to those argvs — so a delivery model can be added later without reshaping anything above.
+*Accepting* that the installer does place supervised workloads today, which is why the boundary is "flor's own, not third parties'" rather than "the runtime, not workloads".
+*Rejected* deciding the tenant-delivery model now — artifacts through the coordinator, a registry, baked into an image, or several at once are all open, they have different consequences here, and B2 is the milestone that must choose; the framing that this command is nvm-shaped and some future tenant installer npm-shaped — a useful analogy, not a commitment, since it presumes a node-side package manager that may never exist.
+
+**INST-C0-03. The channel owns the host; the agent owns the rete.**
+Placing files, updating the service wrappers, and stopping and starting the services around a swap are **host** business, and every supported channel does them — `install.sh` here, maintainer scripts and post-install hooks elsewhere. Artifacts, node state, migrations and identity are **rete** business and belong to the agent, which is why the installer never touches `retes/`.
+*Because* the line has to fall where the knowledge does. Wrappers are the only OS-specific artifacts in the system, so a component deliberately kept OS-agnostic — the agent — must not be the one rendering them; while node state is rete-shaped and outlives every installation of every channel, so it cannot belong to whichever one happens to be installed. Migrations are the case that proves it: `install.sh` is a scope reduction for C0, not the shape this ends in, and dpkg, pacman and Homebrew will never run our migration logic — but they *do* restart services and update units routinely, which is exactly why host business can be required of them and rete business cannot.
+*Accepting* that "supported channel" becomes a real bar: a package we bless must stop the services, replace the files, update the wrappers and start them again, or ask for a reboot where it cannot. That is ordinary packaging work, and a channel that will not do it is not a channel we support.
+*Rejected* the installer as migration owner — it makes a rete guarantee channel-specific; the agent as wrapper renderer — it pushes host specifics into the one component that has none; and the broader claim that *no* invariant may depend on the installer — too bold, and it would forbid requiring of a channel the very things package managers already do.
+
+**INST-C0-04. An install carries the full executable set the host may need.**
+Every executable the node's agent could be asked to `run` (`flor-vertex`, `flor-coordinator`), the node's own supervisor and CLI (`flor`), and the operator tooling (`retectl`) — on every install, whatever the node's present role.
+*Because* moving a service then becomes a publish rather than a re-install, which is what lets [B1's placement](/docs/implementation/b1-cloud-control/coordinator) ship decisions only, with no registry and no image pull; and because the operator's workstation *is* an enrolled node, so operator and node sets were never disjoint.
+*Accepting* bytes on hosts that never run some of them.
+*Rejected* role-based subsets — they make placement a re-install; a `--without-retectl` knob — its only payoff is bytes, and it would thread through every facade, the receipt and every upgrade path.
+
+**INST-C0-05. The set is named, not counted.**
+The supervision contract resolves a `run` argv to an executable **by name** against the installation. Nothing may assume a name maps to its own file, and nothing may assume two names share one. A multi-call binary is therefore a packaging choice, decidable later; C0 ships plain separate binaries.
+*Because* both clauses keep packaging cheap to change: the first admits busybox-style dispatch when size pressure appears, the second is what lets a vendor build add or replace an executable without the installer changing shape.
+*Accepting* that a proprietary vertex ships as its own executable beside `flor-vertex` rather than as a private build of the binary that also holds enrollment and the CLI — which is why the vertex is not a `flor` subcommand.
+
+**INST-C0-06. One release version identifies the whole installed set.**
+All four executables are built and released together and carry one number. Contract versions are separate and independent: the envelope is near-frozen, each payload family carries its own `schema_version` ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
+*Because* executables that talk to each other can then never be skewed on one host, and "what version is this node on" has exactly one answer — while re-releasing all four for one schema change stays a release-mechanics cost, not a compatibility one.
+*Rejected* per-binary versions — independent cadence at the price of an N×M compatibility matrix somebody must test and document.
+
+### Distribution
+
+**INST-C0-07. C0 ships exactly one install channel.**
+Prebuilt static binaries from GitHub Releases, fetched by `install.sh`. The crate name on crates.io is published once at the C0 release to hold it, and is *not* a documented install path; what `cargo install` should eventually mean is left open.
+*Because* a channel is a standing promise — a verification story, a guide section, an upgrade path that must keep working — and no pilot user is stuck without a second one; pilot users have no toolchain at all.
+*Accepting* that `cargo install flor` is possible and unsupported.
+*Revisit* when someone outside the core team needs a toolchain-based install.
+*Rejected* crates.io as a documented equal — the claim that it "produces the same layout" was never earned: cargo places every bin flat in `~/.cargo/bin`, has no lib-directory convention anywhere in its ecosystem, and installs self-contained tools rather than a supervisor plus spawned daemons, so the question is not which directory to pick; a Homebrew tap — post-C0, and INST-C0-21 with INST-C0-32 keep that door cheap.
+
+**INST-C0-08. `install.sh` is one byte-identical file, at the flor repository root and as a release asset.**
+The version it installs is hard-coded and bumped by the release commit; archive digests are fetched from that release's `SHA256SUMS`. The repository path is `install.sh` at the root, because that path is the audit URL a guide prints.
+*Because* it then has a reviewable history, needs no generation step, and its version bump rides the commit that bumps `Cargo.toml` — and because two origins must agree: a release asset can be replaced silently by anyone holding a token, while a tagged file in git cannot change without leaving evidence, so the asset can be compared byte-for-byte against the tag. Root placement follows the convention of every project served this way (nvm, Homebrew's install repo, `docker/docker-install`) and puts the file on the repository landing page, where finding it needs no directory name.
+*Accepting* that the script cannot carry archive digests, since it is committed before the archives exist.
+*Rejected* a generated per-release script — a fetchable artifact nobody reviewed, whose only advantage was inline digests that buy nothing at a single origin; git-only with no asset — no `SHA256SUMS` entry, so the comparison it exists for is unavailable; `dist/` — names build output, and this file is source; `scripts/` — flor's already holds developer helpers, and the one script users are told to read must not sit among them.
+
+**INST-C0-09. A release publishes archives, `SHA256SUMS`, and `install.sh`.**
+Archives are named `flor-v<version>-<os>-<arch>.tar.gz` — `macos`/`linux`, and the arch spelled as that platform spells it (`arm64`, `x86_64`), which is also what `uname -m` returns. `tar.gz` on both platforms. A signature file is the reserved later addition.
+*Because* every documented path must find everything on one release page; the version leads so a directory of downloads sorts by release; and `tar -xzf` behaves identically under bsdtar and GNU tar, where a binary the user cannot extract is a worse failure than a slower download. `SHA256SUMS` is what Debian, Ubuntu and most projects publish, and `sha256sum -c SHA256SUMS` is typed from memory.
+*Rejected* target triples — machine-tailored, and a real lookup table in the script; `xz`/`zstd` — CI time or codecs not wired into every stock tar, for bytes nobody counts; several formats per target — release and script complexity for the same bytes; `SHASUMS256.txt` — Node's idiosyncratic spelling; a structured `manifest.json` — nothing in C0 reads it, its two would-be consumers (a per-platform minimum OS, facade generators) are both post-C0, and it is purely additive later, whereas two files must be kept in step and eventually both signed.
+
+**INST-C0-10. The URL is the version pin.**
+`…/releases/latest/download/install.sh` for the one-liner, `…/releases/download/v<version>/install.sh` to pin; the raw tag URL is the auditable second copy. There is no `FLOR_VERSION`, no re-exec, and no origin parameter.
+*Because* every copy of the script installs exactly the release it was published with, so a version variable has nothing left to do; and a second origin means a second script — which was always the real answer — rather than a runtime knob with nothing on the other end.
+*Accepting* that pinning means knowing the URL form, which the guide prints.
+*Rejected* re-exec of another release's script — machinery for a property the URL now provides; a script that fetches a different release's archives — installing a version it was not built against is exactly what the digests exist to prevent; a branch URL — it would install whatever "latest" resolves to while advertising a name, and must never be published; `florete.tech/install.sh` — worth having later as a convenience, never as security, since the docs site is GitHub Pages and a redirect moves the hostname rather than the origin.
+
+**INST-C0-11. The piped path proves integrity; only the manual path proves authenticity.**
+`curl … | sh` gives TLS to the origin plus archives checked against that release's `SHA256SUMS` — integrity within one release page, and no authenticity, permanently. The manual path runs `gh attestation verify` over each file it downloaded, the archive and `install.sh` alike, and that is the whole check: an attestation already binds the file's digest, so a `sha256sum -c` after it adds nothing. Without `gh`, the fallbacks are integrity only — `sha256sum -c SHA256SUMS`, and a byte-for-byte comparison of the script against the git tag.
+*Because* a path that implies more than it delivers is worse than one that admits its limit — and a script cannot authenticate itself, so no signature and no digest carried by the script can ever change what the piped path rests on.
+*Accepting* a heavier dependency on the manual path (`gh` or `cosign`, and network access to Sigstore's roots) than `sha256sum` alone.
+*Rejected* the three-layer trust story as previously written — it claimed an anchor it cannot reach; attestations as a *layer of the claim* — that framing is what let the page overclaim, so they are documented as the mechanism of one path rather than as a guarantee of the product.
+
+**INST-C0-12. Digests are fetched, the digest file covers the script, and the signature is deferred in time but not in shape.**
+`install.sh` fetches `SHA256SUMS`; that file lists the archives *and* the script; a detached signature over it, verified out of band and never by `install.sh`, is the deferred addition, with tool and file name deliberately unchosen.
+*Because* one file covering the whole release is what makes the future signature *one* signature — sign `SHA256SUMS`, and every asset listed in it inherits the authenticity. A same-page digest proves only integrity: whoever can swap an archive can swap the digest list beside it.
+*Revisit* at the first channel GitHub Actions does not build — a vendor's CI, a mirror — where attestations stop applying and a project key covers both channels at once.
+*Rejected* digests built into the script — impossible once the script is committed before the archives exist, and equal in strength at one origin anyway; naming the signature tool now — nothing depends on the name, so reserving one would be choosing a tool by the back door. The criteria it must meet are recorded instead: verifiable with what an admin already has, issuable from CI without a long-lived secret, and a public key the guide can print.
+
+### Installing
+
+**INST-C0-13. Mode is a property of the prefix, and the list of system prefixes is per platform.**
+`flor install` picks the mode by flag or by privilege; every other command infers it by asking whether its own canonicalized location sits in a **system prefix**, a build-time list that differs by platform: `/usr/local/bin` and `/usr/bin` on Linux, **empty on macOS**, and one location under `%ProgramFiles%` on Windows when C1 adds it. Anything not in the list is a user prefix. Each mode then resolves its whole column, and since the lib directory is relative to the executable (INST-C0-20), the rest of the layout follows the prefix too.
+*Because* a single constant only recognises the prefix *we* install into, while other channels install elsewhere by design — a deb in `/usr/bin`, Homebrew in `/opt/homebrew`, cargo in `~/.cargo/bin` — and a list gets each of them right. Making it per platform is what turns "macOS is user mode only" from a rule stated in prose into a rule the mechanism enforces: with no system prefix on Darwin, no binary can ever resolve to system mode there, and `--system` has nowhere to install to.
+Both Linux system prefixes resolve the *same* state, config and runtime directories, which is correct — a host has one node, whoever put the binaries there — and is also why a system package and our system-mode install genuinely collide, which INST-C0-17 catches.
+*Accepting* one wrinkle for a future tap: Intel Homebrew's prefix is `/usr/local`. On a platform whose list is empty that resolves to user mode anyway, so the wrinkle costs nothing; Intel macOS is not a target regardless.
+*Rejected* recording the mode and reading it back — no channel but ours writes anything to read; deducing it from euid or writability — unstable, and this design announces rather than deduces; one list shared by every platform — it would put a system prefix on macOS, where system mode does not exist.
+
+**INST-C0-14. Mode is chosen once, detected thereafter, and each install sees only its own.**
+`--system`/`--user`, defaulting by privilege, recorded in the receipt; every later command resolves its mode from the running executable's own location, and examines only that mode's locations. The two installs are independent by construction — no shared file, no cross-tree search. The report closes the accident it leaves open by naming any **PATH shadowing** it finds.
+*Because* the detection rule is what makes the two installs independent rather than merely differently-pathed, and a cross-check cannot be symmetric: a user-mode install could inspect one fixed system path, but a system-mode install cannot enumerate users' homes without guessing. The operator's real question is not "does another install exist" but "which binary will run" — which is what pip, npm and rustup warn about, and what the shadowing line answers.
+*Rejected* a search order across trees — a user-mode command would reach into system state whenever one existed; a receipt-derived mode — it makes a fresh root install's mode depend on a file in someone's home directory; silence about shadowing — the accident, unmitigated.
+
+**INST-C0-15. Two install shapes: user mode is the one-liner, system mode is deliberate.**
+`curl … | sh` for a personal device, unprivileged. For a server: download, read, then `sudo sh install.sh --system`. The installer escalates nothing on its own.
+*Because* a product whose own documentation teaches `curl | sudo sh` has taught the habit that makes every later hardening note ridiculous, and a script that calls `sudo` itself is the same act with the operator's attention removed. Server installs are already deliberate, SSH-mediated acts, so the second command costs the operator nothing.
+*Accepting* that the two modes' instructions differ in shape rather than only in flags.
+*Rejected* self-escalation in the script or in `flor install`.
+
+**INST-C0-16. The installer reports; it neither judges health nor grants access.**
+It prints the mode, every resolved directory, the release version, any PATH shadowing, the `usermod` line that grants `flor` group membership in system mode, and each surviving scope's `flor agent enable` command. On an upgrade it prints the version it came from with the literal command line that would return there, and which scopes it restarted. It exits non-zero if a start command failed. It does **not** wait out a liveness window or query `agent.sock`.
+*Because* a fresh install starts nothing, so everything it *could* start must appear as a next step or the discipline becomes a trap; and health is the agent's own verdict, one command away in `flor agent status` — re-answering it here would put a socket client, a protocol dependency and a timeout policy inside the installer. What the installer genuinely knows is whether the service manager accepted a start, and a fleet loop must be able to test that without parsing prose.
+*Accepting* that a scope which starts and then dies moments later exits the installer zero.
+*Rejected* adding `SUDO_USER` to the `flor` group — silent privilege from a command asked only to install software, when that membership permits reading node state and triggering syncs; always exiting zero — a failed start is a fact the shell must see; a code vocabulary — reserved, and nothing consumes it yet.
+
+**INST-C0-17. The installer owns a file list, and refuses to write over a file it does not own.**
+It owns what it places: the executables in bin and lib, the wrapper template and every rendered per-scope copy, its own receipt and lock. A path in that set which its receipt does not list belongs to somebody else, and the install stops and names it. `retes/` and `config.toml` are not its files, and state left in the state directory is not its business — installing over it is the ordinary resume path.
+*Because* it is the rule a package manager applies, and the only ownership question the installer can answer from the files themselves: dpkg reports a path "which is also in package X" without inspecting anyone's data directories. The receipt is what makes it decidable in the one ambiguous case, since an upgrade rewrites paths its own receipt lists.
+*Accepting* that it catches collisions and not coexistence. Two channels that write the same paths collide and the second stops; a channel keeping to its own hierarchy — a Homebrew formula cannot own files in a user's home, and `brew services` names its plists its own way — simply coexists. That is the node admin's business, and the invariant that matters, **one agent per scope**, is the agent's.
+*Rejected* refusing on unowned material in the state directory — it cannot tell our own uninstalled remainder from another channel's node state, and would block the documented resume path; an origin field in the receipt — the files already say what the check needs; refusing nothing at all — it gives up a guard costing one existence check.
+
+**INST-C0-18. Every mutating installer operation holds one advisory lock, and nothing reads its file.**
+An `flock` on `<state-dir>/install.lock`, taken by install, upgrade, uninstall and `--purge` alike. **Nothing decides anything from the file's presence** — its only job is to be locked — so a plain uninstall leaves it where it is, and `--purge` removes it with the directory as its last act.
+*Because* two installers interleaving a binary swap is the outcome worth preventing — placement, not bookkeeping — and a lock held in kernel state is released when its holder dies for any reason, including a power loss, whereas a scheme where the file's *existence* is the signal strands a host after a crash. Nothing else contends for it: a scoped `flor agent run` mutates its own scope root and no shared file, and a package manager touches the state directory not at all.
+**`--purge` accepts one narrow race, and it is the reason plain uninstall does not have to.** Purge must delete the directory the lock file lives in, so it must stop holding the lock at some point before that directory is gone — on Windows an open locked handle cannot be deleted at all, and releasing first means a concurrent `flor install` can take a lock on a file that is about to vanish and then have its tree removed underneath it. The window is short, the outcome is a half-placed installation that a re-run repairs because install is idempotent, and running a purge and an install against one host at the same moment is already an operator error. A plain uninstall faces no such pressure: the directory survives, so leaving the file costs nothing and takes no race at all.
+*Rejected* the receipt as the lock target — `flock` binds to an inode and the receipt is replaced by rename, so the holder's lock would protect nothing; locking the state directory itself — Windows byte-range locking is defined over file handles rather than directory handles, and an invisible lock is undiagnosable where a named file answers "why is my install waiting" with `lsof`; deleting the lock on a plain uninstall for tidiness — it buys a cleaner listing at the price of the purge race, in the one case that does not have to run it.
+
+**INST-C0-19. The receipt records what is installed and what it replaced, and nothing a channel could not know.**
+`install-receipt.json` in the state directory: a `phase`, a receipt `schema_version`, the release version, the release it replaced, and the exact list of files placed. It and `install.lock` are the installer's whole footprint in the state directory, and both are private to this channel — a package manager writes neither and needs neither, because its own database is its receipt.
+*Because* the release it replaced is the only record of the way back: after "it upgraded fine and then everything broke", nothing else on the host names the version that worked, and node state cannot carry it — that is rete-shaped and knows nothing of releases. A package manager keeps the same fact for the same reason, in `apt`'s history log. A `schema_version` buys the other half: a newer installer must read an older receipt or refuse in terms an operator can act on.
+*Accepting* that the file is written before the files it lists, carrying `phase: installing` until they are placed.
+*Rejected* recording the **mode** — it is a property of *where the receipt is*, since each mode has its own state directory, and every binary already detects it from its own location; recording the **origin** — tautological in a file only one channel writes, and useless as an ownership gate (INST-C0-17); per-file digests — nothing in C0 consumes them and uninstall by path suffices, *Revisit* with drift detection or a `--verify`; a layout identity — that is node state, and it belongs with the migration design.
+
+### Layout
+
+**INST-C0-20. Node material is state, and the XDG bases say so.**
+Bin, lib, state, config and runtime directories, resolved per mode: XDG in user mode (macOS included), `/usr/local` and the FHS counterparts in system mode. Each is overridable by one environment variable, environment-only by necessity; there is no bin override and no `FLOR_MODE`.
+*Because* `XDG_STATE_HOME` is the base analogous to `/var/lib` — machine-managed, persisting across restarts — and a node's scope trees are mutable, host-specific and acquired at runtime, which makes the system-mode counterparts fall out rather than be chosen. Finding `config.toml` means knowing the config directory first, so the directories cannot be configured in the file they would be read from.
+*Rejected* `XDG_DATA_HOME` — read-only, distributor-provided, which node material is not; `libexec` — not portable, absent on Arch and discouraged by Debian policy; a `--prefix` — one string cannot express both `/opt/flor/lib/...` and `/usr/local/lib/flor/...`, which differ by more than a prefix, and the case it would serve does not run `flor install` at all; a `FLOR_MODE` variable — it would let the on-disk answer and the service-manager answer disagree.
+
+**INST-C0-21. The lib directory is resolved relative to the running executable, not as an absolute per-mode constant.**
+`flor` and the agent resolve it as `../lib/flor` from the directory the running executable sits in, after resolving symlinks. `FLOR_LIB_DIR` still overrides it for development. Mode detection is unchanged and continues to select the state, config and runtime columns.
+*Because* the relative rule reproduces **both** C0 columns exactly — `~/.local/bin` pairs with `~/.local/lib/flor`, `/usr/local/bin` with `/usr/local/lib/flor` — so it costs nothing today and buys relocation, which is what a facade that owns placement needs. An absolute constant silently requires each such facade to *build* flor rather than pour our prebuilt tarball: a Homebrew formula installs into `/opt/homebrew/Cellar/flor/<version>/`, and a `flor` there would resolve its daemons to a `~/.local/lib/flor` that Homebrew never populated, so the agent would fail to spawn a vertex. The precedent the design already cites is exactly this — Git computing its exec-path from `argv[0]`, Python deriving `sys.prefix` from the interpreter's location.
+*Accepting* that a relocated tree must keep `bin/` and `lib/flor/` in their relative positions, which a tarball, a Cellar and an `/opt` bundle all do anyway — and that inside an already-namespaced prefix the `flor` component is redundant (`…/flor/<version>/lib/flor/`). One occasionally verbose rule beats two rules each right somewhere, and a facade wanting its own idiom has `FLOR_LIB_DIR` plus, in Homebrew's case, `write_env_script` — a formula-written wrapper that sets the environment and execs the real binary — so it needs no rebuild from us.
+*Rejected* an absolute constant per mode — the Homebrew case above, discovered by asking whether a tap would fit before writing one; a `--prefix` at install time — INST-C0-20 rejected it for a different reason and this rule removes the last motive for it.
+
+**INST-C0-22. Host configuration is TOML; rete state is YAML.**
+`config.toml` in the config directory, holding the one C0 host setting: where the syslog socket is. The rule that generalises is about the editing situation, not the syntax.
+*Because* the two files differ in what a mistake costs and who is present when it is made. Rete YAML is a document tree, edited in a repo, reviewed in a diff and validated by `retectl` before it can reach a node. `config.toml` is a couple of flat keys edited over SSH on a host that is already misbehaving, with no validator between the edit and the restart — the setting where significant indentation and implicit typing are worst and least detectable.
+*Rejected* YAML for consistency — consistency with a file that has a different author and a different safety net; environment-only — unfindable, and unwritable by configuration management; INI/conf — no standard, no types, no nesting, and every parser disagrees, when the file already has a section.
+
+**INST-C0-23. `config.toml` is created if absent and never overwritten.**
+An upgrade leaves an existing file alone and *reports* when the release's defaults have moved. `--purge` removes it; a plain uninstall does not. The macOS syslog-socket probe runs only when the file is being created.
+*Because* the file exists to be hand-edited, and dpkg's conffile behaviour is the settled shape of this problem — both halves of it: an upgrade that keeps your edit, and a `remove` that keeps it too, with only `purge` taking it away.
+*Accepting* that a host whose syslog daemon changes after install keeps a stale destination until someone edits the line; the report is what surfaces it.
+*Rejected* replacing it on upgrade — destroys the edit the file exists for; leaving it unowned — a file no rule lets even `--purge` remove.
+
+**INST-C0-24. flor logs to a syslog socket on every supported platform, and the installer ships no log file machinery.**
+The installer writes the one setting and nothing else: `unix:/dev/log` on Linux; on macOS it probes the paths a real syslog daemon conventionally listens on and writes the first that accepts a datagram.
+*Because* a host-specific socket path is admin-authored, host-known and unknown to the coordinator — the definition of `/etc` material — while everything a *node* holds is compiled, signed and machine-managed.
+*Rejected* Apple's `/var/run/syslog` as a candidate — a shim into unified logging that silently drops INFO records and offers no per-workload filter, so selecting it would produce a log that appears to work; asking the user instead of probing — the common case needs no answer.
+
+**INST-C0-25. Everything logs to syslog; the default *level* decides what is normally seen; user messages are a separate artifact on stderr.**
+Every binary logs as it sees fit — no code asks whether it is permitted to — and the **per-command default level** is what decides visibility. Commands that perform a change default to `info`: `install`, `uninstall`, `enroll`, `agent enable`/`disable`. Everything else defaults to `error`, including `flor agent sync`, which only asks the daemon to act, and all of `retectl`. The stream goes to the configured syslog destination on every command and the daemon alike; `--log-stderr`, `FLOR_LOG_DESTINATION` and `[log] destination` redirect it, and `RUST_LOG` lifts the level. Separately, **user messages go to stderr and are written for the person who typed the command**; stdout carries a command's data and nothing else, so `flor agent status | jq` stays meaningful.
+*Because* collection must have one answer for the whole product — a bug report is an export of the system log, exactly as for a node — and because a *policy* about which code may log is unworkable in one codebase: a routine shared by the daemon and a CLI cannot know which it is serving, and asking every author to decide is how the rule rots. A filter needs no such knowledge, and the same records mean different things by context without the code changing.
+**The level policy is what makes an `error` default safe**: `ERROR` means *this component could not do its job for a reason that is not its caller's input*. An invalid input is a user message and at most a `DEBUG` record — the practice `socks5.rs` already follows. The filter then suppresses noise without suppressing severity, so a first failing run still leaves evidence.
+*Accepting* that the per-command default is a real decision rather than a formality, and that `--log-stderr` puts the actionable line and the stack in one stream — the price of watching both live, avoided by not passing it and reading the journal.
+*Rejected* a rule about which commands may log at all — it demands that shared code know its caller; `FLOR_LOG` as the level variable — a level filter is a developer interface, so `RUST_LOG` is right because it is Rust's; a `--debug` flag — a second name for what an env var already does; splitting the destination by command kind — it splits the collection story in two.
+
+### Service registration
+
+**INST-C0-26. The installer ships the wrapper machinery; enrollment activates it per scope.**
+One host-level template per install, activating nothing. Each wrapper runs the agent for one scope, restarts it on failure, does *not* restart it on exit `78`, and owns the per-scope directories it can. A rendered per-scope copy (launchd, and Windows in C1) is derived state: reproducible from template plus scope name, so rendering is idempotent wherever it happens, the receipt lists the template rather than the copies, and any release that changes the template re-renders every scope under `retes/`, active or not.
+*Because* before enrollment there is nothing to run; and because `78` means *this config is not servable*, so looping on it converts a clear stop into noise and, mid-upgrade, into repeated attempts to run a half-swapped set.
+*Rejected* activating at install time — it would require identity material the installer does not have; treating rendered copies as installed files — a scope stopped today and resumed tomorrow would come up on a wrapper two releases old, a failure that is silent and unbounded in time.
+
+**INST-C0-27. Permissions are stated, never defaulted, and no key's mode may depend on a service manager starting later.**
+Scope roots `0700`, `certs/` `0700`, every `*.key` `0600`, each created *with* its final mode rather than chmod-ed afterwards. The runtime root is `0750` so an operator CLI can reach `agent.sock` through `flor` group membership. Above the scope root, flor's state directory stays root-owned `0755`.
+*Because* `StateDirectoryMode=` defaults to `0755`, which would leave the directory holding private keys world-traversable — and a key must not exist world-readable even for the instant between two syscalls. Keeping the parent installer-owned is also what stops a compromised agent from rewriting the receipt describing the installation it runs from.
+*Accepting* an explicit group grant as the access mechanism, which is worth more than a slack mode bit because it can be named and audited.
+
+### Upgrade, downgrade, uninstall
+
+**INST-C0-28. The upgrade is placement, a receipt, and a clean stop and start.**
+Take the lock; write the receipt with `phase: installing`, recording the release being replaced; stop the active agents; stage and rename in the executables and the wrapper template, re-rendering every per-scope copy; replace the receipt with `phase: installed`; restart exactly what was stopped; report. Everything before the rename-in is a free abort: the phase is one field, and clearing it undoes the run completely.
+*Because* stopping first is what keeps the executables on a host at one version (INST-C0-06) — per-path atomicity leaves each path old-or-new, but only a stopped agent cannot spawn a vertex from a half-swapped set. This is **host business and therefore required of every channel** (INST-C0-03), not a courtesy of ours: a deb's maintainer scripts restart the service, an RPM's `%post` does the same, and a channel that genuinely cannot is expected to ask for a reboot.
+*Accepting* the residual window every package manager also accepts: a reboot between the stop and the restart brings enabled instances back against a tree that may be mid-swap. Nothing in the design guards it — the earlier marker that would have was unenforceable anyway, since a hand-run workload bypasses it — and per-path atomicity plus the shortness of the window is what package managers rely on too.
+*Rejected* migrating as part of this sequence — INST-C0-03 moved that to the agent, which removes the ordering problem rather than solving it; a not-runnable marker the agent must read — it would work on this channel and on no other, which is exactly the defect INST-C0-03 exists to prevent.
+
+**INST-C0-29. The installer does not judge direction: any release may be installed over any other.**
+There is no forward-only guard, no `--force`, and no downgrade *mechanism* either — going back is installing the older release, which is the same command doing the same thing. The receipt names the release it replaced, and `flor version` prints it, so the operator can see what to go back to *before* going there.
+*Because* whether an older binary can serve the node's state is a **rete** question, and by INST-C0-03 the installer cannot answer it: only the agent knows what shape the trees are in. A guard in the installer would be judging what it cannot see — and the guard as written was circular anyway, since the documented way back began with an uninstall that deletes the very receipt naming the version to return to.
+So the way back is one command with no uninstall step, nothing is disabled, and nothing needs re-enabling. In C0 it always works, because nothing migrates.
+*Accepting* that once migrations exist, an older release can be installed onto trees it cannot read, and the node stops serving until that is corrected — the agent refuses to start and says so, which is the only place the answer lives. The migration design owns making that refusal precise, including whether it can name a release that would work.
+*Rejected* a forward-only guard — it judges a rete fact from the host side; `--force` or `--allow-downgrade` — a flag to override a guard that should not exist; carrying the previous release in node state so it survives an uninstall — that inverts the fix, since with plain downgrade allowed the receipt is still there when the decision is made.
+
+**INST-C0-30. Uninstall removes the installation and touches nothing else; `--purge` removes the state directory.**
+Plain uninstall deactivates every instance and removes what it placed: the wrappers (template and every rendered copy), the runtime roots, the binaries, the receipt and the lock. Three things stay, each for its own reason — the **scope roots**, which were never the installer's; **`config.toml`**, which is admin-owned once created (INST-C0-22); and the **`flor` user and group**, whose uid owns those surviving scope roots. `--purge` removes the state, config and runtime directories entirely, private keys included.
+*Because* one rule explains the leavings better than a list does, and the rule follows from ownership: the installer removes what it placed, and what it did not place is not its to delete. What survives is then exactly what a reinstall plus `flor agent enable` needs. The service user must stay precisely because the scope roots do — they are owned `flor:flor`, and a reinstall creating a fresh user could get a different uid, leaving the survivors owned by a number that no longer means anything.
+*Because* leaving private keys behind is a security decision rather than a tidiness one, `--purge` is the level that names it.
+*Rejected* removing the service user — orphans the ownership of the very trees the level preserves; enumerating other components' files in either list — the installer would then have to be told whenever one of them keeps something new.
+
+### Platforms and facades
+
+**INST-C0-31. C0 builds two targets, and the macOS floor is whatever the build imposes.**
+Linux with systemd on x86_64, and macOS on Apple Silicon. The minimum macOS version is the one the Rust target and the CI runner actually impose, stated as such and checked by `install.sh`.
+*Because* every target is a build, a test surface and a support promise, and no C0 host is aarch64 Linux; a version number in prose that nothing enforces drifts from what CI builds.
+*Revisit* aarch64 Linux at B2, on B2's demand.
+*Rejected* three targets now — cross-building is a cost argument, and cost is not need; Intel macOS — Apple stopped shipping it in 2020 and the pilot fleet is M-series, so `install.sh` fails on it with a plain statement; an unexplained "macOS 14+" — pinned by nothing.
+
+**INST-C0-32. The layout facts stay single-sourced, and no facade gets a second copy.**
+Wrapper templates and layout constants already exist as files and build-time constants because the installer needs them; a package generator, an image build or a tap reads those, never a re-derivation. Nothing new is built in C0.
+*Because* the failure mode is not a missing generator — it is the layout existing only as prose, so that a deb or a tap re-derives it and then drifts.
+*Accepting* that a generator still has to be written, and that without a machine-readable release index it will parse `SHA256SUMS`.
+*Rejected* a `manifest.json` index now — no consumer, and additive later; `--root`/`--offline` in the C0 command surface — the image seam is named as deferred instead, since nothing calls it yet.
