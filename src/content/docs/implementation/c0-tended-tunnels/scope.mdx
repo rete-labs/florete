@@ -77,7 +77,7 @@ We need means to detect and resolve problems that arise in production environmen
 
 For C0 we need the bare minimum to run the production pilots successfully.
 
-**C0 observability is node-local.** `flor` logs to stderr, captured by the host's system logger (journald on Linux, launchd on macOS); the user guide documents how to view and export those logs, and `flor agent status` gives a local state readout. Nothing is shipped to an external collection server in C0 — that upload path arrives with B1's coordinator. The full design — log conventions, metrics-ready counters, and their readout — is [Observability](../observability).
+**C0 observability is node-local.** Every flor process logs to the host's **syslog socket** — `/dev/log` on Linux, a real syslog daemon on macOS ([Installer § Logging](/docs/implementation/c0-tended-tunnels/installer#logging)); the user guide documents how to view and export those logs, and `flor agent status` gives a local state readout. Nothing is shipped to an external collection server in C0 — that upload path arrives with B1's coordinator. The full design — log conventions, metrics-ready counters, and their readout — is [Observability](../observability).
 
 ### Environments
 
@@ -97,7 +97,7 @@ What C0 ships, one line each:
 - **`flor agent`** — the per-node supervisor: owns the node principal, runs `flor agent sync`, launches and restarts the vertex. See [Management Plane](/docs/implementation/c0-tended-tunnels/mgmt-plane) and [CLI Surface](/docs/implementation/c0-tended-tunnels/mgmt-plane/cli).
 - **`flor vertex`** — the data-plane proxy that terminates mTLS and forwards traffic. See [Data Plane](/docs/implementation/c0-tended-tunnels/data-plane).
 - **`coordinator`** — the store-and-serve management-node service (third bin target in the flor crate). See [Coordinator](/docs/implementation/c0-tended-tunnels/mgmt-plane/coordinator).
-- **Installer** — `install.sh` for Linux and macOS (no Windows in C0; see [Cross-platform](#cross-platform)).
+- **Installer** — `install.sh` bootstrapping a `flor install` core: one channel, GitHub Releases, two targets (`linux-x86_64`, `macos-arm64`; no Windows in C0 — see [Cross-platform](#cross-platform)). Design: [Installer](/docs/implementation/c0-tended-tunnels/installer).
 - **Example `my-rete` repo** — a template rete with reserved roles/groups seeded, used for dogfooding. See [Source Layout](/docs/implementation/c0-tended-tunnels/mgmt-plane/source-layout).
 - **Operator playbook** — bootstrap, issuing bundles, publishing a service, rolling out a change, emergency rollback.
 - **User guide** — installing `flor`, enrolling, and how to view/export logs when reporting a problem.
@@ -132,7 +132,7 @@ So we must produce a design and implementation that is secure from day one.
 
 ### Cross-platform
 
-For C0, our target OSes are **Linux and macOS**. Windows will be added in [C1](/docs/implementation/c1-manual-mesh/scope) — the design stays portable (OS-agnostic core, thin OS-specific service wrappers), but a Windows deliverable is not part of C0. Later on (B1+) we'd like to support mobile OSes (Android, iOS, even HarmonyOS).
+For C0, our target OSes are **Linux and macOS** (macOS on Apple Silicon only — see [Installer § Platforms](/docs/implementation/c0-tended-tunnels/installer#platforms)). Windows will be added in [C1](/docs/implementation/c1-manual-mesh/scope) — the design stays portable (OS-agnostic core, thin OS-specific service wrappers), but a Windows deliverable is not part of C0. Later on (B1+) we'd like to support mobile OSes (Android, iOS, even HarmonyOS).
 
 So we need to design our implementation in a way that is portable to different OSes without much effort, even where a given OS is not a C0 target yet.
 
@@ -157,4 +157,6 @@ These are deliberately out of C0 and picked up (or decided) later:
 - **Hosted landing page** — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). C0 ships an install guide in the docs instead.
 - **External metrics collection & upload** — an upload/collection server is C1+/B1 (B1's coordinator becomes the consumer). C0 keeps observability node-local (see [Maintenance](#maintenance)).
 - **`flor agent sync` commit-timeout / auto-rollback** — the Cisco-IOS-style "confirm within a window or auto-roll-back" safety net moves to [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the blast radius of a bad sync is bounded by keeping an out-of-band emergency-access path (see [Distribution & Reload · Safety Net](/docs/implementation/c0-tended-tunnels/mgmt-plane/distribution-and-reload#safety-net-server-nodes)), not by auto-rollback — pilots are limited and never rely on Florete as the single access path.
+- **Binary rollback in the installer** — retained previous binary sets and a `--rollback` that needs no network move to [C1](/docs/implementation/c1-manual-mesh/scope) with the sync guard above, for the same reason and as one story. C0 needs no guard of its own: any release installs over any other, so going back is installing the older one (see [Installer · Downgrade](/docs/implementation/c0-tended-tunnels/installer#downgrade)).
+- **Node-state migrations** — the agent's and an operator-invoked command's, not the installer's; nothing in C0 has anything to migrate from (see [Installer · Migrations](/docs/implementation/c0-tended-tunnels/installer#migrations-are-not-the-installers)).
 - **ACL-only hot reload** — near-term post-C0. C0's update mechanism is a plain restart on sync; the agent is built with swappable ACL tables so this can land later without a redesign.

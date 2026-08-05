@@ -44,8 +44,8 @@ Each rete a node joins gets its own **rete scope**: a per-rete namespace for run
 
 Per rete scope on the node:
 
-- **Install root**: `<root>/retes/<scope>/` (user mode `~/.flor`, system mode `/var/lib/flor` — see [Agent § Node layout](agent#node-layout)) — the identity store (`ca.crt`, `certs/`), immutable artifact sets under `artifacts/`, durable state under `state/` — per owner: `state/agent/` for the supervisor, `state/<name>/` per supervised workload.
-- **Runtime root**: `/run/flor/<scope>/` (or the user-mode equivalent) — the agent control socket (`agent.sock`), FlorIO sockets (C1+), and other runtime files.
+- **Scope root**: `<state-dir>/retes/<scope>/` (user mode `$XDG_STATE_HOME/flor`, system mode `/var/lib/flor` — see [Agent § Node layout](agent#node-layout) and [Installer § Directories](../installer#directories)) — the identity store (`ca.crt`, `certs/`), immutable artifact sets under `artifacts/`, and durable state split by owner: `agent/` for the supervisor, `workloads/<name>/` per supervised workload.
+- **Runtime directory**: `/run/flor/<scope>/` (or the user-mode equivalent) — the agent control socket (`agent.sock`), FlorIO sockets (C1+), and other runtime files.
 - **Process tree**: one `flor agent` process supervising its per-mesh vertex graph.
 
 Compiled artifacts carry **no filesystem references at all** — identity is referenced by SPIFFE ID and materialized by the scope's identity store; sockets and paths are derived from spawn-injected roots and names. Artifacts stay portable across nodes, scope names, and OSes.

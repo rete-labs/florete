@@ -73,7 +73,7 @@ Two parallel namespaces, two conventions:
 | Namespace | Form | Examples |
 |---|---|---|
 | SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/primary`, `--kind management-plane`, `Kind::ManagementPlane` |
-| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `artifacts/mgmt/sets/<v>/`, `~/.flor/retes/<scope>/` |
+| Filesystem directories holding collections of named instances | **plural** collection name | `certs/management-planes/primary.crt`, `artifacts/mgmt/sets/<v>/`, `<state-dir>/retes/<scope>/` |
 
 The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
 
