@@ -1,0 +1,77 @@
+---
+title: "0014: Provision Log Sinks Instead of Relaying Logs"
+---
+
+## Status
+
+Accepted
+
+Settles how supervised workloads reach the host logger. Owned in detail by [C0 Observability § The log stream](/docs/implementation/c0-tended-tunnels/observability#the-log-stream) and the spawn contract in [C0 Agent § Supervision](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent#supervision-contract).
+
+## Context
+
+`flor agent` supervises the platform workloads on a node ([Agent](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent)), and every one of them — plus the agent itself — must reach the host's logger with its lines attributable to a workload name. Only the agent is registered as a service; its children are ordinary forked processes with no OS identity of their own.
+
+The original C0 design made the agent a **relay**: it captured each child's stderr over a pipe, re-emitted every line tagged with the workload name onto its own stderr, and let the service wrapper carry that to journald or a file. Five problems accumulated against it:
+
+- **Log delivery became a function of agent liveness.** Rust sets `SIGPIPE` to `SIG_IGN`, so children survive an agent crash but write into a broken pipe and go *silently* blind — at precisely the moment their logs are wanted.
+- **The supervisor acquired a line parser.** Partial reads, oversized lines, a panic backtrace with no trailing newline, and re-parsing the sd-daemon `<N>` priority prefix in order to preserve it — all in the hot path of every log line, undoing work the child had just done.
+- **Flooding was bounded by stalling the supervisor.** Pipe backpressure does bound a noisy child, by blocking the process that owns sync and restart.
+- **Per-workload filtering degraded to `grep`.** With every child sharing the agent's service identity, the host logger sees one stream; a name glued to the front of a line is not a filter.
+- **The message boundary was lost.** A pipe carries bytes, so a relay re-frames by newline — and a multi-line error stack is several messages by the time it reaches the sink. This turned out to be the decisive constraint, and it decides the transport below as much as it decides the relay.
+
+## Decision
+
+**The agent provisions log sinks; it never relays log bytes.** Before fork it opens a sink for the child and installs it as fd 2. Three classes, chosen by what the host offers and by how the agent was started:
+
+| Class | fd installed on the child | Attribution comes from |
+|---|---|---|
+| `syslog` | a `SOCK_DGRAM` connected to the host's `/dev/log` | the identifier in each message's syslog frame |
+| `private` | an append fd on `<workload>.log` | the path |
+| `shared` | the agent's own fd 2, passed straight down | the workload name rendered in the line |
+
+Two rules follow, and they are the load-bearing part:
+
+**The agent chooses the sink; a child cannot redirect its own output.** The child holds a descriptor it did not open, so attribution *by sink* is enforced. Attribution *within* a sink is content the child writes — the syslog identifier and the rendered workload name alike — and is therefore cooperative; on `private` the two coincide, because the sink is the attribution. flor's own binaries are trusted for that content, as they are for sane levels and for not flooding. A third-party workload will be trusted for none of it, and needs no change to this contract to be confined.
+
+**The contract is "fd 2 is your log sink"; what is behind it is the agent's choice.** Today that is the OS. For an untrusted tenant it can become a filtering logger process per workload — rate-limiting, sanitizing, and rewriting the identifier to what the agent says it is, which is what restores enforced attribution exactly where it will matter — with nothing on the child's side changing.
+
+Because neither the sink's framing nor "is this fd shared with my siblings" is observable from the fd, the agent states the class in `FLOR_LOG_SINK`, and every process announces it at startup. A process started by hand probes instead: `/dev/log` present and accepting a datagram connection selects `syslog`, anything else selects `private`.
+
+## Rationale
+
+Four options were weighed against the single question of who must be in the data path.
+
+**Relay (the previous design)** buys one OS-integration point and pays with the four problems above. Docker is the one mature supervisor that does relay — because it promises *pluggable* log drivers, so something must sit in the stream and dispatch. flor has one destination per platform and does not earn that cost.
+
+**One service unit per workload** was already rejected for supervision reasons ([Agent § Supervision mechanics](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent#supervision-mechanics)) — multiplied platform backends, split rollback state. It solves logging as a side effect of a change made for other reasons, and those reasons still say no.
+
+**Each workload calling a native logging API** (`sd_journal_send`, `os_log`) gives the best queryability and costs a second output format — structured fields rather than a rendered line — plus FFI on macOS. It also opens its own connection rather than riding fd 2, so it cannot catch a workload's unframed output and would need a second sink beside it. Deferred, not foreclosed.
+
+**Provisioning (chosen)** takes the supervisor out of the data path, and it is what the two closest analogues already do. systemd hands each unit its own stream fd and lets journald attribute; kubelet is not in the path at all, and container logs are attributed by their path under `/var/log/pods/…`, which is exactly the `private` class. The `shared` class is what daemontools-family supervisors and `docker compose up` produce when run in a terminal, and it is the reason the class is named for sharing rather than for a console: a foreground agent with its output redirected to a file shares that file with its children just as a tty is shared.
+
+### Why syslog rather than journald's stdout stream
+
+The obvious Linux sink is the journald stdout-stream fd, which pre-attributes at connect time and would have made attribution enforced rather than cooperative. It was rejected because **it terminates a record at every `\n`**: a multi-line error stack becomes one journal entry per line, each needing its own priority prefix, and the message boundary flor's writer maintains is destroyed on arrival. Measured on a live journald: three entries for a three-line message on the stream, one entry with the newlines intact for the same message sent as a syslog datagram.
+
+That forces a choice, and it generalizes past this decision: **among journald's transports, only the line-splitting stream can pre-attribute a descriptor — every boundary-preserving transport, the native field protocol included, carries attribution as sender-chosen content.** Message integrity and enforced attribution cannot both be had. Integrity wins: it is what makes an error stack readable and what keeps peer-injected text from fabricating a record, whereas attribution is cooperative only among flor's own trusted binaries and is restored by the filter process on the day it is not.
+
+Naming the class for the transport rather than for journald is deliberate: `/dev/log` is answered by rsyslog, syslog-ng or busybox on hosts with no systemd, which is ordinary on embedded Linux, and the same descriptor and framing work against all of them. What varies behind it is not the record boundary — that is the datagram — but multi-line rendering and the size cap, which are the daemon's.
+
+The daemon then supplies handling that would otherwise be flor's: it parses the `<N>` frame into a priority and strips it, files an unframed write at its default priority, and rate-limits, dropping rather than blocking.
+
+**macOS is deliberately not included.** It has no `/dev/log`, and its `syslog(3)` is a shim into unified logging whose `info` level is memory-only by default — flor's default record would silently fail to persist — with no per-workload filter to replace `journalctl -t`. One API with two behaviours is worse than two declared classes, so macOS takes `private`.
+
+## Consequences
+
+**Easier.** Per-workload filtering with follow is native (`journalctl -t <workload> -f`, `tail -f <workload>.log`). A workload keeps logging across an agent crash. No process sits in the path copying log bytes, so a flooding workload cannot stall supervision. Confinement for future tenant workloads has a place to go that does not disturb the contract.
+
+**Harder.** Two provisioning paths, and the sink class must be injected because it cannot be inferred. The `private` class has no rate limit, so a flooding workload grows a file — bounded through B2 only because every supervised workload is flor's own and carries the flood-safe Layer. A per-node view on that class must be merged by the reader rather than read as one stream, which is the concrete argument for a `flor logs` reader.
+
+**Weakened, in the threat model.** Attribution is no longer enforced against a lying child; only the choice of sink is. The invariant this ADR can carry is the narrower one stated above, and the strong form arrives with the filter process, alongside the milestone that first needs it. Nothing built on the weaker form has to change when it does.
+
+**Changed, in the line itself.** The message body is one format on every class — timestamp, level, component, spans, message, fields — but two things vary with the sink, and both are consequences of this decision rather than of taste. The `syslog` class gains a `<N><workload>: ` frame per message, which the daemon consumes; its priority half is machine-facing and *not* a replacement for the level word, since `journalctl`'s default output shows no priority beyond coloring and a levelless message would read worse. The `shared` class gains the workload name in the body, because it is the one class whose sink supplies no attribution at all.
+
+**Strengthened, against log forgery.** On `syslog` the record boundary is the datagram, so peer-controlled text carrying a newline stays inside the entry it arrived in and cannot fabricate a record — a property the line-framed classes do not have and the rejected stdout stream would not have given either. It makes message framing, not escaping, the structural answer, and it is why landing `os_log` later closes the same hole on macOS.
+
+**Unchanged.** The self-stamped clock, the level conventions, and the counter layer.
