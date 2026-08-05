@@ -12,6 +12,7 @@
         "0010-compiled-artifact-object-model",
         "0011-bootstrap-rotate-signer-trust",
         "0012-version-artifact-contract",
-        "0013-use-fundle-di-framework"
+        "0013-use-fundle-di-framework",
+        "0014-provision-log-sinks"
     ]
 }
