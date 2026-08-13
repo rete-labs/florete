@@ -1,0 +1,167 @@
+---
+title: Design
+description: How design changes are made and recorded
+---
+
+*Prose is pending: the orient, surface and internals sections are written at the PROSE stage. What follows is the skeleton — the shape and the decision log — addressed to whoever will evolve this design, not to someone meeting it for the first time.*
+
+## Shape
+
+**STRUCTURE**
+
+```
+  what        a design skill, invoked on a scoped ask
+              its own audience is one: whoever designs or evolves a design
+
+  modes       greenfield   nothing exists yet
+              revision     a skeleton exists; amend it
+              curation     prose exists, a skeleton does not; build one
+
+  produces    one design page, in two halves
+
+  artifacts   skeleton  ├─ shape           structure and flow, amended as decisions land
+                        └─ decision log    one entry per decision, keeping its rejections
+              prose     ├─ orient          what the page is, and where each reader goes
+                        ├─ surface         rendered under a domain name
+                        └─ internals       one section or several
+
+  audiences   the page's, not the skill's
+              consumers     read surface       who these are varies by domain:
+                                               product users, another component's
+                                               developers, or architects
+              implementers  read internals
+              architects    read the skeleton  the skeleton's only audience
+```
+
+**FLOW**
+
+```
+  invoked on a scoped ask
+      └─ scope unsettled  → stop and ask; never infer it
+
+  read   the target page, its cross-refs, related ADRs, the ticket   silent
+      ├─ greenfield  → sketch a shape, to be contested
+      ├─ revision    → read the skeleton, amend it, collect findings
+      └─ curation    → extract a shape, harvest decisions already made
+
+  AXES      what the design leaves unsettled, one line each;
+            the human's list first, then the agent's merged into it
+       → GATE 1  clears when the merged list is agreed
+  SPACE     options, criterion and rank, for every axis
+       → GATE 2  clears when the candidates are agreed
+  VERDICTS  pick · because · accepting · rejected, per axis
+       → GATE 3  clears when every axis is ratified
+  RECORD    the workspace compacted into the page's skeleton
+       → GATE 4  clears when it renders, and the human picks
+                 prose here, or a stop with the handoff note
+  PROSE     orient · surface · internals — no gate, optional;
+            a fresh session needs the handoff note
+```
+
+**RULES**
+
+```
+  gates       a gate is a state, not a message — questions and redraws happen inside it
+              a stage gates what may be started, never what may still be changed
+
+  stance      shared by both parties, and it shifts across the pass:
+              Challenger early, Decider late; the pass ends when
+              there is nothing left to challenge
+
+  media       form       the human writes, a file
+              report     the agent writes, read once, chat
+              workspace  the agent writes, it evolves, a file the human comments on
+
+  invariants  no prose before RECORD clears
+              prose may not contradict the decision log
+              nothing renders except at RECORD, or on an explicit throwaway request
+```
+
+## Decision Log
+
+**DESIGN-01. The review surface is decisions, not prose.**
+A human reviews a decision log; prose never enters the review loop. Everything else here follows from that.
+*Because* prose is cheap to generate and expensive to read, so review attention — the scarce resource — belongs on the decisions, which are the part that cannot be regenerated.
+
+**DESIGN-02. Three modes, differing in source and in artifact.**
+Greenfield sketches a shape to be contested. Revision reads the existing skeleton and amends it. Curation builds a skeleton where prose exists but none does. Curation is a precondition of revision on an un-curated page and is independently invocable; whether it covers the whole page or only what changed is the human's call. Findings — contradictions in existing prose — are reported when found, held across the pass, and acted on at PROSE with a suggested action each: fix inline, file a ticket, ignore.
+*Because* a greenfield sketch can be silent but cannot contradict itself, so findings do not arise there; and a skeleton that does not exist cannot be amended.
+*Accepting* revision on an un-curated page is two passes.
+*Revisit* whether curation-then-revision ever runs as a single pass, making the split ceremony.
+
+**DESIGN-03. A design page serves three audiences at three altitudes.**
+**Consumers** want the surface; **implementers** want the internals; **architects** want the structure, because they are the ones who will change it. Who counts as a consumer is domain-specific — product users for a product, other components' developers for a component, architects for a skill — so the skill fixes the audience *map* and never the *placement*. The skill's own audience is only the third.
+*Because* an artifact that names no audience ends up serving none, which is exactly what happened to the summary this design first proposed.
+*Rejected* one audience per page — the assumption that produced that summary; a separate document for architects — a second thing to keep in step, when co-location is the skeleton's whole value.
+
+**DESIGN-04. The skeleton is the shape plus the decision log, and it sits at the foot of the page.**
+It is addressed to architects and is close to unreadable cold — a property, not a defect. It persists and is amended on every revision touch. Visible rather than collapsed, with orient routing whoever needs it.
+*Because* decisions without a shape read as orphaned, and the amendment is nearly free — revision mode reads the shape anyway. Once orient routes, a cut buys nothing and costs a click.
+*Accepting* a reader who ignores orient may never reach it. Acceptable: no such reader is its audience.
+*Rejected* top placement, premised on "read this first", false once the audience is named; a collapsed block, since a designer would rather jump to a section than uncover one — and a cut can break in-page search, defeating the one audience it exists for.
+
+**DESIGN-05. The shape is a workspace artifact that evolves, then compacts.**
+It asserts a structure and shows how it runs; its form is chosen per topic, and it must cover dynamic behaviour rather than static structure alone. It **emerges when the target is read and evolves in its own workspace file** as decisions land — never regenerated from the verdicts. RECORD then **compacts** it for the page, exactly as the verdicts compact into the decision log: both halves of the skeleton are compactions of something the pass grew.
+*Because* a shape is complete when its silences are visible: a dimension absent from it cannot be challenged, and nobody notices what was never shown. And regeneration loses what incremental amendment keeps — rebuilding the shape wholesale was tried twice and produced something thinner than the sketch it replaced, because a one-shot rewrite has no memory of what each decision was reacting to.
+*Rejected* regenerating at RECORD; copying the working shape verbatim, which would carry working detail into a compact artifact; one mandated form for every topic; a dated snapshot allowed to lag, since a stale shape misleads worse than none.
+
+**DESIGN-06. Prose has three roles, named internally and rendered by domain.**
+**Orient** states what the page is about and then routes each reader to the part addressed to them; **surface** and **internals** carry the two prose altitudes. These are the skill's vocabulary, not headings: surface renders as `## Component API` or `## Using the skill`, internals may be several sections, and either may be absent where its domain has no such audience. Orient is mandatory and **headless by default** — naming it is a per-page call.
+*Because* "users" is domain-specific, so a fixed heading would be wrong on most pages; and a literal `## Orient` would head every page's table of contents with jargon, where a lead paragraph read first anyway needs no entry. Routing alone is not enough — a reader who does not yet know the subject cannot use a map of it.
+*Accepting* orient can drift from the sections it points at; being short and written last is the only mitigation.
+*Rejected* literal headings; a pure router with no subject statement; unstructured prose, which loses the audience distinction entirely; an invariant policing orient's routing, which needed context no reviewer reliably has and guarded a pain nobody had felt.
+
+**DESIGN-07. Prose elaborates the record and may not contradict it; review is always separate.**
+At Gate 4 there are two outcomes: **prose here**, in the context that made the decisions, or **stop with a handoff note** carrying what the log drops — findings, deferrals, cross-page effects, and framings that never became decisions. Prose is not derivable from the log, so the note is what makes a later session viable at all. **Review is a third thing**, never inside the pass: it always runs in fresh context, and it consumes the handoff note too.
+*Because* a reviewer at the tail of a design pass is saturated, and prose review is the one activity needing clean context.
+*Accepting* the workflow names that debt but cannot collect it.
+*Rejected* gating prose inline, which puts it in front of the one reviewer least able to judge it.
+
+**DESIGN-08. Four sign-offs, and stages add capability without removing it.**
+Gates sit after AXES, SPACE, VERDICTS and RECORD. A gate is a state rather than a message: it clears on a condition, and questions, redraws and amendments happen inside it. A stage gates what may be *started*, never what may still be *changed*. Stance is a gradient **shared by both parties** — Challenger early, Decider late — which gives convergence a definition: the pass ends when there is nothing left to challenge.
+*Because* a gate belongs where the agent's output could be silently incomplete and the gap undetectable downstream, or where the human must choose what happens next. With nobody present no condition can clear, so a non-interactive run halts at the first gate.
+*Rejected* splitting the axis gate in two, since human-list-then-merge is a protocol inside one state; gating prose; assigning a stance per party, since both challenge and both decide; naming no stance at all, which was what let a reader auto-answer a list they were asked to review.
+
+**DESIGN-09. At AXES, the human's list comes first and the agent merges into it.**
+The human writes their axes before seeing the agent's. The agent returns one merged canonical list, marking provenance where it transformed an item — `(yours 2)`, `(from your 2, split)` — and naming anything it dropped, with why. An axis is admitted when a competent person could reasonably choose otherwise **and** the choice changes the artifact; a human item the rule would have rejected widens the rule rather than being argued down.
+*Because* an agent's list anchors a human's, and independent generation covers more. Human items may be fat and agent items lean — generating is cheap for one, reading expensive for the other — but both are written from the Challenger stance.
+*Rejected* returning new items alone, which hides the merge that is the actual deliverable; a mapping table, which is bad reading for the thing read most.
+
+**DESIGN-10. At SPACE, every axis gets options before any verdict.**
+Trivial and single-option axes get one-liners rather than being skipped. Dependency between axes is stated in prose where it exists, and usually it does not.
+*Because* a wrong option space produces a right-looking verdict whose reasoning hides the omission — the failure a verdict review almost never catches. "Only one candidate, and here is why" is exactly what a reader would otherwise wonder about.
+*Rejected* covering only non-obvious axes, since skipping is how an invisible omission enters; formal dependency notation, which costs more than it carries.
+
+**DESIGN-11. Verdicts are a judgement workspace; the decision log is their compaction.**
+A verdict carries what a human needs to weigh it. A log entry carries what a reader needs to accept it. RECORD **compacts** — drop, merge, absorb, where the test is whether two decisions would be *revisited together* — and **compresses** to pick, because, accepting, rejected. **Rejections survive compression**, each with its reason: the option space is regenerable, since reconstructing options around a local change is exactly what SPACE does, but a rejection reason is not — lose it and the option gets re-proposed. Admission test for a rejection: would anyone propose this again? **The skeleton records what the design *is*, never how it is currently *built*** — implementation choices and current-state facts are decisions of the pass, not of the design, and they stay in the workspace.
+*Because* the axis filter is a fact about the process and the entry filter a fact about the design, so the second is strictly narrower.
+*Accepting* the fine-grained trace dies with the working files.
+*Rejected* one-to-one entries, which flood the log and force judgement material to be pre-compressed; keeping full verdicts, since 40-odd axes are harder to reason over than 15; keeping both forms, which drift.
+
+**DESIGN-12. Three working media, by who writes them and how long they live.**
+These are the pass's own artifacts, not the page's. A **form** is written by the human and lives in a file. A **report** is written by the agent, read once, and lives in chat. A **workspace** is written by the agent, evolves across turns, lives in a file, and is commented on in chat. Working files never land inside a sub-repo.
+*Because* direction alone cannot express an agent-owned artifact that persists and evolves. And the asymmetry that decides it: chat history is durable, but an **unsent** message is not — so a long reply drafted in a chat box is at risk in a way the same text in a file never is.
+*Rejected* chat throughout, which loses long-lived artifacts; files throughout, which makes ownership of a line ambiguous.
+
+**DESIGN-13. Decisions carry stable IDs and their own lifecycle.**
+An ID is a topic mnemonic, a milestone segment, and a sequence restarting per milestone — `CTRL-C0-01`. Pages outside the milestone structure omit the segment: `DESIGN-01`. Nothing declares the mnemonic; each entry states its full ID. Entries are amended in place when refined, and superseded with a forward pointer when the pick flips. A cluster spanning pages is several logs joined by IDs, never a shared holder. ADR candidates are flagged at VERDICTS for the human to decide; the ADR is written outside this workflow.
+*Because* an ID cited from another page or an issue must not rot, and a milestone records *when* a decision was made, which never changes — unlike a path. The per-milestone restart removes cross-milestone uniqueness maintenance entirely.
+*Accepting* no enforcement of mnemonic uniqueness, and an approved ADR candidate can be forgotten if nothing tracks it.
+*Revisit* whether flagged ADR candidates actually get written.
+*Rejected* a single cross-milestone sequence, which needs a register; path-derived or page-scoped IDs, which break on a move or lose topic identity; a dot separator, which breaks the `ADR-0011` house convention for a marginal gain.
+
+**DESIGN-14. A provisional decision names what would settle it.**
+`*Revisit*` carries a condition or an occasion, and its presence is the marker. The set of provisional decisions is a view over the log, not a register anyone maintains.
+*Because* a provisional decision is still a decision — what it carries that others do not is a known expiry condition, and naming it is what makes the decision findable later.
+*Accepting* nothing forces a revisit.
+*Rejected* a status badge, which drifts from the text explaining it; a separate revisit section, which puts one decision in two places; an issue per provisional decision, heavier than the decision itself.
+
+**DESIGN-15. Rendering is deliberate.**
+Nothing reaches the page except at RECORD, or on an explicit request — and an on-request render is provisional, expected to be re-rendered or discarded after a glance.
+*Because* the value of working in decision space is that a finding costs a workspace edit rather than a page rewrite plus a re-review. This design's first rendered page was thrown away by the next finding, which is how the rule was learned.
+
+**DESIGN-16. An invariant must be a scar, not a prediction.**
+A constraint earns the name only after something has gone wrong without it. A predicted one is admissible only carrying a `*Revisit*` condition, and it is expected to die.
+*Because* the record is unambiguous: the two invariants invented ahead of evidence were both removed within a day of being written, while the three that survive were each extracted from a failure that had already happened. A rule set nobody trusts is a rule set nobody reads, and speculative entries are what erode the trust.
+*Accepting* a real constraint stays unwritten until it has been paid for once.
+*Rejected* admitting predicted invariants freely — tried twice, dead twice; forbidding them outright, since the provisional marker gives a cheap exit and a marked prediction costs one line.
