@@ -32,7 +32,7 @@ What follows is a pass with **four sign-offs**. At each, work stops until you ag
 
 Prose is optional and takes no gate, but the pass still needs an end: you say the prose is finished, and the **implementation handoff** is written then. Stopping at record instead emits a **prose handoff**, so a later session can pick the writing up.
 
-Two things about how you engage. **The stance shifts**: early on you are hunting for what is missing, late on you are judging picks — and the pass ends when there is nothing left to challenge. And **the sequence is a default, not a rule**: arriving with your own axes and options already written is a normal entry point, and the skill picks up wherever you are.
+Two things about how you engage. **The stance shifts**: early on you are hunting for what is missing, late on you are judging picks — and the decision work has converged when there is nothing left to challenge. And **the sequence is a default, not a rule**: arriving with your own axes and options already written is a normal entry point, and the skill picks up wherever you are.
 
 Working files land in `design-wip/<ticket>-<topic>/` in the florete repository, which git ignores — `design-wip/123-installer/` for a design tracked by issue 123. The skill reports them at the end and never deletes them unasked.
 
@@ -97,8 +97,8 @@ Working files land in `design-wip/<ticket>-<topic>/` in the florete repository, 
               a stage gates what may be started, never what may still be changed
 
   stance      shared by both parties, and it shifts across the pass:
-              Challenger early, Decider late; the pass ends when
-              there is nothing left to challenge
+              Challenger early, Decider late; the decision work has
+              converged when there is nothing left to challenge
 
   media       form       the human writes, a file
               report     the agent writes, read once — chat, or a file when it
@@ -242,6 +242,8 @@ The skill is tool-agnostic guidance in the [flor repository](https://github.com/
 
 Two references carry the depth, since `SKILL.md` stays thin: `process/decision-log.md` for entry format, the admission filters and ID rules, and `process/design-sketch.md` for shape form, its size bound and worked examples.
 
+**The skill does not read this page to run.** It defines its own vocabulary and states its own rules, so a pass never depends on the design being at hand; this page is cited once, and for the opposite purpose — to argue with a rule rather than to apply one. The two are kept in step by amending the log whenever the skill outgrows it, which is how this section's own rules arrived.
+
 ## Decision Log
 
 **DESIGN-01. The review surface is decisions, not prose.**
@@ -289,7 +291,7 @@ The **prose handoff** is emitted at gate 4 only when prose is deferred, carrying
 *Rejected* one handoff for both readers, which would hand an implementer the framings and an explanation of what prose still owes; discarding the plan, which is real work done during the pass.
 
 **DESIGN-09. Four sign-offs, and stages add capability without removing it.**
-Gates sit after axes, options, verdicts and record. A gate is a state rather than a message: it clears on a condition, and questions, redraws and amendments happen inside it. A stage gates what may be *started*, never what may still be *changed*. Stance is a gradient **shared by both parties** — Challenger early, Decider late — which gives convergence a definition: the pass ends when there is nothing left to challenge.
+Gates sit after axes, options, verdicts and record. A gate is a state rather than a message: it clears on a condition, and questions, redraws and amendments happen inside it. A stage gates what may be *started*, never what may still be *changed*. Stance is a gradient **shared by both parties** — Challenger early, Decider late — which gives convergence a definition: the decision work is converged when there is nothing left to challenge. What ends the *pass* is the human's choice at record, or their word that the prose is finished.
 *Because* a gate belongs where the agent's output could be silently incomplete and the gap undetectable downstream, or where the human must choose what happens next. With nobody present no condition can clear, so a non-interactive run halts at the first gate.
 *Rejected* splitting the axis gate in two, since human-list-then-merge is a protocol inside one state; gating prose; assigning a stance per party, since both challenge and both decide; naming no stance at all, which was what let a reader auto-answer a list they were asked to review.
 
@@ -337,3 +339,9 @@ A constraint earns the name only after something has gone wrong without it. A pr
 *Because* the record is unambiguous: the two invariants invented ahead of evidence were both removed within a day of being written, while the three that survive were each extracted from a failure that had already happened. A rule set nobody trusts is a rule set nobody reads, and speculative entries are what erode the trust.
 *Accepting* a real constraint stays unwritten until it has been paid for once.
 *Rejected* admitting predicted invariants freely — tried twice, dead twice; forbidding them outright, since the provisional marker gives a cheap exit and a marked prediction costs one line.
+
+**DESIGN-18. The page carries the why; the implementation stands alone.** *(ADR candidate.)*
+A skill implementing this design defines its own vocabulary and states its own rules, and never cites this page as an operating instruction. The page is cited once, for a purpose an agent can act on: read it to contest a rule, not to apply one. When the two disagree the log is amended, so the skill is never left contradicting it. This is a constraint on any implementation, not a fact about the current one, which is why the drop criterion does not reach it.
+*Because* a rule and the argument for it have different readers and different lifetimes. Loading this page to run a pass re-imports the rejected options and the reasoning — the review surface the design exists to shrink. And *read the design when the skill is silent* is worse than no rule at all: an absence is not detectable, so the trigger can never fire.
+*Accepting* the vocabulary exists in two places and can drift, with nothing but the amendment rule holding them together.
+*Rejected* a compact skill delegating its terms to this page, which makes the page a runtime dependency of every pass; the mixed form, whose border was never stated and whose trigger could not be evaluated — which is what shipped first, and what this entry replaces.
