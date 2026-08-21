@@ -77,7 +77,7 @@ Two parallel namespaces, two conventions:
 
 The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`ca.crt`, `agent.json`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
 
-Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `flor.json` (read by the single `flor vertex run` instance the agent supervises in C0), flat beside each other. C1 adds a second vertex artifact; the agent.json shape is stable across both.
+Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `flor.json` (read by the single `flor-vertex` instance the agent supervises in C0), flat beside each other. C1 adds a second vertex artifact; the agent.json shape is stable across both.
 
 The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `retectl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
 
