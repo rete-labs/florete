@@ -27,7 +27,7 @@ What follows is a pass with **four sign-offs**. At each, work stops until you ag
 
 1. **Axes** — what the design leaves unsettled. Write your own list first; the skill then merges its own into yours, marking anything it transformed or dropped. Yours may be as rough or as detailed as you like.
 2. **Options** — the candidates for each axis, the criterion separating them, and any dependency between them.
-3. **Verdicts** — one pick per axis with its reasoning, in a workspace file you comment on by ID.
+3. **Verdicts** — one pick per axis with its reasoning, added to the same file the axes and options grew in, which you comment on or amend in place.
 4. **Record** — the skeleton written into the page. You check the render and choose: prose now, or stop.
 
 Prose is optional and takes no gate, but the pass still needs an end: you say the prose is finished, and the **implementation handoff** is written then. Stopping at record instead emits a **prose handoff**, so a later session can pick the writing up.
@@ -221,18 +221,23 @@ Each artifact is classified by **who writes it and how long it lives**:
 
 The distinction is load-bearing, and the two file media are files for different reasons. **A form is a file because the human writes at length into it**, and a long reply typed into a chat box is at risk in a way the same text in a file is not — chat history is durable, but an unsent message is not. **A workspace is a file because it evolves**: a posted message cannot be amended, and this one is rewritten at every turn.
 
-The agent **creates** a form — its heading, its structure, and one worked example of the shape being asked for — and then never touches what the human writes into it. The options form arrives already carrying the agreed axis list, so the human fills rather than transcribes.
+The agent **creates** a form — its heading, its structure, and one worked example of the shape being asked for — and then never touches what the human writes into it. A workspace the human amends in place is the agent's still, with one obligation: it is edited, never rewritten wholesale, since a wholesale rewrite drops a human edit without leaving a diff.
 
-Four files, in `design-wip/<ticket>-<topic>/` in the repository holding the target page, which git ignores. The directory carries the pass's identity, so the files need no prefix. A ticket number is written bare when it belongs to that repository and prefixed with the repository name when it does not — `flor-81-design-change` — the form [topic branches](../git-workflow#topic-branches) already use.
+Five files, in `design-wip/<ticket>-<topic>/` in the repository holding the target page, which git ignores. The directory carries the pass's identity, so the files need no prefix. A ticket number is written bare when it belongs to that repository and prefixed with the repository name when it does not — `flor-81-design-change` — the form [topic branches](../git-workflow#topic-branches) already use.
 
-| File | Medium | Holds |
-|---|---|---|
-| `axes.md` | form | the merged axis list |
-| `options.md` | form | candidates, criteria and rank |
-| `shape.md` | workspace | the shape, from first read to record |
-| `verdicts.md` | workspace | one entry per axis, open and closed |
+| File | Medium | Life | Holds |
+|---|---|---|---|
+| `axes-human.md` | form | sealed at the merge | the human's own axis list |
+| `axes-agent.md` | workspace | sealed at the merge | the agent's, written before it reads theirs |
+| `decisions.md` | workspace | live to the end | one block per axis: question, candidates, verdict |
+| `shape.md` | workspace | live to the end | the shape, from first read to record |
+| `findings.md` | workspace | live to the end | one `FN-` entry per finding |
 
-The **shape file** emerges when the target is read and is amended as decisions land; it is never regenerated from the verdicts. The **verdicts file** shows a counter, an open group and a closed group below a separator; closing an item compacts it to its question, verdict, one-clause reason and its rejections — the same compression record performs, so it converges toward the log as the pass proceeds.
+**The decision artifacts are one file, not three.** An axis is a block that grows — question, then candidates, then verdict — and a closed one keeps its full option list with the pick marked. A rejection reason read apart from the option it rejects cannot be reviewed, and reviewing is the file's entire purpose, so nothing is compacted before record. `decisions.md` shows a counter, an open group and a closed group below a separator.
+
+**Live files stay current for the whole pass, prose included**: a decision that changes while prose is being written changes there and then. Sealed files are left where their stage ended, and the agent suggests deleting them at record, where nothing reads them any more.
+
+The **shape file** emerges when the target is read and is amended as decisions land; it is never regenerated from the verdicts. Alone among the artifacts it carries **no identifier scheme** — a finding or an axis is cited for days, while a pointer into the shape lives for one exchange, so a block is addressed by its caption and label instead.
 
 Handoffs are reports, but filed rather than posted, since they exist to cross a session boundary.
 
@@ -312,10 +317,10 @@ A verdict carries what a human needs to weigh it. A log entry carries what a rea
 *Rejected* one-to-one entries, which flood the log and force judgement material to be pre-compressed; keeping full verdicts, since 40-odd axes are harder to reason over than 17; keeping both forms, which drift.
 
 **DESIGN-13. Three working media, by who writes them and how long they live.**
-These are the pass's own artifacts, not the page's. A **form** is created and structured by the agent, then filled by the human, who is the only one to write content into it. A **report** is written by the agent and read once — in chat, or in a file when it must cross a session, which is what a handoff is. A **workspace** is written and continually amended by the agent, lives in a file, and is commented on in chat. Working files live beside the design they serve, in a per-pass directory the repository ignores.
+These are the pass's own artifacts, not the page's. A **form** is created and structured by the agent, then filled by the human, who is the only one to write content into it. A **report** is written by the agent and read once — in chat, or in a file when it must cross a session, which is what a handoff is. A **workspace** is written and continually amended by the agent, lives in a file, and is discussed in chat; the human may also amend one in place, and a shared file is edited rather than rewritten. Working files live beside the design they serve, in a per-pass directory the repository ignores. Five of them: the two starting axis lists, **sealed** where the merge consumes them, and `decisions.md`, `shape.md` and `findings.md`, **live** until the pass ends — prose included, since a decision that changes during prose changes there.
 *Because* direction alone cannot express an agent-owned artifact that persists and evolves. The two file media are files for **different** reasons: a form, because the human writes at length into it and an unsent message is at risk where a file is not; a workspace, because it evolves, and a posted message cannot be amended. They sit in the docs repository because the designs do — one predictable location per pass.
 *Accepting* ignored files are exactly what `git clean -xdf` removes, and a worktree does not carry them.
-*Rejected* chat throughout, which loses long-lived artifacts; files throughout, which makes ownership of a line ambiguous; a fourth medium for filed reports, when the existing one only needed its lifetime clause widened; forbidding the agent to write a form at all, which would leave the human transcribing structure the agent already knows; a location outside every repository, which made a pass's home depend on how the machine happened to be laid out.
+*Rejected* one file per stage, which left the agent's own axis list, the merged list and the findings with no home at all and split every axis across three files, so a rejection could not be read beside the option it rejected; chat throughout, which loses long-lived artifacts; files throughout, which makes ownership of a line ambiguous; a fourth medium for filed reports, when the existing one only needed its lifetime clause widened; forbidding the agent to write a form at all, which would leave the human transcribing structure the agent already knows; a location outside every repository, which made a pass's home depend on how the machine happened to be laid out.
 
 **DESIGN-14. Decisions carry stable IDs and their own lifecycle.**
 An ID is a topic mnemonic, a milestone segment, and a sequence restarting per milestone — `CTRL-C0-01`. Pages outside the milestone structure omit the segment. Nothing declares the mnemonic; each entry states its full ID. Entries are amended in place when refined, and superseded with a forward pointer when the pick flips. IDs freeze at first commit; before that the log is a draft and may be renumbered. A cluster spanning pages is several logs joined by IDs, never a shared holder. ADR candidates are flagged at the verdict stage for the human to decide; the ADR is written outside this workflow.
