@@ -94,9 +94,9 @@ We need a test environment that is not limited to a single PC nor local containe
 What C0 ships, one line each:
 
 - **`retectl`** — the operator's authoring CLI (CA operations, validate, compile, `issue-bundle`, `publish`). See [CLI Surface](/docs/implementation/c0-tended-tunnels/mgmt-plane/cli).
-- **`flor agent`** — the per-node supervisor: owns the node principal, runs `flor agent sync`, launches and restarts the vertex. See [Management Plane](/docs/implementation/c0-tended-tunnels/mgmt-plane) and [CLI Surface](/docs/implementation/c0-tended-tunnels/mgmt-plane/cli).
-- **`flor vertex`** — the data-plane proxy that terminates mTLS and forwards traffic. See [Data Plane](/docs/implementation/c0-tended-tunnels/data-plane).
-- **`coordinator`** — the store-and-serve management-node service (third bin target in the flor crate). See [Coordinator](/docs/implementation/c0-tended-tunnels/mgmt-plane/coordinator).
+- **`flor`** — the per-node CLI and supervisor (agent), which owns the node principal, launches and restarts the vertex and coordinator (on the management node). See [Management Plane](/docs/implementation/c0-tended-tunnels/mgmt-plane) and [CLI Surface](/docs/implementation/c0-tended-tunnels/mgmt-plane/cli).
+- **`flor-vertex`** — the data-plane proxy that terminates mTLS and forwards traffic. See [Data Plane](/docs/implementation/c0-tended-tunnels/data-plane).
+- **`flor-coordinator`** — the store-and-serve management-node service. See [Coordinator](/docs/implementation/c0-tended-tunnels/mgmt-plane/coordinator).
 - **Installer** — `install.sh` bootstrapping a `flor install` core: one channel, GitHub Releases, two targets (`linux-x86_64`, `macos-arm64`; no Windows in C0 — see [Cross-platform](#cross-platform)). Design: [Installer](/docs/implementation/c0-tended-tunnels/installer).
 - **Example `my-rete` repo** — a template rete with reserved roles/groups seeded, used for dogfooding. See [Source Layout](/docs/implementation/c0-tended-tunnels/mgmt-plane/source-layout).
 - **Operator playbook** — bootstrap, issuing bundles, publishing a service, rolling out a change, emergency rollback.

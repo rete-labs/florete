@@ -41,8 +41,9 @@ Regarding crates.io publishing: while `flor` is not a developer tool (it’s a n
 - Creating library of reusable components encourages better design for them (dependency inversion).
 - Other Florete repositories can depend on the crate. This encourages multi-repo evolution instead of monorepo, which we find more appealing.
 - It is possible to depend on `flor` library directly, without git or path dependencies.
-- Users can install the binary via `cargo install flor`.
-- Publication at crates.io increases trust by the community.
+- Publication at crates.io increases trust by the community, and holds the name.
+
+**Superseded, in one consequence.** This ADR originally listed `cargo install flor` as a way users install the binary. The [C0 Installer design](/docs/implementation/c0-tended-tunnels/installer#distribution-and-integrity) retracted that: cargo places every bin flat in `~/.cargo/bin`, has no lib-directory convention for the agent-spawned executables to live in, and installs no service wrapper — so it produces no supported installation, whichever directory it picks. The crate is still published, to hold the name and to let other repositories depend on the library; `cargo install flor` remains possible and unsupported, and what it should eventually mean is open ([flor#22](https://github.com/rete-labs/flor/issues/22)). Nothing else in this decision changes — the single crate is still what makes one release version cover every binary.
 
 **Trade-offs**:
 - More efforts are needed to make components reusable and independent.

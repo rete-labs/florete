@@ -273,8 +273,8 @@ retectl compile [--repo <dir>] [--out <dir>]
                                             # <vertex-name>.json…} per node
 
 # node (flor) — runtime
-flor vertex run                             # vertex daemon; spawned by the agent with full
-                                            # FLOR_* context (CLI flags are explicit debug
+flor-vertex                                 # vertex daemon; spawned by the agent with full
+                                            # FLORWL_* context (CLI flags are explicit debug
                                             # overrides of the same variables); the agent
                                             # supervises one or more of these per node
 ```
@@ -287,7 +287,7 @@ flor vertex run                             # vertex daemon; spawned by the agen
 
 On top of C0's:
 
-- **Vertex graph validity** — every node declares at least one mesh-vertex (`kind: mesh`, named `rete` by convention in C1) and at least one link-vertex; every `uses:` reference resolves to a vertex name declared on the same node; vertex names are unique within a node. C1 graphs are trees (one mesh root above link-vertex leaves); the schema does not require acyclicity in general — see [Reasoning > Why the vertex graph is a directed graph, not a DAG](#reasons-behind-the-c1-additions).
+- **Vertex graph validity** — every node declares at least one mesh-vertex (`kind: mesh`, named `rete` by convention in C1) and at least one link-vertex; every `uses:` reference resolves to a vertex name declared on the same node; vertex names are unique within a node. C1 graphs are trees (one mesh root above link-vertex leaves); the schema does not require acyclicity in general — see [Reasoning > Why the vertex graph is a directed graph, not a DAG](#reasoning).
 - **Workload vertex binding** — every service's `via:` and every user device entry's `via:` must name a vertex declared on the respective `at:` node. The `agent_via:` field on a node entry must name a vertex declared on that node. In C1 these fields are required (multiple vertices per node); omitting them is an error ("specify `via:` to disambiguate among `<list of vertex names>`"). Validator also warns (not errors) when `via:` references a `kind: link` vertex — that is a valid mixed-topology opt-in but unusual enough to surface.
 - **Link validity** — every link is between two distinct, known nodes; the `via` reference resolves to a link-vertex on each side (symmetric shorthand or asymmetric form); both link-vertices have the same `type`.
 - **Address feasibility** — link pairings use addresses that can actually reach each other (public↔public, or shared internal network). Internal-only nodes can only pair with peers on the same internal network.
@@ -491,8 +491,8 @@ The approved CP signing identities (`authorized_ctrl_signers`) are **not** in th
     ]
   },
   "workloads": [
-    { "name": "public", "run": ["flor", "vertex", "run"] },
-    { "name": "rete",   "run": ["flor", "vertex", "run"] }
+    { "name": "public", "run": ["flor-vertex"] },
+    { "name": "rete",   "run": ["flor-vertex"] }
   ],
   "inbounds": [
     { "principal": "spiffe://rete-lovers/node/alpha", "via": { "kind": "socks5", "addr": "127.0.0.1:1080" } }
@@ -531,7 +531,7 @@ A useful "owned-by / held-by" view across all four principal kinds:
 | user | the human (their workload) | mesh-flor |
 | service | the service workload | mesh-flor (or link-flor in mixed-topology setups) |
 
-A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../overview/high-level-design#vertex). Mesh-flor does the mesh-layer mTLS for its workloads; link-flor does the link-layer mTLS for mesh-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
+A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../../overview/high-level-design#vertex). Mesh-flor does the mesh-layer mTLS for its workloads; link-flor does the link-layer mTLS for mesh-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
 
 The `node/<name>` principal is the node's identity *within a specific rete's trust domain* — the rete's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. Mesh-flor holds the cert+key and runs mTLS for `node/<name>`, exactly as it does for user and service principals. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach coordinator through mesh-flor's SOCKS5 listener.
 
@@ -576,7 +576,7 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 - [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, principal role coherence)
 - [ ] `retectl issue-bundle --node <n>` includes the node's mesh-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
 - [ ] `retectl ca sign --kind control-plane --name <name>` issues a CP signing keypair on operator hardware
-- [ ] `flor vertex run --rete <scope> --name <name> [--set <version>]` daemon entry point (reads mgmt + mesh ctrl configs by name from the artifact set; loads identities from the scope's identity store; verifies the mgmt↔ctrl join)
+- [ ] `flor-vertex --rete <scope> --name <name> [--set <version>]` daemon entry point (reads mgmt + mesh ctrl configs by name from the artifact set; loads identities from the scope's identity store; verifies the mgmt↔ctrl join)
 - [ ] `flor agent run` supervises its workloads (direct fork under the OS-managed agent service — see [C0's Agent page](../../c0-tended-tunnels/mgmt-plane/agent#supervision-mechanics); per-workload launch runtimes reserved); fetches mgmt and ctrl artifacts as separate streams from the coordinator
 - [ ] Example `my-rete/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
 
