@@ -23,14 +23,15 @@ What it produces is a **design page** in two halves. **Prose** is for whoever us
 
 That matters because the axes — the first thing you are asked for — are what *that shape* leaves unsettled. They are never gathered in a vacuum. Curation is also a precondition of revision on a page with no skeleton yet, and whether it covers the whole page or only what your change touches is your call.
 
-What follows is a pass with **four sign-offs**. At each, work stops until you agree:
+What follows is a pass with **five sign-offs**. At each, work stops until you agree:
 
 1. **Axes** — what the design leaves unsettled. Write your own list first; the skill then merges its own into yours, marking anything it transformed or dropped. Yours may be as rough or as detailed as you like.
 2. **Options** — the candidates for each axis, the criterion separating them, and any dependency between them.
 3. **Verdicts** — one pick per axis with its reasoning, added to the same file the axes and options grew in, which you comment on or amend in place.
-4. **Record** — the skeleton written into the page. You check the render and choose: prose now, or stop.
+4. **Record** — the skeleton written into the page. You check the render, and prose follows.
+5. **Prose** — the page written around the skeleton. It is iterative, and each iteration re-enters through the decisions: a question raised while reading prose is answered as an axis, not in the prose itself. You sign it off by asking for the **implementation handoff**.
 
-Prose is optional and takes no gate, but the pass still needs an end: you say the prose is finished, and the **implementation handoff** is written then. Stopping at record instead emits a **prose handoff**, so a later session can pick the writing up.
+That last sign-off is a completion signal rather than a review — judging prose is review's job, in fresh context — and it is a signal rather than a lock. Notice something afterwards and the pass carries on; the note is re-issued.
 
 Two things about how you engage. **The stance shifts**: early on you are hunting for what is missing, late on you are judging picks — and the decision work has converged when there is nothing left to challenge. And **the sequence is a default, not a rule**: arriving with your own axes and options already written is a normal entry point, and the skill picks up wherever you are.
 
@@ -50,7 +51,7 @@ Working files land in `design-wip/<ticket>-<topic>/` in the florete repository, 
               revision     a skeleton exists; amend it
               curation     prose exists, a skeleton does not; build one
 
-  produces    one design page, in two halves, plus two handoff notes
+  produces    one design page, in two halves, plus one handoff note
 
   artifacts   skeleton  ├─ shape           structure and flow, amended as decisions land
                         └─ decision log    one entry per decision, keeping its rejections
@@ -84,10 +85,11 @@ Working files land in `design-wip/<ticket>-<topic>/` in the florete repository, 
   VERDICTS  pick · because · accepting · rejected, per axis
        → GATE 3  clears when every axis is ratified
   RECORD    the workspace compacted into the page's skeleton
-       → GATE 4  clears when it renders, and the human picks
-                 prose here, or a stop with the prose handoff
-  PROSE     orient · surface · internals — no gate, optional
-            ends when the human calls it done, with the implementation handoff
+       → GATE 4  clears when it renders and the human accepts it
+  PROSE     orient · surface · internals
+            each iteration re-enters through the decisions
+       → GATE 5  clears when the human asks for the implementation handoff
+                 a completion signal, not a review; the pass may reopen after it
 ```
 
 **RULES**
@@ -121,7 +123,7 @@ Three, differing in where the shape comes from and in what else the pass must ha
 
 ### Stages and gates
 
-**A gate is a state, not a message.** It clears on a condition, and questions, redraws and amendments happen *inside* it — a gate is not one exchange. The conditions are: the merged axis list is agreed; the candidates are agreed; every axis is ratified; the page renders and the human picks what follows.
+**A gate is a state, not a message.** It clears on a condition, and questions, redraws and amendments happen *inside* it — a gate is not one exchange. The conditions are: the merged axis list is agreed; the candidates are agreed; every axis is ratified; the page renders and the human accepts it; the human asks for the implementation handoff.
 
 **A stage gates what may be started, never what may still be changed.** Entering verdicts adds the verdict artifact without freezing axes or options; both stay editable to the end. There are no re-entry paths, because nothing was ever closed.
 
@@ -192,7 +194,7 @@ At **record**, both halves of the skeleton are compacted from what the pass grew
 
 **The skeleton records what the design *is*** — never how it is currently *built*, nor the plan for getting there. Those are real decisions of the pass, so they are not discarded: they go to the implementation handoff below.
 
-An entry's ID is a topic mnemonic, a milestone segment, and a sequence restarting per milestone — `CTRL-C0-01`. Pages outside the milestone structure omit the segment. Nothing declares the mnemonic; each entry states its full ID. Entries are **amended in place** when refined and **superseded with a forward pointer** when the pick flips. IDs freeze at first commit; before that the log is still a draft and may be renumbered.
+An entry's ID is a topic mnemonic, a milestone segment, and a sequence restarting per milestone — `CTRL-C0-01`. Pages outside the milestone structure omit the segment. Nothing declares the mnemonic; each entry states its full ID. Entries are **amended in place** when refined. When a pick flips, the entry's body is removed and its ID stays behind as a pointer — `**DESIGN-08.** *Superseded by DESIGN-19.*` — so a citation lands and is redirected while git keeps what it said; the superseding entry carries the dead pick as a rejection and absorbs whatever clauses did not flip. IDs freeze at first commit; before that the log is still a draft and may be renumbered.
 
 A `*Revisit*` field marks a decision as provisional and names the condition or occasion that would settle it. Its presence is the marker, so the set of provisional decisions is a view over the log rather than a register.
 
@@ -200,12 +202,9 @@ Decisions whose reach extends past the page are **flagged as ADR candidates** at
 
 ### Handoffs
 
-Two notes leave a pass, and they are chained:
+One note leaves a pass. The **implementation handoff** always ends it, carrying the plan-shaped material the skeleton refuses: migration steps, current-state facts, ordering, anything answering *how do we get from here to there*.
 
-- The **prose handoff** is emitted at gate 4 only when prose is deferred. It carries what prose needs and the log deliberately drops — findings, deliberate deferrals, cross-page effects, and the framings that emerged in argument without becoming decisions — plus the implementation notes gathered so far, which would otherwise be lost between sessions.
-- The **implementation handoff** always ends the pass. It carries the plan-shaped material the skeleton refuses: migration steps, current-state facts, ordering, anything answering *how do we get from here to there*.
-
-When prose is deferred, the prose session receives the first note and emits the second. When prose runs in the same session there is one note, at the end.
+Nothing else is filed on a schedule. A note of where the pass currently stands can be asked for at any point, to continue in a fresh session — a way of managing context rather than a stage artifact.
 
 Review consumes neither. It takes the finished page — skeleton and prose together — in fresh context, which is the whole reason prose has no gate inside the pass.
 
@@ -284,21 +283,17 @@ It asserts a structure and shows how it runs; its form is chosen per topic, and 
 *Rejected* literal headings; a pure router with no subject statement; unstructured prose, which loses the audience distinction entirely; an invariant policing orient's routing, which needed context no reviewer reliably has and guarded a pain nobody had felt.
 
 **DESIGN-07. Prose elaborates the record and may not contradict it; review is always separate.**
-At gate 4 the human picks: **prose here**, in the context that made the decisions, or **stop**. Prose is not derivable from the log — the log is the compressed subset by construction. **Review is a third thing**, never inside the pass: it runs in fresh context and takes the **finished page**, skeleton and prose together, plus whatever the review skill supplies. It consumes no handoff.
+Prose follows record, in the context that made the decisions, and is not derivable from the log — the log is the compressed subset by construction. Its own gate is a completion signal, never a judgement of the writing. **Review is a third thing**, never inside the pass: it runs in fresh context and takes the **finished page**, skeleton and prose together, plus whatever the review skill supplies. It consumes no handoff.
 *Because* a reviewer at the tail of a design pass is saturated, and prose review is the one activity needing clean context. And a design is reviewed whole: a skeleton without its prose is not the artifact anyone will read.
 *Accepting* the workflow names that debt but cannot collect it.
-*Rejected* gating prose inline, which puts it in front of the one reviewer least able to judge it; feeding the handoff to review, which confused a writing aid for a reviewing input.
+*Rejected* gating prose **on its quality**, which puts the writing in front of the one reviewer least able to judge it; feeding the handoff to review, which confused a writing aid for a reviewing input.
 
-**DESIGN-08. Two handoffs leave a pass, and they are chained.**
-The **prose handoff** is emitted at gate 4 only when prose is deferred, carrying what prose needs and the log drops — findings, deliberate deferrals, cross-page effects, framings that never became decisions — plus the implementation notes gathered so far. The **implementation handoff** always ends the pass, carrying the plan-shaped material the skeleton refuses: migration steps, current-state facts, ordering. When prose is deferred, the prose session receives the first and emits the second; when prose runs in the same session there is one note, at the end. Prose takes no gate, but the pass needs a trigger for that last note: the human calls the prose done. That is a **completion signal, not a review** — judging prose is review's job, in fresh context.
-*Because* the drop criterion rejects implementation and plan material, and a filter that only rejects loses information. Routing it gives those decisions a destination instead of a bin — this design misfiled a migration step into internals prose precisely because none existed.
-*Accepting* a deferred prose session must carry material it does not itself use.
-*Rejected* one handoff for both readers, which would hand an implementer the framings and an explanation of what prose still owes; discarding the plan, which is real work done during the pass.
+**DESIGN-08.** *Superseded by DESIGN-19.*
 
-**DESIGN-09. Four sign-offs, and stages add capability without removing it.**
-Gates sit after axes, options, verdicts and record. A gate is a state rather than a message: it clears on a condition, and questions, redraws and amendments happen inside it. A stage gates what may be *started*, never what may still be *changed*. Stance is a gradient **shared by both parties** — Challenger early, Decider late — which gives convergence a definition: the decision work is converged when there is nothing left to challenge. What ends the *pass* is the human's choice at record, or their word that the prose is finished.
+**DESIGN-09. Five sign-offs, and stages add capability without removing it.**
+Gates sit after axes, options, verdicts, record and prose. A gate is a state rather than a message: it clears on a condition, and questions, redraws and amendments happen inside it. A stage gates what may be *started*, never what may still be *changed*. The prose gate clears when the human asks for the implementation handoff — a completion signal, not a review, and one that does not lock the pass: work continues if something is noticed afterwards. Stance is a gradient **shared by both parties** — Challenger early, Decider late — which gives convergence a definition: the decision work is converged when there is nothing left to challenge. What ends the *pass* is that last ask.
 *Because* a gate belongs where the agent's output could be silently incomplete and the gap undetectable downstream, or where the human must choose what happens next. With nobody present no condition can clear, so a non-interactive run halts at the first gate.
-*Rejected* splitting the axis gate in two, since human-list-then-merge is a protocol inside one state; gating prose; assigning a stance per party, since both challenge and both decide; naming no stance at all, which was what let a reader auto-answer a list they were asked to review.
+*Rejected* splitting the axis gate in two, since human-list-then-merge is a protocol inside one state; leaving prose ungated, which was tenable only while a prose handoff could carry an unwritten page to another session — without one, stopping at record leaves a skeleton its prose contradicts and nothing recording that; gating prose on its **quality**, which is review's job and belongs in fresh context; assigning a stance per party, since both challenge and both decide; naming no stance at all, which was what let a reader auto-answer a list they were asked to review.
 
 **DESIGN-10. At axes, the human's list comes first and the agent merges into it.**
 The human writes their axes before seeing the agent's. The agent returns one merged canonical list, marking provenance where it transformed an item — `(yours 2)`, `(from your 2, split)` — and naming anything it dropped, with why. Axes carry lettered topics with a sequence inside each — `A1`, `B2` — so items may be inserted, split or closed without renumbering; the human's own list uses any scheme, plain numbering suggested, provided its items are referenceable, since provenance points back at them. An axis is admitted when a competent person could reasonably choose otherwise **and** the choice changes the artifact; a human item the rule would have rejected widens the rule rather than being argued down.
@@ -323,11 +318,11 @@ These are the pass's own artifacts, not the page's. A **form** is created and st
 *Rejected* one file per stage, which left the agent's own axis list, the merged list and the findings with no home at all and split every axis across three files, so a rejection could not be read beside the option it rejected; chat throughout, which loses long-lived artifacts; files throughout, which makes ownership of a line ambiguous; a fourth medium for filed reports, when the existing one only needed its lifetime clause widened; forbidding the agent to write a form at all, which would leave the human transcribing structure the agent already knows; a location outside every repository, which made a pass's home depend on how the machine happened to be laid out.
 
 **DESIGN-14. Decisions carry stable IDs and their own lifecycle.**
-An ID is a topic mnemonic, a milestone segment, and a sequence restarting per milestone — `CTRL-C0-01`. Pages outside the milestone structure omit the segment. Nothing declares the mnemonic; each entry states its full ID. Entries are amended in place when refined, and superseded with a forward pointer when the pick flips. IDs freeze at first commit; before that the log is a draft and may be renumbered. A cluster spanning pages is several logs joined by IDs, never a shared holder. ADR candidates are flagged at the verdict stage for the human to decide; the ADR is written outside this workflow.
-*Because* an ID cited from another page or an issue must not rot, and a milestone records *when* a decision was made, which never changes — unlike a path. The per-milestone restart removes cross-milestone uniqueness maintenance entirely.
+An ID is a topic mnemonic, a milestone segment, and a sequence restarting per milestone — `CTRL-C0-01`. Pages outside the milestone structure omit the segment. Nothing declares the mnemonic; each entry states its full ID. Entries are amended in place when refined. When a pick flips, the entry is **removed and replaced by a pointer** — `**DESIGN-08.** *Superseded by DESIGN-19.*` — so a citation still lands somewhere and is redirected, while git holds what it said. The superseding entry owes two things: the dead pick recorded as a rejection, and any clause of the old entry that did *not* flip carried forward. IDs freeze at first commit; before that the log is a draft and may be renumbered. A cluster spanning pages is several logs joined by IDs, never a shared holder. ADR candidates are flagged at the verdict stage for the human to decide; the ADR is written outside this workflow.
+*Because* an ID cited from another page or an issue must not rot — which is what the pointer preserves, and why the log records what the design **is** rather than what it once was — and a milestone records *when* a decision was made, which never changes — unlike a path. The per-milestone restart removes cross-milestone uniqueness maintenance entirely.
 *Accepting* no enforcement of mnemonic uniqueness, and an approved ADR candidate can be forgotten if nothing tracks it.
 *Revisit* whether flagged ADR candidates actually get written.
-*Rejected* a single cross-milestone sequence, which needs a register; path-derived or page-scoped IDs, which break on a move or lose topic identity; a dot separator, which breaks the `ADR-0011` house convention for a marginal gain; freezing IDs from the first draft, which would strand a late entry away from its topic for the life of the page.
+*Rejected* keeping a superseded entry in full behind a marker, whose cost is permanent and paid by every later reader, when a supersession written properly puts the dead pick's rejection in the live entry where it will actually be met; removing the entry with its ID and all, which breaks citations from issues and other pages; a single cross-milestone sequence, which needs a register; path-derived or page-scoped IDs, which break on a move or lose topic identity; a dot separator, which breaks the `ADR-0011` house convention for a marginal gain; freezing IDs from the first draft, which would strand a late entry away from its topic for the life of the page.
 
 **DESIGN-15. A provisional decision names what would settle it.**
 `*Revisit*` carries a condition or an occasion, and its presence is the marker. The set of provisional decisions is a view over the log, not a register anyone maintains.
@@ -350,3 +345,14 @@ A skill implementing this design defines its own vocabulary and states its own r
 *Because* a rule and the argument for it have different readers and different lifetimes. Loading this page to run a pass re-imports the rejected options and the reasoning — the review surface the design exists to shrink. And *read the design when the skill is silent* is worse than no rule at all: an absence is not detectable, so the trigger can never fire.
 *Accepting* the vocabulary exists in two places and can drift, with nothing but the amendment rule holding them together.
 *Rejected* a compact skill delegating its terms to this page, which makes the page a runtime dependency of every pass; the mixed form, whose border was never stated and whose trigger could not be evaluated — which is what shipped first, and what this entry replaces.
+
+**DESIGN-19. One note leaves a pass, at the end.** *(Supersedes DESIGN-08.)*
+The implementation handoff always ends the pass, carrying the plan-shaped material the skeleton refuses. Its trigger is the human calling the prose done — a **completion signal, not a review**, since judging prose is review's job, in fresh context. Nothing else is filed on a schedule; a note of the pass's current state is written whenever the human asks for one, to continue in a fresh session.
+*Because* the material the prose handoff carried now lives in files that outlast the session — findings in `findings.md`, decisions in `decisions.md`, both live until the pass ends — so the note duplicated what a resuming session already reads. *Accepting* the framings that never became decisions are lost when a session stops at record, since nothing files them.
+*Rejected* keeping the chain for the deferred case, which is a second artifact maintained for a path that has not been taken; a note at every gate, the same duplication on a shorter cycle.
+
+**DESIGN-20. A decision taken during prose still enters through decisions.**
+Prose is iterative, and each iteration re-enters through the decision artifacts: name the axis, give its candidates, propose a verdict, ratify, then write. At prose those arrive in **one turn** rather than three stages — what the rule requires is that the decision is recorded before the prose changes, not that it walks the gates again. Prose is edited directly only when the human asks for that.
+*Because* prose is where the pressure to skip is highest: the stage is active, the question looks small, and answering it in place costs the record — a decision made in prose leaves no entry, and the log silently stops describing the page.
+*Accepting* a fast path exists, and three artifacts in one turn is thinner review than three stages would give.
+*Rejected* full stage ceremony for a prose-stage question, which nobody would follow twice; answering in prose and back-filling the log afterwards, which is this rule with a promise attached, and the promise is what never gets kept.
