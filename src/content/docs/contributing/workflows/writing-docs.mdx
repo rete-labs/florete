@@ -58,6 +58,8 @@ Docs should be written in MDX format (a superset of Markdown that allows custom 
 
 At the moment we also enabled [Mermaid](https://www.fumadocs.dev/docs/markdown/mermaid) for diagrams, and created custom `<SiblingCards>` and `<ImageBox>` components. See `src/mdx-components.tsx` file for the full list.
 
+Do not hard-wrap prose: one paragraph is one line. Editors soft-wrap at whatever width the reader is using, and embedded newlines make that view ragged and every later diff noisier than the edit it carries. Fixed-width blocks are the exception and belong inside a fence — use ```` ```log ```` where blank lines carry grouping, since a bare fence renders condensed.
+
 <Callout title="Use topic branch">
 Make sure to create a [topic branch](../git-workflow/#topic-branches) for your changes!
 </Callout>
