@@ -117,7 +117,7 @@ Working files land in `design-wip/<ticket>-<topic>/` in the florete repository, 
 
 Three, differing in where the shape comes from and in what else the pass must handle.
 
-**Greenfield** sketches a shape whose job is to be contested — it asserts things it has not earned, so their silences become visible. **Revision** reads the existing skeleton and amends it; there is no sketch, because the shape already exists and has a stricter quality bar. **Curation** builds a skeleton where prose exists but none does, harvesting decisions the prose already made implicitly rather than making new ones.
+**Greenfield** sketches a shape whose job is to be contested — it asserts things it has not earned, so their silences become visible. **Revision** reads the existing skeleton and amends it; there is no sketch, because the shape already exists and has a stricter quality bar. **Curation** builds a skeleton where prose exists but none does, harvesting decisions the prose already made implicitly rather than making new ones — as axes, which close immediately where a reason can be recovered and wait for review before they do.
 
 **Findings** — contradictions and gaps in existing prose — therefore arise in revision and curation only: a greenfield shape can be silent but cannot contradict itself. They are reported when found, held across the whole pass, and acted on at the prose stage with a suggested action each: fix inline, file a ticket, or ignore.
 
@@ -232,7 +232,7 @@ Five files, in `design-wip/<ticket>-<topic>/` in the repository holding the targ
 | `shape.md` | workspace | live to the end | the shape, from first read to record |
 | `findings.md` | workspace | live to the end | one `FN-` entry per finding |
 
-**The decision artifacts are one file, not three.** An axis is a block that grows — question, then candidates, then verdict — and a closed one keeps its full option list with the pick marked. A rejection reason read apart from the option it rejects cannot be reviewed, and reviewing is the file's entire purpose, so nothing is compacted before record. `decisions.md` shows a counter, an open group and a closed group below a separator.
+**The decision artifacts are one file, not three.** An axis is a block that grows — question, then candidates, then verdict — and a closed one keeps its full option list with the pick marked. A rejection reason read apart from the option it rejects cannot be reviewed, and reviewing is the file's entire purpose, so nothing is compacted before record. `decisions.md` shows a counter and three groups: **open**, **inferred** and **closed**. Inferred holds what curation harvested and nobody has reviewed yet, and it empties as the pass proceeds — anything left in it at record is an unratified axis.
 
 **Live files stay current for the whole pass, prose included**: a decision that changes while prose is being written changes there and then. Sealed files are left where their stage ended, and the agent suggests deleting them at record, where nothing reads them any more.
 
@@ -356,3 +356,15 @@ Prose is iterative, and each iteration re-enters through the decision artifacts:
 *Because* prose is where the pressure to skip is highest: the stage is active, the question looks small, and answering it in place costs the record — a decision made in prose leaves no entry, and the log silently stops describing the page.
 *Accepting* a fast path exists, and three artifacts in one turn is thinner review than three stages would give.
 *Rejected* full stage ceremony for a prose-stage question, which nobody would follow twice; answering in prose and back-filling the log afterwards, which is this rule with a promise attached, and the promise is what never gets kept.
+
+**DESIGN-21. Curation harvests into axes, and an inferred decision is reviewed before it closes.**
+Everything the page has already settled becomes an axis. One closes at once, as *closed by initial design*, where the prose gives a reason; where none can be recovered it stays open and takes candidates like any other. A closed-by-initial-design axis waits in an **inferred** group in the working file until the human has reviewed it, and moves to closed once they have — a state rather than a category, so the group empties as the pass proceeds and anything left in it at record is an unratified axis. Curation also **reads for the seams**: section-by-section reading finds what a section gets wrong, while the axes that stay hidden are between sections.
+*Because* harvesting straight into log entries makes the log's coverage depend on the agent remembering an entry exists, and the entries arrive with no options and no rejections. Routing everything through axes makes the filter structural instead of remembered: a decision whose reason cannot be recovered simply cannot close, so it surfaces on its own.
+*Accepting* the axis count on a curated page roughly doubles, most of the additions being one-line closures.
+*Rejected* an *inferred* marker on the page, which is permanently ambiguous — the boundary between stated and reconstructed is blurred — where an inferred entry's own thin rejections already show what it is; a tag rather than a group, which leaves an unreviewed decision sitting among ratified ones; a provenance section that outlives the review, which would be a second ordering fighting the lettered topics.
+
+**DESIGN-22. The pass knows what is built, and a verdict names the claims it rests on.**
+The read stage establishes what is implemented and what is only designed, and carries it into the implementation handoff. A verdict whose reasoning depends on a fact about the world — that a channel exists, that a release has shipped, that a file is written where it is assumed to be — states the claim and how it was checked.
+*Because* a design page states intent, so auditing its sentences mis-locates the error; what goes wrong is a pick resting on an assumed state of the world. Reasoning quality does not separate a sound argument from a sound argument built on a false premise, so nothing but checking distinguishes them, and naming the premise is what puts it in front of whoever knows better.
+*Accepting* current state goes stale, so what the pass records is dated by the pass rather than maintained; and naming a claim is not checking it.
+*Rejected* verifying the page's factual claims, which has the agent auditing the prose it is there to curate; checking every claim a pick rests on, which is unbounded, since most rest on some claim.
