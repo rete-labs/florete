@@ -88,7 +88,7 @@ Where a scheduled radio [sync domain](../glossary#sync-domain) exists, radio tim
 The circularity: validating the Coordinator's certificate needs time; getting time needs that connection. Breaking it uses material the node already holds:
 
 - **The signed floor, again.** The enrollment bundle and any previously verified artifacts give a signed lower bound on now *before any connection exists* — enough to reject long-expired material and to pass validity checks in the common case. This is Roughtime's[^roughtime] coarse-then-tight shape, with the coarse bound derived from already-pinned signed material instead of a new protocol.
-- **Step once, then slew.** First contact validates the pinned identity ([ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)) against the floor-based clock with a relaxed validity window; the first in-bounds time fix may **step** the virtual clock forward once; thereafter strict validation and slew-only discipline apply. The exact relaxed-window semantics are an open question below.
+- **Step once, then slew.** First contact validates the presented identity against the node's trust anchors ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)) and against the floor-based clock with a relaxed validity window; the first in-bounds time fix may **step** the virtual clock forward once; thereafter strict validation and slew-only discipline apply. The exact relaxed-window semantics are an open question below.
 
 ## Known approaches
 
