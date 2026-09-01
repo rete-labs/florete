@@ -85,7 +85,7 @@ mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisa
         "out": { "link": "gamma",    "label": 42 } }
     ]
   },
-  "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/control-plane/primary", "value": "<base64>" }
+  "signature": { "alg": "ed25519", "cert": "<base64-der-x509>", "value": "<base64>" }
 }
 ```
 
@@ -111,9 +111,15 @@ A workload's `io` channels carry no `direction` field: each `kind` fixes its dir
 
 `agent.json` lists `workloads: [ { "name", "run" } ]` — a supervision inventory the agent reads without parsing any other payload. `run` is a plain argv naming the executable; all per-workload context (scope, roots, the verified config's path) is injected through the uniform spawn environment, so the agent applies no per-entry special-casing — a vertex launches exactly like any other program. The link/mesh engine distinction lives solely in the vertex payload, where the engine reads it. There is **no per-workload config path**: configs are located by `name` under fixed per-plane conventions in the scope's artifact root (`<name>.json` in the active mgmt set; `ctrl/<name>@v<K>.json` slots) — never a config-supplied resolution root — and each workload receives its own config's resolved path at spawn. Supervision metadata — the inventory, how the agent reaches the Coordinator (`sync`: its principal and the coordinator identity; the dial-out resolves through the agent's own `inbounds` entry), and the compiler-projected `inbounds` endpoint map (each inbound a typed `{ kind, addr }` so a new inbound protocol doesn't change the schema) — belongs in `agent.json`; engine internals stay in the vertex config.
 
-### `agent.json` carries the trust roots
+### `agent.json` carries the ctrl-signer ACL *(revised)*
 
-The two artifact-signer sets live in a `trust` block in `agent.json` — `authorized_mgmt_signers` and `authorized_ctrl_signers` — and every other artifact's envelope carries only its own `signature`. (The CA cert is not referenced by any artifact: it sits at its conventional place in the node's identity store.) This removes the C0/C1 inconsistency (mgmt signers in every envelope, ctrl signers buried in the mesh vertex payload) and places the rete-wide trust roots once, where the sole verifier reads them. Their verification and rotation *semantics* are owned by [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust); this record fixes only their *placement*.
+This section originally placed **two** signer sets in a `trust` block in `agent.json` — `authorized_mgmt_signers` and `authorized_ctrl_signers` — so the rete-wide trust roots sat once where the sole verifier reads them, removing a C0/C1 inconsistency (mgmt signers repeated in every envelope, ctrl signers buried in the mesh vertex payload). [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) removes the first and keeps the second, and the placement decision survives with a better rationale than the one it was made on.
+
+**`authorized_mgmt_signers` is gone.** A mgmt signer's certificate travels **inside the `signature` of the envelope it signed** and is validated against the node's trust anchors at `identity/anchors.pem`, which are enrollment-delivered and referenced by no artifact. A mgmt ACL carried in a mgmt artifact would be verified against the list it is updating, which deadlocks a node absent across a mgmt signer identity change.
+
+**`authorized_ctrl_signers` stays, and `agent.json` is exactly where it belongs** — not for consistency, which was the original reason, but because **a plane may constrain the plane below it and never itself**. `agent.json` is a mgmt artifact, so a ctrl ACL in it never gates its own delivery: an absent node fetches the current mgmt set, verifies it against the anchors, and receives the new ctrl list in the ordinary way. It holds **SPIFFE identities rather than keys**, so a ctrl signer's certificate can be replaced without any artifact changing while withdrawing its authority stays a single mgmt-signed edit.
+
+The rest of this record — the envelope's routing core, payload separation, and the per-artifact placement rules — stands unchanged.
 
 ### Envelope naming
 

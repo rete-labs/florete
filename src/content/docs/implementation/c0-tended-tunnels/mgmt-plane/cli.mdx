@@ -12,32 +12,37 @@ Two binaries, split by audience:
 
 This matches the author-vs-participant split used by `kubectl`/`kubelet`, `terraform`/agent, and similar tooling — and the names mirror the layer each acts on: **`retectl` administers the rete** (the trust domain — not any single `flor`, and not one Coordinator), while **`flor` is the node agent**, exactly as `kubectl` administers the cluster and `kubelet` runs on the node. The `-ctl` suffix names the thing controlled (the rete), which is why it is not `florctl`: the tool never controls a `flor`, it authors rete state. An end user installing Florete on their laptop gets `flor` with a small, focused command set and simply never reaches for `retectl`, which is present but not theirs to use; operators use it on their own machine for rete-authoring work.
 
-**Every command in both binaries follows the same output rules** ([Installer § Logging](../../installer#logging)): user messages go to **stderr**, written for the person who typed the command; stdout carries a command's *data* and nothing else, so `flor agent status | jq` stays meaningful; and the **log stream goes to syslog**, not to the terminal. `--log-stderr` redirects that stream and is accepted by every command, with `FLOR_LOG_DESTINATION` and `[log] destination` in `config.toml` as its environment and file forms; `RUST_LOG` raises the level, which defaults to `error` for commands and `info` for the daemon. Commands that *perform* a change log it — `install`, `uninstall`, `enroll`, `agent enable`/`disable`; a command that asks another process to act does not, so `flor agent sync` is silent and the daemon records the sync it ran.
+**Both binaries share the same output rules, and differ on one** ([Installer § Logging](../../installer#logging)). User messages go to **stderr**, written for the person who typed the command; stdout carries a command's *data* and nothing else, so `flor agent status | jq` stays meaningful. Where they part is the **log stream**, which exists for processes nobody is watching:
+
+- **`flor`'s commands and daemon log to syslog.** They change *host* state an admin may have to reconstruct later — `install`, `uninstall`, `enroll`, `agent enable`/`disable` — and the daemon has no terminal at all. `--log-stderr` redirects the stream, with `FLOR_LOG_DESTINATION` and `[log] destination` in `config.toml` as its environment and file forms; `RUST_LOG` raises the level, which defaults to `error` for commands and `info` for the daemon. A command that asks another process to act does not log, so `flor agent sync` is silent and the daemon records the sync it ran.
+- **`retectl` has no syslog destination.** Its stream defaults to **stderr and to off**, and `RUST_LOG` turns it on. It changes *rete* state — whose record is the git commit — and operator-local material, and the person who ran it is watching the terminal. With `RUST_LOG` set a failure appears twice, once as a user message and once as a log record; that is correct for a stream someone deliberately switched on.
+
+`retectl` reads none of flor's configuration, and exactly one of its locations: `agent.sock`, needed by `publish` alone.
 
 ### retectl (operator, authoring)
 
 ```
-retectl ca init --out <dir>                 # once per rete: generate CA keypair + ca.crt
-retectl ca sign <csr> --name <name>
-                      --kind <user|service|node|management-plane|control-plane|vertex>
-                      [--scope rete|node]
-                                            # sign a CSR into an X.509 cert.
-                                            # All six kinds are recognised from day one;
-                                            # `vertex` and `control-plane` aren't exercised
-                                            # at runtime in C0 (see ADR-0005).
-                                            # `management-plane` is how the rete's
-                                            # mgmt-envelope signer is minted in C0 — e.g.
-                                            #   retectl ca sign --kind management-plane \
-                                            #                   --name primary
-                                            # produces the keypair `retectl publish` signs with.
-retectl issue-bundle --node <node-name> --rete <coordinator-url>
-                     [--validity <duration>] [--out <bundle>]
-                                            # per-node enrollment bundle: CA cert, node
+retectl init <rete-name>                    # once per rete, inside a fresh repo: scaffold
+                                            # the YAML collections, mint the root CA, and
+                                            # the management-plane/primary signer.
+                                            # The only way a CA comes into existence.
+retectl id issue --kind <management-plane|control-plane>
+                 --name <name>              # mint a keypair that stays in the operator's
+                                            # custody and sign its cert. Signing kinds
+                                            # only: a TLS key issued here would have
+                                            # nowhere to go. This is how a mgmt signer is
+                                            # rotated — the compiler signs artifacts with
+                                            # the key it produces.
+retectl issue-bundle --node <node-name>
+                     [--validity <duration>] [--out <dir-or-file>]
+                                            # compile the rete, then pack the per-node
+                                            # enrollment bundle: trust anchors, the node
                                             # identity, and every workload identity
-                                            # (users/services) declared in YAML to run
-                                            # on this node, plus coordinator bootstrap.
-                                            # Flow A only in C0 (operator-generated keys);
-                                            # --csr / Flow B deferred (see below).
+                                            # (users/services) YAML places on this node,
+                                            # plus that node's initial artifact set.
+                                            # Compiles so the packed set is the set that
+                                            # will be published. Flow A only in C0.
+                                            # Defaults to <repo>/bundles/<node>.bundle.
 
 retectl validate [--repo <dir>] [-f <file|glob>…]
                                             # schema + cross-ref + access consistency
@@ -52,26 +57,46 @@ retectl publish [--repo <dir>] [--target <coordinator-url>]
 Notes:
 
 - **Source discovery.** `validate`/`compile` require `rete.yaml` at the `--repo` root; if it is missing or nested elsewhere, discovery cannot start and a command fails. Then recursively glob `*.yaml`/`*.yml` under `--repo` (skipping `.flor/`, `certs/`, dotfiles; honoring `include`/`exclude` in `rete.yaml`), then merge same-kind collections into one whole-view before compiling. File layout is operator-chosen — see [Source Layout](../source-layout). `-f <file|glob>…` (repeatable) overrides discovery for partial or CI runs; when used, at least one selected file must contain the singleton `rete` block.
-- `retectl ca init` runs **once per rete**. CA private key never leaves operator's secure storage.
-- `retectl ca sign` is the low-level primitive; `retectl issue-bundle` is the high-level wrapper that computes which principals live on a node (from `users.yaml` + `services.yaml`), signs each of their certs, and packages everything alongside the node identity and coordinator bootstrap info. One bundle per node, not per principal (avoids the combinatorial mess of separate bundles for a node hosting five services).
-- `--kind` on `ca sign` selects the SPIFFE path namespace and the X.509 extension policy applied to the resulting cert. All six kinds are accepted from day one (`user`, `service`, `node`, `management-plane`, `control-plane`, `vertex`); `vertex` and `control-plane` aren't exercised at runtime in C0 but the CLI surface is stable. TLS-capable kinds (`user`, `service`, `node`, `vertex`) get `keyUsage: digitalSignature, keyEncipherment` + `extKeyUsage: serverAuth, clientAuth`; signing-only kinds (`management-plane`, `control-plane`) get `keyUsage: digitalSignature` only, no `extKeyUsage` — see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) for the rationale.
+- **`retectl` runs inside a rete repository or not at all** — it walks up from the working directory to find `rete.yaml`, as git finds `.git`, and refuses outside one. The scope, the paths and the rete's name all follow from that, so no command carries a `--rete` flag to say which rete it means.
+- **Operator-held material lives in `retectl`'s own tree**, `~/.retectl` (overridden whole by `RETECTL_HOME`), never in the repository: `retes/<scope>/certs/root.crt` and `retes/<scope>/secrets/root.key` for the rete's root CA, beside the signer's pair. The repository holds YAML source and the compiled tree and no secret and no certificate. The root key stays there in C0 — no command takes a path to it — and the hardening that would justify one is an intermediate; see [Enrollment § Genesis](../enrollment#genesis).
+- **A command group is named for its subject, never its actor.** `id issue` produces an identity; a bare verb like `compile` or `publish` acts on the rete implicitly. There is no `ca` group in C0: `retectl init` is the only thing that creates a root CA, and a group for CA rotation arrives with rotation. Throughout these pages a **root CA** is an issuing authority and a **trust anchor** is what a verifier validates against; a bare "CA" is never used, because the two stop coinciding as soon as intermediates exist.
+- `retectl issue-bundle` computes which principals live on a node (from `users.yaml` + `services.yaml`), issues each of their certs, and packages them with the trust anchors and the node's initial artifact set. One bundle per node, not per principal — a node hosting five services would otherwise mean five deliveries and five bearer files. The bundle carries no coordinator URL and no expected coordinator identity: `agent.json`'s `sync` block already names the coordinator, and a projected value transcribed into a second place is a divergence waiting to happen.
+- `--kind` selects the SPIFFE path namespace and the X.509 extension policy. All six kinds (`user`, `service`, `node`, `management-plane`, `control-plane`, `vertex`) remain part of the identity model; TLS-capable kinds get `keyUsage: digitalSignature, keyEncipherment` + `extKeyUsage: serverAuth, clientAuth`, signing-only kinds get `keyUsage: digitalSignature` only — see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities). What C0 exposes on the CLI is narrower: `id issue` accepts the signing kinds, and TLS-principal certs are issued as part of `issue-bundle` rather than one at a time.
+- **A CSR-consuming sign command belongs to Flow B and is not part of C0** ([Enrollment](../enrollment)). Nothing in C0 reaches it — `id issue` and `issue-bundle` each mint and sign inside one process — so `retectl id keygen` and `retectl id sign` are named here as the shape Flow B will take, and are not implemented surface.
 - `retectl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (`agent.json` and `flor.json` per node, flat; plus `coordinator.json` on the management node). Artifacts contain **no filesystem references** — identity is referenced by SPIFFE ID and materialized by each node's identity store (see [Agent § Artifact handling](../agent#artifact-handling)). No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the coordinator (see [Coordinator](../coordinator)).
-- `retectl publish` uploads the current `.flor/compiled/` tree to the rete's coordinator; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes. Publish is idempotent — re-running with the same tree is a no-op on the server.
+- `retectl publish` uploads the current `.flor/compiled/` tree to the rete's coordinator; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes — and it stays separate even though `issue-bundle` compiles, because publish is the review gate rather than the compile step. Publish is idempotent — re-running with the same tree is a no-op on the server.
+- **`retectl publish` is the only command that needs the network, and the only one that needs the local agent.** It reaches `coordinator-publisher` through the operator's SOCKS5 listener, discovered over `agent.sock`; everything else — `init`, `id issue`, `issue-bundle`, `validate`, `compile` — is fully offline. See [retectl local wiring](#retectl-local-wiring) below.
 - Nothing in `retectl` affects running agents directly. It reads and writes the rete repo plus operator-local CA material, and talks to the coordinator over the rete's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.
+
+#### retectl local wiring
+
+`retectl publish` talks to `coordinator-publisher` over the rete's own mTLS, so it needs a way into the rete. It reaches one through the local `flor` agent rather than through configuration of its own.
+
+- **It is told one thing per rete: the operator's own principal name**, in `~/.retectl/retes/<scope>/config.toml`. That fact is not derivable — the repository describes the rete, and what is missing is which human is at the keyboard; a rete may declare several operators, so "whichever principal holds the `operator` role" does not answer it either.
+- **The address is derived, never configured.** `retectl` looks up the per-rete control socket (`agent.sock`, under the scope's runtime root — the same socket `flor agent status` uses) and queries the agent's endpoint-discovery map for that principal's local inbound. The agent answers `127.0.0.1:NNNN` from its compiler-projected `inbounds` map, staying role-agnostic — roles are compiled away, and the agent knows principals, not roles — and `retectl` uses that as its HTTP client's SOCKS5 proxy. A principal name is stable and a projected port is not, which is why the stable half is the configured half.
+- **`--socks5 127.0.0.1:NNNN` is the escape**, and it is settable in the same file rather than only as a flag. It covers an agent that is not running, an operator who prefers not to depend on one, a user-mode `retectl` against a system-mode agent — and the case where `agent.sock` has not shipped at all, in which case configuring the address is the accepted degradation rather than a rejected option.
+- The coordinator-publisher's URL is read from `rete.yaml` in the checked-out repository.
+
+The coupling is shallow and deliberate: `retectl` needs the rete-scope `agent.sock` and the repository path, and nothing else of flor's.
+
+The decisions behind this section — what `retectl` is told, what it derives, and why `agent.sock` is not a public interface — are recorded as **ENRL-C0-09** and **ENRL-C0-10** in [Enrollment § Decision Log](../enrollment#decision-log); this page collects the CLI of many features and keeps no log of its own.
 
 ### flor (node, daemon + user CLI)
 
 ```
-flor id create --node <node> [--principal <kind>/<name>]...
-                                            # generate keypairs locally for the node and
-                                            # any workload principals to run on it;
-                                            # package CSRs into a bundle (Flow B —
-                                            # low-level primitive; not in the C0 path)
-flor enroll <bundle> [--as <scope>]         # bootstrap: install certs, install initial
-                                            # compiled artifacts, start agent
-                                            # (two-step: bundle → sync)
-                                            # scope defaults to rete name in bundle;
-                                            # --as overrides if name collides locally
+flor enroll <bundle>                        # bootstrap a scope: verify, write the identity
+             [--anchor-fingerprint <hex>]…  # plane, stage the artifact set, activate.
+                                            # Needs no network. Prints the trust domain
+                                            # and the anchors' fingerprints before writing
+                                            # anything; --anchor-fingerprint is repeatable
+                                            # and compares as a set, refusing on any
+                                            # mismatch. Deletes the bundle on
+                                            # success. Re-enrolling validates the
+                                            # manifest's signer cert against the anchors
+                                            # the node already holds, then the signature.
+                                            # The scope is the rete name verbatim;
+                                            # a collision between two independent retes
+                                            # of one name is a refusal
 flor install [--system|--user]              # install or upgrade this host: place executables
                                             # + per-OS service wrappers, write the install
                                             # receipt; run by install.sh; idempotent.
@@ -129,8 +154,8 @@ flor-coordinator                            # the store-and-serve management-nod
 Notes:
 
 - **State directory.** Two deployment modes, chosen by the installer (see [Installer § Modes](../../installer#modes) and [Directories](../../installer#directories)): **user mode** (`$XDG_STATE_HOME/flor`, macOS included — personal devices, user-level service, and the only macOS mode in C0) and **system mode** (`/var/lib/flor`; servers, dedicated `flor` service user). Node-local commands resolve it as: explicit `FLOR_STATE_HOME` (one of the per-directory development/CI overrides), else the column of the [directory table](../../installer#directories) selected by the mode the invoked binary infers from its own prefix — so which install a command acts on is which binary you typed, and `flor version` prints the answer. The directory holds `retes/<scope>/` per enrolled rete, created by `flor enroll`, plus two files belonging to `flor install` alone — its receipt and its lock, which no other install channel writes. Enrolled retes live at `<state-dir>/retes/<scope>/`; config, sockets, and executables have directories of their own.
-- `flor id create` is the low-level primitive for **Flow B** (security-purist) enrollment; it generates keypairs for the named node + any principals hosted on it, emitting a CSR bundle for the operator to sign. **Flow B is deferred from the C0 enrollment path** — an open question for C1 (see [C1 Scope](/docs/implementation/c1-manual-mesh/scope)); the command stays in the surface as a primitive, but C0 onboarding uses Flow A only. When exercised, the operator tells the user which principal names to include (out-of-band), so the bundle matches what `users.yaml` + `services.yaml` declare for that node.
-- `flor enroll <bundle>` is a **two-step bootstrap**. **Step 1**: unpack the bundle (CA cert + node cert + key + workload certs + keys + coordinator URL + expected coordinator SPIFFE ID + an initial artifact set) and write it into the scope root — the `identity/` subtree (`ca.crt`, the `rete.json` trust-domain record, and `certs/`) plus `artifacts/mgmt/sets/<version>/` and the `mgmt/current` pointer — where `<scope>` is the rete name embedded in the bundle (override with `--as <scope>` if it collides with an already-enrolled rete). This gives the node enough material to start running immediately. **Step 2**: activate the installed service wrapper for this scope (`systemctl enable --now flor-agent@<scope>` or the launchd equivalent; the wrapper itself ships with the installer, not with enroll — see [Agent § Supervision mechanics](../agent#supervision-mechanics)), which starts `flor agent run`; this step is exactly what `flor agent enable` does standalone, which is how a scope that survived an uninstall resumes with no bundle at all ([Enrollment § Activation and resume](../enrollment#activation-and-resume)); the agent brings up its workloads and performs its startup sync to refresh against whatever the rete currently runs. Re-keying (or adding a new workload on this node) re-runs the same command with a freshly-issued bundle; re-enrolling an existing scope is not hot — it stops the scope's workloads, replaces store and sets, and restarts.
+- **Flow B has no command in C0.** The security-purist path — a principal generating its own keypair and sending only a CSR — is deferred (an open question for C1, see [C1 Scope](/docs/implementation/c1-manual-mesh/scope)), and its commands are `retectl id keygen` and `retectl id sign` when it lands: identity work is `retectl`'s, and a principal running `retectl` on its own machine is running a tool the installer already put there.
+- `flor enroll <bundle>` is a **two-step bootstrap**. **Step 1 — unpack.** It verifies before it writes: on a re-enrollment, the manifest's signer certificate against the anchors the node already holds and then the signature; always, every entry against the manifest's digests; then it prints the trust domain and the anchors' fingerprints, which `--anchor-fingerprint` turns into a refusal. It stops any running scope itself, writes the identity plane — `identity/anchors.pem`, the `rete.json` trust-domain record, and `identity/principals/` — replacing the material of each principal the bundle names and leaving every other principal's alone, and stages the bundle's artifact set in `incoming/`. **Step 2 — activate**: register and start this scope's instance of the installer-placed wrapper, which is exactly what `flor agent enable` does standalone, and is how a scope that survived an uninstall resumes with no bundle at all. The agent then admits `incoming/` **before its first dial** and syncs. None of this needs the network. The scope is the rete's name verbatim; two independent retes of one name cannot both be enrolled on a host, and that is a refusal. The bundle is deleted on success.
 - `flor agent sync` is a **thin client of the running agent's socket** — the daemon executes the sync (it also syncs once at startup and on a poll timer — interval set by `poll_interval` in `agent.json`'s `sync` block). The daemon polls the coordinator with the held set version (a no-op while unchanged — the cheap poll), fetches and verifies the complete new set when it moved (acting as the `node/<node>` principal via the local vertex's SOCKS5), stages it, activates it via the `mgmt/current` pointer, and restarts the workloads whose payloads changed — restarting itself through the service wrapper when its own payload changed. Fetch → verify → stage → restart; see [Agent § Sync](../agent#sync). No compilation on the node — artifacts were pre-compiled by the operator and published to the coordinator.
 - **No commit-timeout / auto-rollback in C0.** A sync activates the new artifacts and restarts the vertex; there is no confirm-or-roll-back guard. The Cisco-IOS-style `commit confirmed` safety net lands in [C1](/docs/implementation/c1-manual-mesh/scope). In C0 a bad sync is bounded by keeping an out-of-band emergency-access path (see [Distribution & Reload · Safety Net](../distribution-and-reload#safety-net-server-nodes)), which suffices for limited pilots that never rely on Florete as the single access path.
 - `flor agent run` is the long-running supervisor process per node. It reads `agent.json` from the active artifact set and forks a child per entry in its `workloads` inventory, in list order — each entry's `run` argv spawned with the uniform `FLORWL_*` environment (see [Agent § Supervision contract](../agent#supervision-contract)). In C0 that's one child (plus the coordinator on the management node); C1 adds a second vertex for the mesh-flor layer. Launch mechanics are pinned in [Agent § Supervision mechanics](../agent#supervision-mechanics): the OS service manager keeps the agent alive; the agent forks and supervises its workloads directly (restart backoff, exit-code vocabulary, liveness window); per-workload launch runtimes (system units, containers, remote WRI) are a reserved evolution.
@@ -140,7 +165,7 @@ Notes:
 **Explicitly deferred from C0**:
 
 - Any YAML-mutation subcommands.
-- Flow B / CSR-based enrollment wired into onboarding (`retectl issue-bundle --csr`, `flor id create`) — open question for C1.
+- Flow B / CSR-based enrollment wired into onboarding (`retectl id keygen`, `retectl id sign`) — open question for C1.
 - Multi-hop paths and label allocation (C1 feature).
 - SIGHUP hot reload.
 - CRL / OCSP. (Revocation is by name removal + `flor agent sync`.)

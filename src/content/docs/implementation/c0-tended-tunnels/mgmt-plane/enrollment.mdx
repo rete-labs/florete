@@ -1,79 +1,532 @@
 ---
 title: Enrollment
-description: Operator bootstrap, per-node enrollment flows, and revocation for C0
+description: How a rete comes into existence, and how a host joins one
 ---
 
-## Enrollment UX
+Enrollment is what makes a host a member of a rete — and, once per rete, what makes the rete exist at all. Two acts carry the name: **genesis**, which an operator performs once on their own hardware, and **node enrollment**, repeated for every machine that joins and again whenever one is re-keyed.
 
-Goal: Tailscale-grade onboarding with minimal backend. The operator owns the YAML repo and the coordinator; nodes receive a bundle that contains just enough to make one Florete connection back to the coordinator for their full state.
+This page is the design, written for whoever implements or changes enrollment. [Shape](#shape) is the map — structure, flow, and the rules that hold across both acts. The [Decision Log](#decision-log) at the foot records what was settled and what was rejected, and is where to start before changing any of it. [Evolution sketches](#evolution-sketches) names what this milestone deliberately does not build and what each of those futures needs from the design. Everything between is the reasoning that connects them.
 
-### Operator Bootstrap
+**What a person needs in order to enrol a node is not here.** The commands in order, the delivery advice, the per-platform notes: that is the operator guide, [#14 (User guide)](https://github.com/rete-labs/florete/issues/14), and this page deliberately does not duplicate it.
 
-Once per rete:
+## Shape
 
-1. `retectl ca init` — generate the rete's root CA keypair. The public cert is committed to the repo at `certs/ca.crt`; the CA private key stays on the operator's laptop. This command does *only* CA generation — no principal certs are issued here.
-2. `retectl ca sign --kind management-plane --name primary` — mint the rete's mgmt-envelope signing keypair from the CA. The private key stays on operator hardware (file-backed, alongside the CA key). The public cert is committed to the repo at `certs/management-planes/primary.crt` and the operator adds it to `rete.yaml` under `signers.mgmt.keys`. From there the compiler will embed its pubkey into every mgmt artifact's `authorized_mgmt_signers` list so agents can verify subsequent fetches. The name `primary` is the convention (mirrors `control-plane/primary` in C1); the identity is not derived from any user. _(Open design point: as written this step **mints** a keypair, whereas `retectl ca sign` is documented elsewhere as consuming an existing CSR (sign-only). How operator-side minting is actually surfaced in `retectl` — a dedicated mint/issue primitive vs. the keypair generation `issue-bundle` already performs — is unsettled; see [Open Follow-ups](../#open-follow-ups).)_ At this point the operator holds **three keys** in total: CA root, mgmt-signer (`management-plane/primary`), and — issued by step 6 below — their own `user/<op>` TLS keypair.
-3. Create the private git repo for YAML source-of-truth (GitHub, GitLab, Gitea, self-hosted). Only the operator needs write access; nodes never pull from it. Seed it with the rete template: `rete.yaml`, reserved entries in `groups.yaml` and `roles.yaml`, empty `nodes.yaml`/`services.yaml`/`users.yaml` scaffolds, the operator's own `users.yaml` entry (`fyodor: { role: operator, nodes: [fyodor-laptop] }`) — this grants `fyodor` the `operator` role so they can call `coordinator-publisher`, just like any other user gets a role grant.
-4. Designate a management node (`mgmt01` by convention) with an Internet-reachable UDP address. Declare it in `nodes.yaml`, publish `coordinator` + `coordinator-publisher` on it (copy from the template), and commit.
-5. **Bootstrap `mgmt01` manually** (pre-Florete): issue its bundle with `retectl issue-bundle --node mgmt01`, run `retectl compile`, SSH to the machine, run `flor enroll` with the bundle (which already includes mgmt01's initial artifact set — `agent.json`, `flor.json`, and `coordinator.json`; the coordinator runs under the agent like any other supervised workload — see [Agent](../agent)). Enrollment starts `flor agent run`; once it's up, the coordinator and coordinator-publisher services are reachable over Florete.
-6. **Bootstrap the operator's own machine** (the first Florete participant): issue `retectl issue-bundle --node fyodor-laptop`, install it (the bundle carries fyodor-laptop's compiled artifacts; same pre-Florete route, since publish isn't available yet), start `flor agent run`. This is where the operator's `user/fyodor` TLS keypair is minted — exactly the same flow as any other user gets in [Per-Node Enrollment](#per-node-enrollment) below. The operator now runs as the `fyodor` user principal with `role: operator`, and `retectl` auto-discovers the operator's SOCKS5 port via the local agent socket (see [retectl local wiring](#retectl-local-wiring) below).
-7. Run `retectl publish` for the first time — this is the first Florete-over-Florete call (via `fyodor`'s SOCKS5 → coordinator-publisher on mgmt01). From this point on, the coordinator is authoritative and all further state changes flow through it.
+**STRUCTURE**
 
-Steps 5–7 are the only pre-Florete operations in the rete's lifetime. Everything thereafter — adding nodes, users, services — goes through the normal bundle+publish+sync flow.
+```log
+  subject     enrollment — what makes a host a member of one rete, and the
+              once-per-rete sequence that makes the rete exist at all
 
-End users get `flor` from the install guide in the docs (see [Scope · Deliverables](../../scope#deliverables)); C0 does not publish a hosted per-rete landing page (deferred — see [C1 Scope](/docs/implementation/c1-manual-mesh/scope)).
+  boundary    install   host machinery, below every rete
+              enroll    per-rete: identity material, initial artifacts, activation
+              agent     everything after — sync, supervision, the scope root
 
-#### retectl local wiring
+  bundle      one per node, carrying every principal that runs on it
+              form       tar container, one file, manifest first; entries are
+                         logical names, never destinations
+              entries    manifest   schema_version, and every entry by name
+                                    and digest
+                         anchors    anchors.pem and the trust-domain record
+                         certs      one per principal on the node
+                         keys       the private key matching each cert
+                         artifacts  the node's initial mgmt set, byte-exact
+                         anchor, certs and keys stay structurally distinct
+                         though C0 ships all three
+              contents   identity material, the anchor, and the set — each fact
+                         appearing once: coordinator reachability and the signer
+                         set are read from agent.json inside the set
+              version    schema_version, same-major minor-older-or-equal; the
+                         first contract here that skews across hosts and releases
+              integrity  the manifest's digests cover every entry
+              signature  a signature block inside the manifest, the shape and
+                         canonicalisation an envelope uses; it carries the
+                         signer's certificate, validated against the anchors the
+                         verifier already holds
+              delivery   any out-of-band channel the recipient trusts; bearer
+                         material from issue until enroll consumes it
 
-`retectl` is a Florete client; `retectl publish` talks to `coordinator-publisher` over the rete's own mTLS. It doesn't need its own config file: it auto-discovers context from the local `flor` agent.
+  identity    CA            the issuing authority, not a principal; key offline
+              mgmt signer   signs every artifact; key on operator hardware, cold
+              operator      an ordinary TLS principal, bundle-delivered
+              three things, deliberately never merged
 
-- `retectl` derives the rete scope from the `--repo` directory's `rete.yaml` (the `rete.name` field). It then resolves which principal holds the `operator` role from the repo's YAML, looks up the per-rete control socket (`agent.sock`, under the scope's runtime root — the same socket `flor agent status` uses), and queries the agent's endpoint-discovery map for that principal's local inbound. The agent answers `127.0.0.1:NNNN` from its compiler-projected `inbounds` map — staying role-agnostic (roles are compiled away; the agent knows principals, not roles) — and `retectl` uses that as its HTTP client's SOCKS5 proxy.
-- The coordinator-publisher's URL (`https://coordinator-publisher.<rete>.rete` or the SPIFFE ID form) is read from `rete.yaml` in the checked-out repo.
-- Fallback if the agent isn't running or the operator prefers not to depend on it: `retectl --socks5 127.0.0.1:NNNN --as fyodor publish`. No persistent state required.
+  operator    retectl's own tree, ~/.retectl, RETECTL_HOME overrides it whole
+              retes/<scope>/identity/ the same store shape a node uses, with
+                                      different parts populated
+                                        authorities/  root.crt|.key
+                                        principals/   the signers it holds
+              the repo holds compiled artifacts and no secret and no certificate
 
-This keeps `rete.yaml` rete-wide (no per-operator fields) and avoids a second config file. The coupling is shallow: `retectl` only needs the rete-scope `agent.sock` (derived from `rete.yaml`) and the repo path.
+  material    what enroll lands, under <state-dir>/retes/<scope>/
+              identity/            anchors.pem, rete.json, authorities/ (empty
+                                   in C0), principals/<leaf>.crt|.key
+              incoming/            the bundle's artifact set, awaiting the agent
+              scope root 0700, identity/ 0700, keys 0600, each at creation
 
-### Per-Node Enrollment
+  commands    retectl init <name>     repo scaffold, CA, mgmt signer — the only
+                                      way a CA is created
+              retectl id issue        key born on operator hardware, stays there
+              retectl issue-bundle    compile, then pack every TLS principal on
+                                      one node
+              flor enroll <bundle>    unpack, then activate
+              flor agent enable       activate alone; disable is its inverse
+```
 
-Bundles are **per node**, not per principal. A bundle enrolls a machine and every workload (user and/or service) that runs on it — avoiding the combinatorial pain of five bundles for a server hosting five services.
+**FLOW**
 
-**Flow A — operator-generated keypair (convenient, default):**
+```log
+  genesis     once per rete. every step before the first publish happens outside
+              Florete; the publish is the first Florete call, and everything
+              after it rides the rete
+                1  create the repo, then retectl init <name> inside it
+                2  seed the collections, the operator's own entry among them
+                3  declare the management node and its two coordinator services
+                4  issue-bundle mgmt01, then enroll it over SSH — its bundle
+                   carries coordinator.json, so the coordinator comes up under
+                   the agent like any workload
+                5  issue-bundle the operator's own machine and enroll it; this is
+                   where the operator's TLS keypair is born
+                6  retectl publish — the first Florete-over-Florete call
+              issue-bundle compiles, so the set a bundle carries is the set that
+              will be published
 
-1. Operator edits YAML so the new node and its principals are declared. For a user: add `alice` to `users.yaml` with `nodes: [alice-laptop]`, and add `alice-laptop` to `nodes.yaml`.
-2. Operator: `retectl issue-bundle --node alice-laptop --rete <coordinator-url> --validity 30d --out alice-laptop.bundle`.
-   - Looks up every principal that runs on `alice-laptop` (here: `alice` user + the `alice-laptop` node itself).
-   - Generates keypairs for each on the operator's machine; signs each cert.
-   - Packages: `ca.crt`, node cert + key, per-principal cert + key, coordinator URL, expected coordinator SPIFFE ID, plus a current `agent.json` and `flor.json` for alice-laptop — into a single bundle **file** (`alice-laptop.bundle`).
-3. Operator runs `retectl compile && retectl publish` to push the new state.
-4. Operator delivers `alice-laptop.bundle` to alice over any out-of-band channel (Telegram, email, USB stick). **The Flow A bundle contains private keys — treat the file as bearer material:** anyone who obtains it before alice enrolls holds those principals' certs, so deliver it over a channel alice trusts and have her enroll promptly. (Post-C0 hardening — encryption / one-time-URL delivery — is an open question for [C1](/docs/implementation/c1-manual-mesh/scope).)
-5. Alice installs `flor` (per the docs install guide — the [installer](../../installer) also ships the per-OS service wrapper), then runs `flor enroll alice-laptop.bundle`, which writes the identity store into `identity/` (`ca.crt` with the `rete.json` trust-domain record, `certs/alice-laptop.crt|.key`, `certs/alice.crt|.key`) and the initial artifact set (`artifacts/mgmt/sets/<version>/` + the `mgmt/current` pointer) into that rete's scope root, then activates the service wrapper for the scope, starting `flor agent run`. The agent brings up the vertex and performs its startup sync immediately, picking up any newer state from the coordinator.
-6. The agent is live; alice can connect to her permitted services immediately.
+  enroll      per node, fresh and repeat; * marks a re-enrollment-only step
+                 1  declare the node and its principals in YAML
+                 2  retectl issue-bundle --node <n> — compiles, then packs
+                 3  retectl publish
+                 4  deliver the bundle out of band
+                 5  flor enroll <bundle>, and nothing is written before it has
+              *       validated the manifest's signer certificate against the
+                      anchors it already holds, then checked the signature
+                      checked every entry against the manifest's digests
+                      shown the trust domain and the anchor fingerprints
+              *  6  stop the scope's workloads and the agent
+                 7  create the scope root; write the identity plane, replacing
+                    the material of each principal the bundle names and leaving
+                    every other principal's untouched
+                 8  stage the bundle's artifact set in incoming/
+              *     agent/ and workloads/ survive untouched
+                 9  activate this scope's wrapper instance
+                10  the agent starts and admits incoming/ before its first dial —
+                    verify, check the version mark, stage, activate, remove — an
+                    older set being ignored; then it runs one immediate sync
 
-**Flow B — principal-generated keypair (deferred to C1+).** A security-purist variant: the principal generates its own keypairs locally and sends only CSRs to the operator, so private keys never leave the principal's machine. It is **not part of the C0 enrollment path** — during pilots the operator is the Florete team, and Flow A suffices. Whether Florete adds it is an open question for C1 (see [C1 Scope](/docs/implementation/c1-manual-mesh/scope)). The low-level `flor id create` primitive that would produce the CSR bundle stays documented in the [CLI Surface](../cli) as an existing command, but is not wired into C0 enrollment.
+  revocation  1  remove the principal from YAML
+              2  retectl compile && retectl publish
+              3  every node drops it from its ingress tables at the next sync
+              the key still exists and opens nothing, because no peer's access
+              check names it. the record is the git commit
+```
 
-**Server nodes** use the same command — `retectl issue-bundle --node alpha` bundles the node identity plus every service that `services.yaml` places at `alpha`. The operator runs `flor enroll` on the server over SSH (initial provisioning) or bakes the bundle into a VM image.
+**RULES**
 
-### Enrollment steps
+```log
+  cli split     a command belongs to the tool that owns the state it authors —
+                retectl authors rete state, flor authors node state
+                a private key is material, not state: it has a holder and no
+                author, and where it sits decides nothing
+                retectl reaches no node state, an invariant it keeps
 
-1. **Unpack** — create `retes/` and the scope root beneath it, then write the identity store and the initial artifact set into it. Needs the bundle; happens once per scope per node. The installer creates neither: `retes/` is the agent's tree, and enroll is what brings a scope into existence ([Installer § What installing is](../../installer#what-installing-is)).
-2. **Activate** — register and start that scope's service wrapper. Needs no bundle, no operator, and no network.
+  minting       a private key is born in exactly one place and the name of the
+                command that births it says where
+                a key that must never leave operator hardware is issued; a key
+                that must reach a node is bundled
 
-### Activation and resume
+  trust         one root CA vouches for every principal; a peer validates against
+                the anchors and needs nothing per-peer
+                a signed thing carries its signer's certificate; verification is
+                extract, validate against the anchors, check — never a list
+                a mgmt signer is trusted iff its certificate verifies against an
+                anchor and its entry is in the delivered set — matched by
+                certificate, never by name
+                a breach of rete infrastructure costs availability, never
+                authority — C0 keeps it by giving the coordinator no key at all
+                the anchors are a set, so rotation stays reachable: a successor
+              cross-signed by a current anchor rides the mgmt plane, a first one
+              never can
 
-`flor enroll <bundle>` performs both steps above. Uninstall reverses only the second, so restoring service is `flor install` plus an activation — which is why step 2 gets a name of its own instead of a bundle-less `enroll` that enrolls nothing: **`flor agent enable [--rete <scope>]`**, with `disable` as its inverse, mirroring `systemctl enable` because it is largely what it wraps — and auto-detecting the scope when only one rete is enrolled, exactly as `status` and `sync` do, since the single-rete case is the common one. `flor install` lists surviving scopes and prints the command for each rather than starting anything itself, so install's starts-no-service rule survives intact.
+  separability  the bundle's three parts stay structurally distinct, so an anchor
+                delivered by another channel, or certs carrying no keys, needs no
+                change of format
 
-Two things this buys beyond tidier phrasing. **Reinstall costs the operator nothing** — no re-issued bundle, which matters because bundles are bearer material that must be couriered out-of-band and promptly consumed. And **a multi-rete node can leave one rete without touching the others**: `disable` is neither revocation nor purge, so a laptop can drop out of a work rete while staying in a personal one, and rejoin later.
+  bearer        the bundle carries private keys for its whole life, and nothing at
+                the bundle level bounds that: a control checked by our own
+                consumer binds only the honest party
 
-### Revocation
+  ownership     install owns the host, the agent owns the rete, and enroll is the
+                one act that crosses between them
+                retes/ is created by whichever of the two runs first, identically
 
-Operator:
+  idempotence   a re-enroll cannot be atomic. what enroll promises is resume: a
+                partial scope root is keyed to the bundle that made it, and the
+                same bundle completes while a different one is refused
 
-1. Removes the principal from YAML (`users.yaml` / `services.yaml`).
-2. `retectl compile && retectl publish`.
-3. Nodes pick up the change on their next `flor agent sync` (automatic on a timer, or operator-triggered).
+  scope         the scope is the rete name verbatim, which is the trust domain;
+                .rete is never part of it, and a collision is a refusal
 
-The revocation record in C0 is the git commit that removes the principal (author, timestamp, diff). A dedicated append-only `enrollment.log` (sign/revoke audit with cert fingerprints) is introduced in [C1](/docs/implementation/c1-manual-mesh/scope).
+  rotation      C0 has one path and it is re-enrollment
+                rotation defends against copies, never against presence: an
+                attacker on the node rotates along with it
 
-The revoked principal's SPIFFE ID no longer appears in any `ingress.allow` anywhere, so even a still-live private key holder can't pass the mTLS handshake on any peer. Since distribution is via the coordinator (not git + deploy keys), there is no pull-credential to rotate: compromising the bundle compromises one principal's cert, which is already handled by removing it from the YAML. If the leak predates any compile, the principal never reached the published state in the first place.
+  offline       enrollment needs no coordinator reachability: the bundle carries
+                the set, incoming/ is read before the first dial, the first sync
+                is opportunistic
 
-Operator-principal revocation (e.g. operator's laptop is lost) is handled the same way for the `user/<op>` TLS identity: remove the operator from `users.yaml`, publish, and the coordinator's `/publish` endpoint will reject further uploads from that cert. The `management-plane/primary` signing key is independent and is *not* tied to the user entry — if it's also compromised, the operator mints a fresh one (`retectl ca sign --kind management-plane --name primary-v2`, optionally rolling the name) and re-issues bundles so nodes pick up the new signer pubkey at the next enrollment / artifact-bundle delivery. Finer-grained signer-rotation tooling is deferred to B1+.
+  unattended    every human-facing check has a non-interactive equivalent, and it
+                is a flag — automation never skips a check to run unattended
+```
+
+## What enrollment is
+
+**Two acts share the name, and they differ in almost everything but vocabulary.** **Genesis** happens once per rete, entirely on operator hardware, and creates the authority every later act depends on. **Node enrollment** happens for every machine that joins, is repeated whenever a node is re-keyed, and is a two-party operation across a channel Florete does not control. They belong on one page because they share a command surface and because genesis *is* enrollment — the operator's own machine joins by exactly the flow any other node uses.
+
+**Install leaves a host ready to enroll; enroll never installs.** Everything below every rete — executables, the per-OS service wrapper — is the [installer](../../installer)'s. Everything per-rete arrives here: identity material, an initial artifact set, and the activation that starts the node's agent. Everything after that is the [agent](../agent)'s: syncing, supervising, and owning the scope root's contents. Enroll is the single act that crosses between them, which is why it is the only thing that creates a scope root and the only thing that hands one over.
+
+**Enrollment needs no network, and that is an invariant rather than a convenience.** A bundle carries everything a node needs to come up: the trust anchors, its principals' material, and its initial artifact set. Nothing about `flor enroll` requires the coordinator to be reachable — the first sync is opportunistic, and a node that cannot reach anything comes up on what it was given and syncs when a path exists. This is the property that makes provisioning a vehicle at a depot the same operation as provisioning a server, and it must survive every later change to how bundles are delivered.
+
+## Genesis
+
+Genesis is the sequence that brings a rete into existence, and it runs before Florete does — the last step is the first Florete call the rete ever makes.
+
+**The repository comes first, because the rete must be named before anything is minted in its name.** `rete.name` is the SPIFFE trust domain, so it is not a label an operator revises casually; every principal's identity is scoped by it. `retectl init <name>` creates the repository scaffold — `rete.yaml`, the reserved `groups.yaml` and `roles.yaml`, empty collections, and a `.gitignore` covering `bundles/` — and then the root CA and the `management-plane/primary` signer. **It is the only way a root CA comes into existence**; there is no standalone `ca init`, because a rete without a root CA is not a rete and the two workflows that occur are covered without one. Starting a rete is `retectl init`. Moving one to another machine is a `git clone` plus a move of `retectl`'s tree.
+
+**`retectl` runs inside a rete repository or not at all.** It walks up from the working directory to find `rete.yaml`, as git finds `.git`, and refuses outside one. That is the point rather than a side effect: every path becomes repo-relative and predictable, bundles land in one place per rete, and the scope comes for free, so no command needs a `--rete` flag to say which rete it means.
+
+**Three identities exist by the end of it and are deliberately never merged.** The **CA** is the issuing authority and not a principal at all: it signs certificates and never envelopes, and its private key is the one thing that should leave the machine. The **mgmt signer** is a signing principal whose key stays in operator custody and is loaded by no vertex, ever. The **operator's own identity** is an ordinary TLS principal, delivered in a bundle and revocable like anyone's. Merging the last two would mean that revoking a departing operator breaks artifact verification for the entire rete — a signing identity must not be revocable by an HR event.
+
+**The management node is bootstrapped before the operator's own machine**, because the coordinator has to exist before anything can publish to it. Its bundle carries `coordinator.json` alongside the rest of its artifact set, so the coordinator comes up under the agent like any other supervised workload — see [Coordinator § Run story](../coordinator#run-story). The operator's machine follows as an ordinary participant, and `retectl publish` is the first Florete-over-Florete call the rete makes. **Every step before that publish happens outside Florete, because the publish is itself a Florete call.** After it, the coordinator is authoritative and every state change flows through it.
+
+**Operator material lives in `retectl`'s own tree and never in the repository.** `~/.retectl`, overridden whole by `RETECTL_HOME`, holds `retes/<scope>/certs/` for public certificates and `retes/<scope>/secrets/` for private keys; the repository holds YAML source and the compiled tree, both committed so the git log is a shipment history, and neither a private key nor a certificate. The certificates are absent for a reason worth stating: the compiler embeds every signer's public material into each artifact's trust block, and the compiled tree *is* committed, so a separate copy in `certs/` adds no fact a reviewer did not already have. See [Installer § Directories](../../installer#directories) for how this sits beside flor's own layout, and [CLI Surface](../cli) for what `retectl` reads from it.
+
+**The root CA's private key lives in `retectl`'s tree, and this milestone says so plainly rather than recommending otherwise.** `retes/<scope>/certs/root.crt` holds the certificate and `retes/<scope>/secrets/root.key` the key, singular because a rete has one root. Moving the key to an encrypted volume is the obvious hardening and C0 does not ask for it: no command takes a path to a root key, and adding one would serve a recommendation whose real payoff is an **intermediate** — a root that signs an intermediate, an intermediate that does day-to-day issuance, and a root touched only to rotate it. Without that, an offline root means producing the vault on **every** `issue-bundle`, which is a standing reason nobody would move it. The pairing belongs together and both are in [Evolution sketches](#evolution-sketches).
+
+`issue-bundle` assembles each node's `anchors.pem` from the operator's root certificates — one of them, in this milestone.
+
+## The bundle
+
+**Two flows are named throughout this design, and only the first is built.** In **Flow A** the operator generates every principal's keypair on their own machine and delivers both halves in a bundle; the private key travels. In **Flow B** the principal generates its own keypair and sends only a certificate signing request, so no private key ever leaves the machine that will hold it. **C0 is Flow A only** — during pilots the operator is the Florete team, so the trust Flow A asks for already exists in fact — and Flow B is an open question for [C1](/docs/implementation/c1-manual-mesh/scope), where its commands would be `retectl id keygen` and `retectl id sign`.
+
+A bundle is one file per node, carrying every principal that runs on that machine — user, service, and the node itself. **It is per node rather than per principal** because a server hosting five services would otherwise mean five deliveries, five bearer files and five windows to close, for one machine that is trusted or not as a unit.
+
+**It is a tar container, and its entry names are identifiers rather than destinations.**
+
+```
+<node>.bundle
+├── manifest.json             schema_version, every entry below by name and digest,
+│                             and a signature block over the canonical manifest
+├── anchors.pem               the rete's trust anchors
+├── credentials/<spiffe>.crt  one per principal on the node
+├── credentials/<spiffe>.key  a separate entry, so a keyless bundle is expressible
+└── artifacts/<plane>/<name>.json   each envelope byte-exact as the compiler emitted it
+```
+
+`flor enroll` derives every path it writes; an artifact's destination comes from the `plane` inside its envelope, which must agree with the entry it arrived under, and a disagreement is refused as the producer bug it is. Reading entry names as paths is what makes archive extraction dangerous, and deriving destinations instead closes that class rather than filtering for it.
+
+**Three of those parts stay structurally distinct even though C0 always ships all three together.** The anchors, the certificates and the private keys are separable so that a keyless bundle, an anchor delivered by another channel, and a fleet-common part each become possible without a format change. Nothing in C0 uses that, and it costs nothing now.
+
+**The bundle carries no fact an artifact already carries.** There is no coordinator URL and no expected coordinator identity: `agent.json`'s `sync` block names the coordinator by principal, and the dial resolves through the agent's own compiler-projected `inbounds` map. And there is no signer list to carry: each envelope in the set brings its own signer's certificate, which a node validates against the anchors **it already holds** — the anchors a bundle delivers are what future artifacts will be checked against, never what checks the bundle itself.
+
+**The manifest carries `schema_version`, and this is the first contract in the design that can genuinely skew.** An operator's `retectl` is upgraded on their schedule and a node's `flor` on its own, so a newer producer meeting an older consumer is the ordinary case here, not the exotic one. Gating follows [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract): same major, minor older-or-equal, and a rejected bundle exits with a message naming both versions and the remedy rather than a parse error.
+
+### What a node can check
+
+**A fresh enrollment verifies no signature, and that is deliberate.** There is nothing on the node to verify against: a signature checked against a key the bundle itself supplies proves nothing, since an attacker who alters a bundle re-signs it and updates the trust material it delivers. What enroll does instead is check every entry against the manifest's digests, then print the trust domain, the anchors' fingerprints and the signer's name, marked plainly as **unverified**. `--anchor-fingerprint <hex>`, repeatable, turns that display into a refusal, for an operator who has been told the fingerprints by some other route. **The check is set equality, not membership** — if it merely asserted that an expected fingerprint is present, a bundle carrying the legitimate anchor *plus an attacker's* would pass and the node would trust both. The operator is confirming the whole set they expect, so a mismatch in either direction is a refusal.
+
+The gain from declining the check is structural: there is then **exactly one signature-verification path in the whole flow**, and it can only be pointed at keys the node already trusts. A path that cannot be handed an attacker-supplied key is worth more than one guarded by care.
+
+**A re-enrollment verifies the manifest signature**, because by then the node holds anchors: it validates the certificate the manifest carries against them and refuses a signer that does not chain. This is not new machinery — it is the same three steps every artifact goes through. It also gives C0 an anchor-delivery story it would otherwise lack: every bundle re-delivers the anchors, so delivering a **new** anchor is an authenticated act rather than a trust-on-first-use one.
+
+**The signature and the trust material a bundle delivers are deliberately unrelated.** A bundle rotating the anchors is signed by a signer that chains to the *outgoing* anchor while delivering the *incoming* one; requiring them to match would fail exactly the enrollments happening mid-rotation. Nothing checks one against the other at either end.
+
+**Bearer material, honestly.** A bundle carries private keys for its whole life, and **nothing at the bundle level bounds that window** — a control checked by our own tooling binds only the honest party, since an attacker holding a bundle does not run `flor enroll`, they copy PEM files into place. The credential's own validity is the only bound that binds. What remains is guidance — deliver over a channel the recipient trusts, enroll promptly — and one mechanical aid: **`flor enroll` deletes the bundle on success**, or prints a loud instruction where it cannot. That is hygiene rather than a control, and the honest path's leftover copy is the only one this milestone can act on.
+
+## Enrolling a node
+
+One flow serves a first enrollment and every later one — the [Shape](#shape)'s `enroll` block is the sequence, and this section is why each step is where it is rather than a second copy of it. What follows the numbered steps, in order: the operator declares and issues, the bundle travels, `flor enroll` verifies before it writes, the identity plane is replaced, the artifact set is staged, and the agent takes over.
+
+**`issue-bundle` compiles.** The two are dependent — a bundle carries the node's initial set — and the only reliable way to keep two commands in step is not to have two. `retectl publish` stays separate and stays the review gate, so an operator still reads the diff before nodes see it. The cost is a whole-rete compile per bundle issued, which a pilot does not feel.
+
+**Enroll stops the scope itself.** An agent reading the identity plane while enroll rewrites it is a race, and leaving the stop to a human makes correctness depend on a documented step.
+
+**The identity plane is replaced only where the bundle speaks.** Material for each principal the bundle names is replaced; every other principal's is left alone. The authoritative statement of which principals live on a node is the **artifact set**, never the bundle — a bundle is a delivery, and reading its contents as a census would make a subset bundle destructive the moment one exists. In C0 that difference is small and worth knowing: material for a principal removed from YAML since the last bundle stays on disk, inert, because no peer's access check names it any more. Sweeping it is deferred for a reason that is not tidiness — artifacts are re-fetchable and identity material is not, so an over-eager sweep is unrecoverable where the artifact cleanup pass is merely wasteful.
+
+**The artifact set enters through the agent's ordinary intake, not through enroll.** Enroll stages it in `incoming/`, a sibling of `artifacts/` in the scope root, because enroll runs *before* the agent does and cannot call the path it must hand the set to. The agent consumes `incoming/` at startup **before its first dial**, through exactly the route a synced set takes — verify against the trust block, check the persisted version high-water-mark, stage, activate, then remove the slot. An older set is ignored; a newer one is activated.
+
+**Reading it before the first dial is what makes one repair possible at all.** A node that has been offline long enough for the coordinator to have moved cannot reach the coordinator to learn where it went — the only thing that could tell it is a set it can no longer fetch. Re-enrollment fixes exactly that, and only because the bundle's set is genuinely admitted rather than assumed stale.
+
+**A failed enrollment is resumable rather than atomic.** A re-enrollment cannot be atomic: renaming over a populated directory is atomic on no platform, and part of that directory must survive. So the partial scope root is **keyed to the bundle that produced it** — the same bundle completes it, and a different one is refused rather than merged. One mechanism serves both cases deliberately: a node is enrolled once and re-enrolled whenever it is re-keyed, so giving the rarer path the stronger guarantee would be backwards.
+
+**The scope is the rete's name verbatim.** That name is the SPIFFE trust domain, may be dotted, and **never includes the `.rete` hostname suffix** — `flor.demo` is a scope, `flor.demo.rete` is not; the suffix belongs to hostnames of the form `<service>.<rete>.rete`. The only constraint is length, since the scope appears in the agent's socket path and macOS bounds those. Two independent retes that chose the same name cannot both be enrolled on one host, and that is a refusal naming the conflict rather than a flag to work around: the case requires two unrelated operators to have picked one trust domain, and a flag nobody exercises is a flag nobody has tested.
+
+**`retes/` itself is created by whichever of the installer and enroll runs first**, identically, through one library function. Creating the directory is not writing *into* it, which is what the installer's prohibition means; and a distribution package places binaries without ever invoking `flor install`, so enroll cannot assume the directory exists. `retes/` is `0755` and owned by root in system mode or by the invoking user in user mode; `retes/<scope>/` is `0700` and owned by the service user, with `identity/` at `0700` and every `*.key` at `0600`, each created with its final mode.
+
+### Without an operator present
+
+A server enrolled over SSH, a provisioning script, and a machine enrolling at first boot are **the same path**. Nothing about writing an identity store changes when nobody is watching; what changes is that a check whose interactive form is a person reading a fingerprint needs a machine form. So the rule is that **every human-facing check has a non-interactive equivalent, and it is a flag** — `--anchor-fingerprint` is the first of them. Automation is never made to *skip* a check in order to run unattended, which is how unattended paths become the insecure ones.
+
+**No flag makes an image carry an identity.** Enrolling during an image build gives every instance from that image one node identity, and baking a *bundle* into the image does not fix it — a bundle is per node too, so an image carrying one enrols every instance as the same node. An image therefore carries **no identity at all**, and each instance receives its own bundle at first boot through some channel outside the image: a provisioning system, an operator over SSH, or eventually a credential fetched by the node itself. Building one image per node is the other answer, and it is a fleet answer only where the fleet is small.
+
+## Activation
+
+**Enrollment is two steps, and an uninstall reverses only the second.** `flor enroll` unpacks and then activates; `flor agent enable` performs activation alone, with `disable` as its inverse. What survives an uninstall is a scope root that is enrolled-but-inactive, resumable with no bundle at all — which is the whole point: the alternative charges a re-issued bundle for a reinstall, and a bundle is bearer material that must be couriered. It also lets a multi-rete node leave one rete without touching the others. `disable` is neither revocation nor purge.
+
+**"Activate" names an act, never a service manager.** Today it instantiates the wrapper the installer placed — see [Installer § Service registration](../../installer#service-registration) — but a nested rete, where one rete's agent runs as a supervised workload of another's, would make activation *adding a supervision entry* instead. The installer owns the wrapper and this page owns the act, so nothing forecloses that; the contract simply does not name systemd.
+
+Enroll activates unconditionally in C0. A `--no-start` escape is deferred for want of a caller: a node whose network is not ready retries rather than fails, a maintenance window is `disable` a second later, and development uses the directory overrides.
+
+## Revocation and rotation
+
+**C0 does not have a revocation mechanism. It has a name change**, and saying so plainly is more useful than the mechanism sounding larger than it is.
+
+The operator removes the principal from `users.yaml` or `services.yaml`, compiles, and publishes; every node drops it from its ingress tables at the next sync. A still-live private key opens nothing, because no peer's access check names that principal any more. What this costs is the **name**: re-admitting the same person or service means a new entry, and every ACL, group and role that referenced the old one has to be rewritten. A per-principal serial floor — a monotonic high-water-mark applied to identity rather than to artifacts, which is machinery the agent already implements — is the direction, and it is not C0's.
+
+**Git records a principal's declaration and removal, and nothing else.** It does not record **issuance**: `retectl issue-bundle` mints private keys and signs certificates without committing anything, the declaration may precede issuance by any interval, and re-issuance leaves no trace. So the revocation record is genuinely the commit, and the enrollment record does not exist in this milestone. The operator-side issuance ledger that supplies it — committed to the repository, so a second operator can see it, and answering "what expires soon" without asking any node — arrives with C1's enrollment log.
+
+**Rotation has one path and it is re-enrollment**: a fresh bundle, couriered, replacing every principal on the node at once. Policy is therefore rete-wide, because **policy granularity may not exceed mechanism granularity** — setting a service to thirty days and a user to seven changes nothing when both are re-keyed together by the same courier, and it states an intent the system does not honour. The ninety-day default is a placeholder with a stated reason rather than a considered value.
+
+**The criterion for a real number is unusual here and belongs on the page.** A credential's lifetime must exceed the longest period its holder may be unable to reach an issuer. Hour-long certificates are free for users on corporate networks and wrong for a device out of contact for a week, which would brick itself for reasons unrelated to any attack.
+
+**Rotation defends against material an attacker can no longer renew — and the distinguishing property is presence, not volume.** A credential that leaked into an image, a chat log or a backup stops working; so does everything taken by an intruder who exfiltrated a node whole and then left, which is what a malicious dependency or a supply-chain compromise looks like and is the case that actually happens. What no rotation scheme addresses is an attacker **still resident**, who rotates alongside you. Read every rotation claim on this page against that line.
+
+### Signer trust
+
+The mgmt signer is what every artifact's signature is checked against, and its trust has an anchor rather than only a chain.
+
+**Every envelope carries its signer's certificate**, inside its own `signature`. The agent validates that certificate against the node's trust anchors and then checks the signature — extract, validate, verify, in that order and consulting nothing else. No artifact carries a signer set and no node persists one, so a node has nothing to be out of date about.
+
+Rotation is therefore: mint a fresh certificate from the root CA, replace the operator's pair, sign with it. No add-switch-retire, no overlap window, no list edit — and a node that was switched off while it happened accepts the successor on the anchor's word when it returns.
+
+**Anchoring it in the root CA is what makes a leaked signer survivable.** A pure vouched-successor chain over bare public keys has no anchor and no escape: an attacker holding the current signer's private key could introduce their own and retire the operator's, and the operator's cold root CA could not overrule it. Requiring a CA signature closes that with material the node already holds — a self-minted key is never CA-vouched, so it cannot enter the set however it is delivered. The stolen key still signs artifacts until its certificate expires; what it loses is the ability to introduce a successor. See [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust), whose rotation semantics this amends.
+
+**`identity/anchors.pem` is a set, not a certificate.** One file, one or more concatenated PEM certificates, because every rotation shape needs old and new trusted at once through a grace window. A **first** anchor arrives only by enrollment — nothing on the node could verify it. A **successor** may ride the mgmt plane when cross-signed by an anchor already in the set, which is the graceful path; where the outgoing anchor can vouch for nothing, re-enrollment is the channel, and it is already a signer-authenticated act.
+
+**The recursion stops at the root CA, and that is the irreducible root.** Signers are anchored by it, so a leaked signer is recoverable. Nothing anchors the root CA: a compromised root key can cross-sign its own successor and lock the operator out. That is not a second instance of the same defect — below the root CA there was a colder authority available and unused, and above it there is none. An attacker holding the root key already mints any principal at will, so the additional loss is nil, and the recovery is re-enrolling every node by hand.
+
+## Evolution sketches
+
+Recorded so nothing above forecloses them. None is designed and none is a commitment; each names the property this milestone owes it.
+
+- **A credential spent at first use.** The operator mints two credentials offline; the bundle carries only the first, and the second — **encrypted to the node's current public key** — is relayed by the coordinator as opaque bytes and deleted on fetch, so a second attempt fails visibly. This needs no online signing authority, gives an attacker-first race a *detectable* outcome, and is what replaces the unbounded bearer window with consumption. It states a rule this design was missing: an artifact needs integrity and authenticity, which a signature gives it; a credential needs **confidentiality** as well, because the coordinator sits in the path and is not a party.
+- **Replacing a credential over the mgmt channel.** Re-enrollment is the **least secure delivery path this design has** and is currently the only rotation path: the mgmt channel is mutually authenticated and ours, while the courier channel is a chat app and a stick in a pocket. What differs between the successors is who *produced* the material, not how it travels. The property owed: a principal's certificate and key must be replaceable **on their own**, without touching the artifact set or any other principal's material.
+- **Bounding a hot issuer by chaining credentials.** When issuance is automated, a new credential's public key is signed by its **predecessor's private key**, which the node holds and a ladder-bound issuer never does — so a hijacked issuer can mint a certificate carrying no continuity proof, and peers that have met that principal reject it. The issuer stops being something that must be *trusted* and becomes something that must merely be *available*. Continuity is opportunistic: a peer with no history falls back to the anchors, so coverage grows with the age of the rete.
+- **An encrypted bundle.** Encrypting only the secret entries keeps the container readable, so the manifest, the trust domain and the fingerprints are verified and displayed *before* a recipient is asked for a secret — and a re-enrollment needs no secret at all, the node's existing public key being the recipient key.
+- **An intermediate, so the root can genuinely stay offline.** The recommendation to move the root out is undercut by the root being read on every `issue-bundle`, which is a standing reason not to move it. The answer PKI has always used is a root that signs an **intermediate**, an intermediate that does day-to-day issuance, and a root touched only to rotate that intermediate. It is not C0's: every verifier would have to build and validate a path rather than check a signature, and the signer check would follow. It is what makes the offline root practical rather than aspirational.
+- **Delivery that is not a bundle.** Nothing may assume the bundle format is the only way a credential reaches a node; a courier file a human handles once and a machine-to-machine payload over mTLS need not share a format.
+- **A separable anchor and a replaceable issuer.** Exactly one thing is common to a fleet — the anchors — so a two-phase provisioning split moves one field. And the rete CA is one implementation of a boundary rather than a fixture: **the identity store is a sink, and nothing may assume what filled it.** An identity may one day be created by a component this project does not ship.
+- **Naming the coordinator rather than its address.** From the milestone where a node joins at a link to *some* node, its position is not known when its material is issued. `sync` names a principal, and nothing may carry the coordinator's address as the primary fact.
+- **Foreign and temporary principals.** An `ingress.allow` entry names a full SPIFFE ID and therefore already expresses a **foreign** principal; an entry must never be shortened to a bare local name. A **temporary** grant is a short-lived identity rather than a time-boxed permission, because the latter needs validity windows in the artifact *and* clock agreement between every enforcing pair.
+
+## Decision Log
+
+Entries are grouped by what a future change would be touching, not by the order they were settled. Ten of them are deliberate deferrals and each names the property C0 owes it.
+
+### Tooling and command surface
+
+**ENRL-C0-01. Split the CLI by the state a command authors.**
+`retectl` authors rete state; `flor` authors node state. A private key is *material* rather than state — it has a holder and no author, and where it sits decides nothing. Minting therefore belongs to `retectl`, because a SPIFFE name enters the rete's YAML and the certificate is CA-vouched, both facts the rete holds. `retectl` reaching no node state is an **invariant it keeps**, not a limitation it has.
+*Because* the criterion has to classify a command nobody has written yet, and only this one does. Audience partitions people, and people overlap — the operator's workstation is itself an enrolled node. Scope-of-effect cannot classify minting, its own motivating case. A closed list of `flor`'s commands fails on the first unanticipated one: a node-local override is not install, uninstall, enroll, agent or version, so a list would route it to `retectl`, the one tool that must never touch it.
+*Accepting* that the boundary is argued per command rather than read off a list, and that the state-versus-material distinction has to be taught before it can be applied.
+*Rejected* audience, on the overlap above; scope of effect, superseded by this reading of it; node-maintenance-versus-everything, on the override case; authoring-versus-running, which has no cell for `flor install`.
+
+**ENRL-C0-02. Name a `retectl` command group for its subject, never its actor.**
+A bare command is a verb whose implicit subject is the rete — `compile`, `publish`, `issue-bundle`. Where a group exists, the group's name is the subject its verbs act on: `ca init` creates the authority, `id issue` produces an identity. A command that emits a *principal's* certificate belongs to `id`, whatever instrument signs it.
+*Because* the scar exists: `ca sign` was named for the actor, read as *the authority mints*, and written into this page as a mint — contradicting the CLI reference and the implementation for long enough to need a ticket.
+*Accepting* that the rule bites only when a group is introduced, which is rare — and that its value is concentrated exactly there, since a group name is what a reader uses to guess what a command does before running it.
+
+**ENRL-C0-03. Give the identity plane four commands and one front door.**
+`retectl init <name>` creates the repo scaffold, the root CA and the `management-plane/primary` signer, and is the only way a root CA comes into existence. `retectl id issue` produces a key that **stays in the operator's custody** — that is its subject, and accepting signing kinds only is the consequence, those being the principals whose keys must never leave. `retectl issue-bundle` mints and packs every TLS principal on one node. `id keygen` and `id sign` are named for Flow B and are not part of C0.
+*Because* a key that must never leave operator hardware is **issued**, and a key that must reach a node is **bundled** — which is this design's existing split between signing-principal and TLS-principal material, expressed as a command surface rather than invented. A TLS key issued directly would have nowhere to go — bundles are per node, so no per-principal delivery exists to reach for — and the definition survives rotation, which issues TLS credentials from machinery rather than from this command. Genesis earns a front door because it happens once per rete at the worst moment for a new operator, while rotation forces the primitives to exist anyway.
+*Accepting* that C0 has no `ca` group at all; it returns when CA rotation lands, and ENRL-C0-02 already says where its commands go.
+*Revisit* the Flow B carve-out when Flow B is designed: the grouping is settled, the two commands' argument shapes are not.
+*Rejected* folding the root CA into `id`, since a CA is not a principal; a mint-or-sign command whose behaviour depends on whether an argument was supplied, which is the contradiction that prompted this; composing genesis by hand, which writes a freshly-minted private key to an intermediate file.
+
+**ENRL-C0-04. Put a node-local override in `flor`, outside the signed set.**
+Overriding an inbound or outbound locally authors node state, so it is `flor`'s. The command and the merge mechanics are [flor#44](https://github.com/rete-labs/flor/issues/44)'s; two properties are owed to it. An override must live **outside** `artifacts/`, because sets are immutable, staged by version and swept by the cleanup pass, so anything inside is either destroyed at the next sync or indistinguishable from tampering. And an override may change only **what this node does** — anything that changes what another node does is a rete fact, since reachability needs other nodes' ingress and route entries, which only the compiler produces and only the coordinator distributes.
+*Because* a legitimate override has to be distinguishable from tampering, and under the documented hand-edit posture the two are the same act.
+*Accepting* that "add a new inbound or outbound locally" collapses in both directions: an inbound nobody can route to is not a published service, and an outbound needs peer routing the rete had to supply anyway. Override yes; add no.
+
+**ENRL-C0-05. Compile inside `issue-bundle`.**
+`retectl issue-bundle` compiles the rete before packing, so the artifact set a bundle carries is the set that will be published. `retectl publish` remains a separate command and remains the review gate.
+*Because* the two are dependent — a bundle carries the node's initial set — and the only reliable way to keep two commands in step is not to have two. A stale set is not fatal, since an older set is ignored and the node syncs forward, but it produces exactly the failure ENRL-C0-21's repair path exists for: a node whose set predates a coordinator move cannot reach the coordinator to learn it moved.
+*Accepting* that a command named for identity also writes the compiled tree, that compile is whole-rete so packing one node compiles all of them, and that C0 pays a whole-rete compile per bundle rather than building the compiler a no-op path — a cost a pilot does not feel.
+*Rejected* compiling only the packed node, which produces a set differing from what will be published; refusing on a stale tree, which needs a staleness test the compiler does not support and buys a refusal where compiling buys correctness.
+
+### Operator-held material
+
+**ENRL-C0-06. Keep the rete's CA and signer in `retectl`'s own tree.**
+`~/.retectl`, overridden whole by `RETECTL_HOME`, holding `retes/<scope>/certs/root.crt` and `retes/<scope>/secrets/root.key` at `0700` — and everything else `retectl` ever owns, its own configuration included. The root key stays there in C0: no command takes a path to it, and the hardening that would justify one is an intermediate, which is deferred.
+*Because* one tree is what this material needs: its defining operation is being moved as a unit, backed up, encrypted, or carried to another host, and the XDG bases exist to scatter an application across four of them. Every comparable credential-holding tool — ssh, gpg, step, pass, kubectl, docker — keeps one tree for the same reason, and one variable stays one variable however `retectl` grows. The two keys share a location and are separated by sensitivity instead: the signer is read at every compile, the root key only at issuance.
+*Accepting* that the root key sits in a predictable path under the operator's home — step-ca's trade, taken deliberately. Moving it offline is **not** recommended in C0: nothing could name the moved key, and an offline root read on every `issue-bundle` is a recommendation nobody would follow. Both belong with the intermediate that makes them practical.
+*Revisit* when an intermediate or a CA service lands and the root key stops being read on every issuance.
+*Rejected* the node's scope root, which `retectl` may not touch and which re-enrollment replaces wholesale; the rete repo, on ENRL-C0-07; no default at all, which forces the operator to decide where a root of trust lives before they have a rete; `XDG_STATE_HOME`, which the specification defines as what is *not important or portable enough* for `XDG_DATA_HOME` — the exact inverse of this material.
+
+**ENRL-C0-07. Keep every secret and every certificate out of the rete repo.**
+The repo carries YAML source and the compiled tree, both committed deliberately so the git log is a shipment history. It carries no private key, and no public certificate either: `rete.yaml` names a signer, and the certificate resolves in `retectl`'s tree. Bundles default to a gitignored `<repo>/bundles/`, which is transient by design.
+*Because* a repo's defining operation is being **copied** — cloned to a second workstation, checked out in CI, archived by a backup — so a private key inside one is wrong whatever git tracks. And the audit case for committing certificates does not survive checking: every compiled envelope carries the certificate of the signer that signed it, and the compiled tree is already committed, so a separate copy adds no fact a reviewer did not have. Bundles are the exception because they are not durable: the repo is where the operator already stands to compile and publish, and a default of "wherever you were standing" scatters bearer files nobody can later find.
+*Accepting* that the repo no longer shows the trust anchor in a human-readable place, and that a reviewer reads it out of a compiled artifact; and that a spent bundle survives in the workspace until deleted, since nothing can know it was consumed.
+*Rejected* a durable bundle directory in `retectl`'s tree, which would accumulate spent bundles still carrying live keys; a temporary directory removed on exit, which forces delivery to happen inside the issuing command.
+
+**ENRL-C0-08. Require a repo root, and take the scope from it.**
+`retectl` walks up from the working directory to find `rete.yaml`, as git finds `.git`, and refuses to run outside one. The scope is the **rete name verbatim** — which is the SPIFFE trust domain, may be dotted, and never includes the `.rete` hostname TLD. A collision between two independent retes of the same name is a refusal naming the conflict.
+*Because* the structure is the point: paths become repo-relative and predictable, bundles land in one place per rete, and the scope comes for free, which removes a `--rete` flag from every command that would have needed one. `rete.yaml` is already the anchor, so a dedicated marker directory would be a second one for the same job — and a renamed `rete.name` is not an edited convenience but a different trust domain, so the tree moving with it is correct.
+*Accepting* that a genuine collision is a hard stop rather than a flag away, and that a rete repo becomes required rather than recommended. `--as <scope>` is deferred until a host actually joins two same-named retes; adding it later is additive, and a flag nobody exercises is a flag nobody has tested. `retectl path` is likewise unnecessary in C0, since no sequence names a file inside `retectl`'s tree.
+
+**ENRL-C0-09. Share flor's host configuration, none of its state, and exactly one of its locations.**
+`retectl` reads no flor configuration: its log stream defaults to **stderr and to off**, and `RUST_LOG` turns it on, so the one setting in `config.toml` addresses a problem it does not have. It must resolve one flor path — `agent.sock`, under the runtime directory — because `publish` reaches `coordinator-publisher` through the local agent's SOCKS5 listener. Per rete it is told exactly one thing, the **operator's own principal name**, and derives the address from it.
+*Because* the log stream exists for processes nobody is watching: the agent and its workloads run unattended, while `retectl` changes rete state — whose record is the git commit — and operator-local material, with the person who ran it watching the terminal. And configure-the-stable, derive-the-volatile decides the second half: a principal name changes only by a deliberate rete-level act, while a SOCKS5 address is compiler-projected and goes stale silently. Resolving the operator from the repo cannot work at all, because the repo describes the rete and the missing fact is which human is at the keyboard.
+*Accepting* that `flor`'s commands log to syslog and `retectl`'s do not, so the uniform output rule covers stdout-for-data and stderr-for-people but not the log stream; that with `RUST_LOG` set a failure appears twice, once as a message and once as a record; and that `--socks5` must be settable in configuration and not only as a flag, since C0 may ship without `agent.sock` at all, in which case configure-the-address is the accepted degradation.
+*Revisit* when `agent.sock` ships: the configured address becomes the fallback and the principal becomes the normal path.
+
+**ENRL-C0-10. Keep `agent.sock` internal to flor's own tools.**
+It serves `flor agent status`, `flor agent sync`, and `retectl`'s operator lookup, and nothing else in C0. It carries no version.
+*Because* `retectl` and `flor` ship as one release and are upgraded together, so on a single host the two ends of this socket cannot skew — the property one release version over four executables was bought for. A third party has no such guarantee, so inviting one means versioning the protocol, which should wait for a consumer to design it for.
+*Rejected* public and versioned, as premature; public and unversioned, which is a dependency people would take and nobody priced.
+
+### Trust model
+
+**ENRL-C0-11. Vouch for principals with a certificate authority, not a public-key registry.**
+One CA per rete signs every principal's certificate; a peer validates a presented certificate against the anchor and needs nothing per-peer.
+*Because* a CA lets a peer accept a caller **it has never heard of**, which is what makes trust-domain federation expressible at all. A registry cannot: someone must have pushed that caller's public key first, so the caller set is closed by construction, and a public inter-rete service — open by definition — cannot be expressed. The cost argument compounds it: a registry makes every node hold every permitted peer's key, and inter-rete that becomes the product of two retes' principal sets, so the partial per-node projections this design is committed to are unreachable, a partial registry being a peer you cannot authenticate.
+*Accepting* a key that must be protected, and the whole rotation burden that follows from it.
+*Rejected* a registry, on the federation argument — noting that both mesh-VPN comparables use one, correctly, for populations that are enumerable.
+
+### The bundle
+
+**ENRL-C0-12. Carry the signer's certificate with what it signed, and validate it against the anchors.**
+Every envelope carries its signer's certificate inside its own `signature`, which becomes `{ alg, cert, value }`; `key_id` is gone, the certificate carrying the SPIFFE ID in its SAN. A bundle's manifest carries it the same way, inside its own `signature` block. Verification is: **extract the certificate, validate it against the trust anchors this node holds, check the signature** — in that order, consulting nothing else. No mgmt artifact carries a signer set and no node persists one. Rotating a signer is minting a fresh certificate from the root CA, replacing the operator's pair, and signing with it.
+*Because* this is the standard flow — CMS `SignedData`, JWS `x5c`, every code-signing scheme — and the pinned set it replaces was a bespoke layer above it whose two defects were costs of the layer rather than of the problem. Over bare public keys the chain had **no anchor**: an attacker with the current signer's key could introduce their own and retire the operator's, and the cold root could not overrule it, so one leaked key meant permanent loss of the management plane. And the chain required seeing **every step**, which a node absent across a rotation never does, because the coordinator serves only the latest tree — so absence was fatal and no overlap window could fix it, only postpone it.
+*Because* an envelope must be verifiable **alone**: the agent verifies each artifact independently, the coordinator re-serves each byte-for-byte, and — the case that settles the placement — ctrl artifacts are independent streams with no set root to hang a signer list from.
+*Because* self-carriage is not the circularity the superseded record forbade. That prohibition was against an artifact **authorising** its own signer; here it merely **presents** one, and the authority to accept it is external and predates it, having arrived at enrollment.
+*Accepting* that **C0 cannot block a leaked mgmt signer** — it signs valid artifacts until its certificate expires. Revocation lists are already deferred milestone-wide, and the root key and the signer key share a directory, so a leak reaching one has reached the other and a leaked root is unrecoverable by construction.
+*Accepting* a certificate per envelope: a few hundred bytes against a handful of artifacts per node.
+*Revisit* when the root key and the signer key stop sharing a location — an intermediate, a CA service, or a hardware-held root — because that is when signer-only compromise becomes real and revocation starts earning its cost.
+**A plane may constrain the plane below it, never itself.** That is the general form, and it is why one signer list survives and the other cannot. `agent.json` is a **mgmt** artifact carrying an ACL over **ctrl**, so it never gates its own delivery — an absent node fetches the current mgmt set, verifies it against the anchors, and receives the new ctrl list in the ordinary way. A mgmt list inside a mgmt artifact is verified against the list it is updating, which is the deadlock. And mgmt is not therefore unconstrained: **the anchors are its ACL**, arriving out of band at enrollment and delivered by no plane at all. The hierarchy is anchors → mgmt → ctrl, each level bounded by the one above it and none by itself.
+*Rejected* keeping the set and sizing an overlap window against the worst expected absence, which is unbounded in the deployments that most need it and whose failure is a bricked node; letting an unlisted but CA-vouched signer verify, which is this verdict with a field that then earns nothing; having the outgoing signer sign the incoming certificate, which makes it an intermediate able to mint its own successor; and reserving an empty trust block for a future narrowing ACL over mgmt signers, since its shape would be guesswork carried by every artifact. **Reserve a property, not a field.**
+*The delegated ctrl list is not this and survives* — it is authorised by mgmt rather than by itself, so it never gates its own delivery, and a ctrl signer is a running service whose compromise is the realistic case.
+
+**ENRL-C0-13. Make the trust anchor a set, and rotate it by cross-signature.**
+`identity/anchors.pem` — one file, one or more concatenated PEM certificates, replacing the singular `ca.crt`. A **first** anchor arrives only by enrollment, since nothing on the node could verify it. A **successor** may ride the mgmt plane when **cross-signed by an anchor already in the set**, which is the graceful rotation path; where the outgoing anchor cannot vouch for anything, re-enrollment is the channel, and it is already a signer-authenticated act. The two anchors therefore vouch for each other's rotation.
+*Because* every rotation shape needs old and new trusted simultaneously through a grace window, and a singular anchor cannot express one. A concatenated bundle is what every TLS stack consumes, needs no naming scheme or index, and stays a **single file**, so replacing it is the atomic rename used everywhere else — a directory of anchors would need a pointer or a scan, and a partial write would leave a node trusting a subset of its roots.
+*Because* the name had to change with the shape: `ca.crt` reads as singular and says **CA**, which stops being accurate once intermediates exist — an intermediate is a CA and does not belong here, being verified against an anchor and travelling in the chain a peer presents. `anchors` names the role rather than the kind. Not `trust-bundle`, though that is SPIFFE's term, because **bundle** already names the enrollment artifact and one word cannot carry both. `.pem` rather than `.crt`, because the extension is where the plurality shows.
+*Accepting* that the recursion stops at the root CA, and saying so plainly: a compromised root key can cross-sign its own successor and lock the operator out, exactly as a leaked signer key could before ENRL-C0-14. It is not a second instance of that defect — below the root CA there was a colder authority available and unused, and above it there is none. An attacker holding the root key already mints any principal at will, so the additional loss is nil and the recovery is re-enrolling every node by hand. This is the irreducible root.
+*Revisit* when rotation is built; the shape is recorded, the mechanism is not designed.
+*Rejected* delivering a first anchor over the mgmt plane, which is the circularity that plane is rooted on; one file per anchor, on the atomicity and naming costs above.
+
+**ENRL-C0-14. Say *root CA* for the authority and *trust anchor* for what a verifier trusts.**
+Never a bare "CA". The **root CA** is an issuing authority — it signs certificates, and its private key is what an operator protects. A **trust anchor** is what a relying party validates against, and `identity/anchors.pem` is the node's set of them. The two usually coincide and are not the same thing: a deployment can anchor on an intermediate, and an intermediate is a CA that is not an anchor.
+*Because* "the CA" is unambiguous only while there is exactly one and it is the root, which is true now and is the first thing to stop being true. Fixing the vocabulary before the taxonomy grows costs a sweep; fixing it afterwards costs a sweep plus every reader who learned the loose usage. This is standard PKI usage rather than an invention, which is most of its recommendation.
+*Accepting* that the sweep crosses the CLI, identity and source-layout pages and the signing-trust and object-model records.
+
+**ENRL-C0-15. Join by a per-node bundle carrying the node's initial artifact set.**
+One bundle per node enrolls that machine and every principal on it. The operator generates the keypairs (Flow A); the principal-generated CSR path (Flow B) is not part of C0. The bundle carries the node's initial mgmt set.
+*Because* a server hosting five services would otherwise need five deliveries, five bearer files and five windows to close, for one machine that is trusted or not as a unit; because during pilots the operator *is* the Florete team, so the trust Flow A asks for already exists in fact; and because the management node cannot fetch artifacts from a coordinator that is not yet running — its own `coordinator.json` is in that set — while no node has Florete connectivity before it enrolls.
+**Enrollment works offline, and that is an invariant rather than a happy accident.** No coordinator reachability is required at enroll time — the bundle carries the set, `incoming/` is consumed before the first dial, and the first sync is opportunistic. It is what makes provisioning a node at a depot identical to provisioning a server.
+*Accepting* that this is C0's join model and explicitly not the design's final form: a token-and-fetch join, a principal-generated key, and a two-phase split with fleet-common material are successors, not rejected alternatives.
+*Revisit* the artifact-set clause under a two-phase installer, where it does **not** change — the set is node-specific by construction, so what a split moves is the anchor.
+
+**ENRL-C0-16. Ship the bundle as a versioned tar container of three separable parts.**
+`<node>.bundle` is a tar archive holding `manifest.json`, `anchors.pem`, `credentials/<spiffe>.crt` and `.key`, and `artifacts/<plane>/<name>.json` byte-exact as the compiler emitted them. The manifest carries its own `signature` block, in the shape and canonicalisation an envelope uses — the same routine, a different document. Entry names are **logical identifiers, never destinations**: `flor enroll` derives every path it writes, and an artifact's destination comes from the envelope's `plane`, which must agree with the entry it arrived under. The manifest carries `schema_version`, gated same-major and minor-older-or-equal. The bundle carries no fact an artifact already carries — coordinator reachability and the signer set both live in `agent.json`.
+*Because* the three parts must stay structurally distinct even though C0 always ships all three: a keyless credential set, an anchor delivered by another channel, and a fleet-common part each become possible without a format change, and three separate futures ask for exactly that. Entry names are logical because the producer and consumer **can skew across releases** — this is the first contract here that can — so a bundle written against one scope-root layout must not break against another. And a container beats a document because a signed envelope embedded in JSON is either a nested object whose bytes change on re-serialisation or an escaped string, while a tar entry is the bytes.
+*Accepting* a tar dependency and a manifest to keep consistent with the archive; path traversal is closed by extracting only manifest-named entries to derived destinations.
+
+**ENRL-C0-17. Verify a bundle only against trust the node already holds.**
+A fresh enrollment verifies **no signature**. It checks every entry against the manifest's digests, then displays the trust domain, the anchors' fingerprints and the signer's name, marked unverified; `--anchor-fingerprint <hex>`, repeatable, turns the display into a refusal, and the comparison is **set equality** — membership would let a bundle carrying the legitimate anchor plus an attacker's pass. A **re-enrollment** validates the certificate the manifest carries against the anchors the node already holds, then checks the signature, refusing a signer that does not chain.
+*Because* a signature checked against a key the bundle itself supplies proves nothing: an attacker who alters a bundle re-signs it and updates the trust block it delivers. Removing that check leaves **exactly one verification path**, which can only be pointed at keys the node already trusts — and a path that cannot be handed an attacker-supplied key is worth more than one guarded by care. A manifest carrying the key alongside its name would put a verifier one convenience away from exactly that bug.
+*Accepting* that unverified fresh enrollment is the default and remains possible; that a bundle with a malformed signature enrolls and fails only at the first re-enrollment; and that a lost signer key leaves re-enrollment unrecoverable in C0, whose remedy is to purge the scope root and enroll fresh.
+*Rejected* requiring an out-of-band fingerprint, which puts a second channel in every pilot's critical path; checking that the signer appears in the delivered trust block, which would fail exactly those fresh enrollments happening mid-rotation, since **a rotation bundle is signed by the outgoing authority and delivers the incoming one**.
+
+**ENRL-C0-18. Bound the bearer window nowhere at the bundle level.**
+C0 enforces nothing on the interval between issue and enroll. Guidance covers it: deliver over a channel the recipient trusts, enroll promptly, delete the file. The credential's own validity is the only bound that exists.
+*Because* a control checked by our own consumer binds **only the honest party**. An attacker holding a bundle does not run `flor enroll`; they hold PEM keys and certificates and copy them into place. Anything that binds an attacker must be checked by someone they must convince — a **peer** at the handshake, or an **issuer** at fetch.
+**`flor enroll` deletes the bundle on success**, or prints a loud instruction where it cannot. That is hygiene rather than a control — an attacker never runs our tool — but the honest path's leftover copy is the only one C0 can act on at all.
+*Accepting* that C0 ships with no enforceable bearer-window control, stated plainly rather than papered over.
+*Revisit* when a credential can be spent at first use, which replaces expiry with consumption.
+*Rejected* a bundle expiry, on the argument above; single-use redemption, which needs an issuer that remembers a principal has enrolled — and the coordinator deliberately keeps no per-node state.
+
+### Genesis and the node-side act
+
+**ENRL-C0-19. Keep the root CA, the mgmt signer and the operator's identity separate.**
+Three distinct things. The CA is the issuing authority and not a principal; it signs certificates and never envelopes. The mgmt signer is a signing principal whose key is cold, lives on operator hardware, and is loaded by no vertex. The operator's identity is an ordinary TLS principal, bundle-delivered and revocable like anyone's. `primary` names a **slot** rather than a description: rotation produces `primary-v2` beside it.
+*Because* a signing identity must not be revocable by an HR event — merging it with the operator's user entry means revoking a departing operator breaks artifact verification for the whole rete. And signing envelopes with the root key would put it in the path of every compile, which is the one place it must never be.
+
+**ENRL-C0-20. Enroll in two steps, and reverse only the second.**
+`flor enroll` unpacks and then activates; `flor agent enable` performs activation alone, with `disable` as its inverse. Uninstall reverses activation and leaves the scope root.
+**"Activate" names an act, never a service manager.** Today it instantiates the installer-placed wrapper; a nested rete would make it a supervision entry instead, and the contract prose must not foreclose that by naming systemd.
+*Because* the alternative charges a **re-issued bundle** for a reinstall — bearer material couriered out of band for a node that already holds valid identity — and because a multi-rete node must be able to leave one rete without touching the others. `disable` is neither revocation nor purge.
+*Accepting* that enroll always activates in C0. A `--no-start` escape is deferred for want of a caller: a node whose network is not ready retries rather than fails, a maintenance window is `disable` a second later, and development uses the directory overrides.
+
+**ENRL-C0-21. Enroll by staging, and re-enroll by replacing only what the bundle names.**
+`flor enroll` writes nothing before it has verified — on a re-enrollment, the manifest's signer certificate against the anchors the node holds, then the signature — checked every entry against the manifest's digests, and shown the trust domain and the anchors' fingerprints. It then **stops the scope itself**, rather than leaving that to the operator. It writes the identity plane, replacing the material of **each principal the bundle names and leaving every other principal's untouched**, and stages the bundle's artifact set in **`incoming/`**, a scope-root sibling of `artifacts/`. The agent admits `incoming/` at startup **before its first dial**, through the path a synced set takes — verify, check the persisted version mark, stage, activate, then remove the slot — so an older set is ignored and a newer one activated. `agent/` and `workloads/` survive untouched. Re-enrollment requires an explicit opt-in and a failed run is **resumable**: the partial scope root is keyed to the bundle that produced it, so the same bundle completes and a different one is refused.
+*Because* a bundle-delivered set is another intake path and treating it as one keeps monotonicity a rule rather than an exception — writing it straight into `artifacts/` would install a stale set unchecked and let a bundle reopen the replay window the version mark exists to close. **`incoming/` exists because enroll runs before the agent does**, so it cannot call the intake it must hand the set to; and it is consumed **before the first dial** because that is the whole of the repair path: a node offline long enough that the coordinator moved cannot reach it to learn where it went, so a set arriving only after a successful sync arrives never.
+*Because* the authoritative statement of which principals live on a node is the **artifact set**, not the bundle. A bundle is a delivery, so reading its contents as a census makes a subset bundle destructive — invisible in C0, whose bundles carry everything, and wrong the moment a rotation delivers one principal's material.
+*Because* an agent reading the identity plane while enroll rewrites it is a race, and leaving the stop to a human makes correctness depend on a documented step.
+*Accepting* that re-enrollment is not atomic and cannot be — renaming over a populated directory is atomic nowhere, and part of that directory must survive. One resume mechanism serves both cases deliberately, since a node is enrolled once and re-enrolled whenever it is re-keyed, so giving the rare path the stronger guarantee would be backwards.
+*Accepting* that material for a principal removed from YAML since the last bundle is left in place rather than swept. It opens nothing, because no peer's access check names that principal.
+*Revisit* the sweep when a bundle can legitimately carry a subset. It is deferred for a reason that is not tidiness: **artifacts are re-fetchable and identity material is not**, so an over-eager sweep is unrecoverable where the artifact cleanup pass is merely wasteful — it would have to run only after a set activates, never touch the node principal, and survive a momentarily-wrong set.
+*Rejected* replacing the whole identity subtree, correct today and wrong later for a reason that will not announce itself; starting the agent and handing the set over its control socket, which inverts the enroll-then-activate order and needs a socket that may not ship; verifying inside enroll through duplicated library code, which puts the intake logic in a second place.
+
+**ENRL-C0-22. Create `retes/` from one library function, whichever component runs first.**
+`retes/` is `0755`, owned by root in system mode and by the invoking user in user mode; `retes/<scope>/` is `0700`, owned by the service user. Both the installer and `flor enroll` create it through the same function.
+*Because* creating the directory is not writing **into** it — the installer's prohibition is about contents, which are the agent's, and its permissions rule is about the container. Neither component is guaranteed to run: a distribution package places binaries without invoking `flor install`. A rule stated in two places is a rule that eventually becomes two rules.
+
+**ENRL-C0-23. Give every human-facing check a non-interactive equivalent.**
+Enrollment over SSH, into a provisioning script, or at a machine's first boot is the same path with the same checks. Where a check's interactive form is a person reading a fingerprint, its machine form is a flag.
+*Because* two flows would diverge and the unattended one would be the less-exercised and less-safe of the pair. Automation is never made to **skip** a check in order to run unattended, which is how unattended paths quietly become the insecure ones.
+*Accepting* that enrolling during an image build gives every instance from that image one identity — a fleet problem no flag fixes, whose supported route is baking the bundle and enrolling at first boot.
+
+### Revocation and rotation
+
+**ENRL-C0-24. Revoke by removing a principal, and accept that it costs the name.**
+The operator removes the principal from YAML, compiles and publishes; every node drops it from its ingress tables at the next sync. There is no CRL and nothing is pushed. Git records a principal's **declaration and removal** and nothing else — **issuance is unrecorded in C0**. Expiry surfaces as a log line as it approaches; the operator's own reminder covers the rest.
+*Because* the revoked principal disappears from every peer's access check, so a live private key opens nothing. What that conceals is the cost: C0 does not have a revocation mechanism, it has a **name change**, and re-admitting the same person or service means every ACL, group and role referencing the old name is rewritten.
+*Accepting* that the page says both of those in those words rather than implying git covers issuance.
+*Revisit* with an operator-side issuance ledger, committed to the repo — which answers "what expires soon" without asking any node, is visible to a second operator in a way a private tree would not be, and is the enrollment record this milestone lacks.
+*Rejected* burning the name as the permanent design; a distributed revocation list, deferred elsewhere for reasons that stand; short lifetimes alone, which bound exposure without ever letting anyone *act*.
+
+**ENRL-C0-25. Keep rotation policy no finer than the rotation mechanism.**
+One rete-wide `tls_principals.validity_days`, and rotation at the granularity of a node, because a bundle is per node. Cadence granularity may become finer exactly when rotation granularity does.
+*Because* a per-class policy is meaningless while the only mechanism is a whole-node bundle: setting a service to thirty days and a user to seven changes nothing when both are re-keyed together by the same courier, and it is worse than useless, since it states an intent the system does not honour.
+*Accepting* that C0's ninety days is a placeholder with a stated reason rather than a considered value. The criterion for a real number is unusual here and belongs on the page: **a credential's lifetime must exceed the longest period its holder may be unable to reach an issuer.** Hour-long certificates are free for users on corporate networks and wrong for a device out of contact for a week, which would brick itself for reasons unrelated to any attack.
+*Rejected* per-class and per-principal cadence as policy ahead of mechanism. The existing per-category fields are admissible because the root CA, the signers and the TLS principals genuinely rotate by different means.
+
+**ENRL-C0-26. Target bounded exposure, and be precise about what healing is available.**
+A compromised credential is useful for a bounded time because credentials expire. That is a deadline, not healing, and is never described as if it were. Two further statements are kept apart from it and from each other.
+**What post-compromise security actually claims** — healing after a credential leak, against an adversary who does not interfere afterwards — is reachable here, **opportunistically**, and ENRL-C0-28 is the mechanism. What is not reachable is that property against a peer the node has never met, because a certificate handshake carries nothing from any previous one and there is no state to heal; a peer with history is a different case, and the anchor covers the rest.
+**An attacker with continuing presence on the node** is outside that model and outside this design's. No rotation or continuity scheme addresses it: *rotation defends against copies, never against presence.*
+*Because* forward secrecy is often mistaken for this and is the opposite direction — it protects past sessions against future compromise. And an unqualified claim in either direction is worse than none: saying post-compromise security is unreachable would deny what ENRL-C0-28 delivers, while claiming it plainly would promise healing against an adversary who is still there.
+*Accepting* that C0 itself has neither: a re-enrolled node's material is only as fresh as the operator's generator, and an attacker holding old material and observing the courier channel is not excluded by re-enrollment.
+
+**ENRL-C0-27. Replace a credential over the mgmt channel rather than by courier.** *(deferred)*
+C0's only rotation path is re-enrollment. The successor is renewal over the existing mTLS channel: a node authenticates with its current credential and receives the next one. What differs between the candidates is **who produced the material** — the operator by courier, the operator offline with the coordinator relaying, an online issuer, or the node itself — and not how it is delivered, which is the mgmt channel in every case but the first.
+*Because* re-enrollment is the **least secure delivery path this design has**, and it is currently the only rotation path: the mgmt channel is mutually authenticated, integrity-protected and ours, while the courier channel is email, a chat app, or a stick in a pocket. Any rotation riding the mgmt channel is an improvement on the mechanism it replaces.
+*Accepting* the property C0 owes it, which is cheap now and expensive later: **a principal's `identity/principals/<leaf>.crt|.key` must be replaceable on its own**, without touching the artifact set or any other principal's material. Nothing may come to depend on the identity store changing only as a whole.
+*Revisit* with a credential spent at first use — the operator minting two credentials offline, the bundle carrying only the first, and the second **encrypted to the node's current public key** and relayed by the coordinator as opaque bytes, deleted on fetch so a second attempt fails visibly. That composition needs no online signing authority and gives an attacker-first race a detectable outcome. It also states a rule this design was missing: **an artifact needs integrity and authenticity, which a signature gives it; a credential needs confidentiality as well**, because the coordinator sits in the path and is not a party to the exchange.
+
+**ENRL-C0-28. Bound a hot issuer by chaining credentials, not by restricting it.** *(deferred)*
+Nothing automates issuance in C0. When something does, the shape is a hierarchy rather than a choice: the cold CA issues intermediates; a hot central intermediate issues node principals and per-node intermediates; a per-node intermediate issues that node's own leaves. A node-scoped intermediate is free — an attacker who takes the node already holds those keys — and must not cover the node's own principal, or a node renews its own identity forever. What bounds the central one is **continuity**: a new credential's public key is signed by its **predecessor's private key**, and a peer with history requires that link. **A ladder-bound issuer is one that never holds the private key of what it certifies** — which is a property of that tier alone, not of issuers generally: a node-scoped intermediate lives where those keys live, deliberately, and is therefore outside the ladder rather than in violation of it.
+*Because* the issuer never certifies continuity, only the binding of a key to a name — so a hijacked issuer can mint a certificate carrying no continuity proof, which peers who have met that principal reject. The mechanism never classifies issuers; it classifies certificates. **For a pair with history the issuer stops being something that must be trusted and becomes something that must merely be available**, which is how a hot issuer joins the rule the rest of this infrastructure already obeys: *infrastructure failure is availability failure, never authority failure.*
+*Accepting* three things. Continuity is **opportunistic**: a peer with no history falls back to the anchor, so first contact is trust-on-first-use and coverage grows with the age of the rete. The ladder must be **ordered**, with peers rejecting a credential at or behind the position they have seen, or a hijacked issuer replays a genuine older link. And **peers hold the ladder state, never the issuer**, or hijacking it rewrites the history the property rests on. A legitimate discontinuity is announced through the cold mgmt path, so an unannounced one is an alarm — which is the recovery channel whose absence killed public-key pinning on the web.
+*Revisit* with the threat decomposition that scopes it: a leaked node yields an attacker who can **fork** a ladder but not follow it, since they cannot predict a key the node's own generator has yet to produce — so a fork is provable misbehaviour. A hijacked issuer cannot even fork. A node under an attacker's continuing control is defeated by none of this, and no rotation scheme addresses it: **rotation defends against copies, never against presence.**
+*Rejected* restricting what an issuer may sign as the primary bound — "re-issue only" does not help when re-issuing the operator's own identity owns the rete, which is exactly what re-issue is for.
+
+### What must not be foreclosed
+
+**ENRL-C0-29. Let a credential arrive by means other than a bundle.** *(deferred)*
+Nothing may assume the bundle format is the only way a credential reaches a node, and the courier and machine-to-machine forms need not be the same one.
+*Because* a bundle is a file a human handles once and a rotation credential is a payload over mTLS; sharing a format buys code and pays in a dependency between contexts that will diverge.
+*Revisit* with encryption, which is the hardening that works where an expiry did not. The likely shape encrypts only the **secret entries**, leaving the container readable — so the manifest, the trust domain and the anchors' fingerprints can be verified and displayed **before** a recipient is asked for a secret, and a re-enrollment needs no secret at all, the node's existing public key being the recipient key. Deliberately not settled here.
+
+**ENRL-C0-30. Keep the anchor separable and the issuer replaceable.** *(deferred)*
+Exactly one thing is common to a fleet — the **trust anchor** — while credentials are per principal and artifact sets per node. So a two-phase provisioning split moves one field, and `flor install` gaining an optional anchor argument is the whole of its eventual shape. Separately, the rete CA is one implementation of a boundary rather than a permanent fixture: **the identity store is a sink, and nothing may assume what filled it.** No code may require that a certificate came from `retectl`, only that it validates against the anchor and matches its principal.
+*Because* a cloud deployment, a federated anchor, a fleet image and an external issuer are four callers for the same two properties, and both cost nothing today. The structural fit for the last is already present: this design's agent occupies the position SPIRE's agent does — supervising workloads, holding per-scope durable state, delivering their material — so consuming an external issuer means the agent fetching from one instead of from the coordinator, not a new component.
+*Accepting* that a credential may one day be created by a component this project does not ship, which is where an open-core boundary would fall — and that it needs no plugin mechanism, since the extension shape here is a supervised workload: a separate executable, a `run` name, an opaque payload.
+
+**ENRL-C0-31. Name the coordinator, never its address.** *(deferred)*
+`agent.json`'s `sync` block names the coordinator by **principal**, and the dial resolves through the compiler-projected `inbounds` map. Nothing in a bundle or an artifact may carry the coordinator's address as the primary fact.
+*Because* from the milestone where a node joins at a link to *some* node, its position is not known when its material is issued — so the address cannot be written into a credential, and the name can. The eventual answer has two complementary halves: any node relaying, so a joiner needs *a* path rather than *the* address; and delegated introduction, since whoever admits a node is the one party guaranteed to have a working path and can hand over a **verified** one rather than a claimed one.
+
+**ENRL-C0-32. Admit foreign and temporary principals without new artifact semantics.** *(deferred)*
+An `ingress.allow` entry names a full SPIFFE ID, which carries its trust domain, so a **foreign** principal is already expressible — and an entry must never be shortened to a bare local name. A **temporary** grant is a short-lived identity rather than a time-boxed permission.
+*Because* a guest is a member with a short lease while two operators' devices meeting are two trust domains interoperating without either joining, and collapsing them is the mistake to avoid. And a time-boxed ACL entry would need validity windows in the compiled artifact **and** clock agreement between every enforcing pair — a distributed-time problem introduced to express what a credential lifetime already expresses.
+*Accepting* that making an ACL entry time-valued must remain an **additive** payload change, which is the same room a per-principal revocation floor needs, so one field's worth of space serves both.
+*Rejected* nothing here for the service-mesh deployment, which for enrollment is a strict subset of the workspace case — always-connected, unattended, operator-owned nodes — and stresses cadence and issuer choice rather than any part of this page.

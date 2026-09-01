@@ -40,7 +40,7 @@ Optional, out of scope for C1:
 
 #### Mesh Vertex As a Third Principal Kind
 
-C0 has only user and service principals. C1 adds **mesh-vertex** identities — one per node per Florete rete — used for inter-vertex mTLS on mesh links. A node joining multiple retes runs multiple vertex identities. Everything else about the identity model (CA, enrollment bundles, revocation) carries over unchanged.
+C0 has only user and service principals. C1 adds **mesh-vertex** identities — one per node per Florete rete — used for inter-vertex mTLS on mesh links. A node joining multiple retes runs multiple vertex identities. Everything else about the identity model (the root CA and its anchors, enrollment bundles, revocation) carries over unchanged.
 
 ### Link Vertex
 
@@ -87,6 +87,6 @@ In addition to C0's list:
 
 Deferred from [C0](../../c0-tended-tunnels/scope) without a firm C1 decision yet — to be resolved as C1 is scoped:
 
-- **Flow B / CSR-based enrollment.** Should C1 add the principal-generated-keypair path (the principal makes its own keys, sends only CSRs, the operator signs them) so private keys never leave the principal's machine? C0 enrolls via Flow A only; the low-level `flor id create` primitive already exists but isn't wired into onboarding. See [C0 · Enrollment](../../c0-tended-tunnels/mgmt-plane/enrollment#per-node-enrollment) and [C0 · CLI Surface](../../c0-tended-tunnels/mgmt-plane/cli).
+- **Flow B / CSR-based enrollment.** Should C1 add the principal-generated-keypair path (the principal makes its own keys, sends only CSRs, the operator signs them) so private keys never leave the principal's machine? C0 enrolls via Flow A only; Flow B's commands (`retectl id keygen`, `retectl id sign`) are named in the C0 design but not built. See [C0 · Enrollment](../../c0-tended-tunnels/mgmt-plane/enrollment#the-bundle) and [C0 · CLI Surface](../../c0-tended-tunnels/mgmt-plane/cli).
 - **Encrypted bundle & one-time-URL delivery.** Should C1 replace C0's plain out-of-band bundle file with an encrypted, short-lived, personalized-URL delivery? In C0 the bundle is bearer material (it carries private keys in Flow A) handed over any channel the operator trusts; hardening it adds a delivery/hosting mechanism to design.
 - **Hosted landing page.** Should C1 ship a per-rete, zero-backend landing page with platform install one-liners for end users, in place of C0's docs install guide?

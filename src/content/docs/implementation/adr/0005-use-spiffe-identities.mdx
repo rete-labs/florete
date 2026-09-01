@@ -72,7 +72,7 @@ pub fn kind_of(id: &SpiffeId) -> Result<Kind, KindError>;
 pub fn scope_of(id: &SpiffeId) -> Result<Scope, ScopeError>;
 ```
 
-`SpiffeId` stays the canonical name throughout the codebase; `Kind` and `Scope` are computed at points where they matter (e.g. `Ca::sign_csr` deciding the X.509 extension policy, `retectl ca sign` validating `--kind` matches the constructed URI).
+`SpiffeId` stays the canonical name throughout the codebase; `Kind` and `Scope` are computed at points where they matter (e.g. `Ca::sign_csr` deciding the X.509 extension policy, and the issuing commands validating that `--kind` matches the constructed URI).
 
 `Scope::Node` carries a bare `String` — the node-name segment from the SPIFFE path, not a derived `SpiffeId` for the `node/<name>` principal. The string is already validated as a SPIFFE path component (the `spiffe` crate enforced charset/syntax when parsing the parent SPIFFE ID). Synthesizing the host-node SPIFFE ID is a higher-layer concern (ACL, artifact validation) — `Scope` carries what the path *encodes*, not what it *refers to*.
 
@@ -95,11 +95,13 @@ This shape mirrors the operational reality (each port is one principal's port), 
 
 **Envelope-verification trust storage remains separate.** When envelope verification (mgmt, ctrl) lands, it introduces its own trust storage type — not a sibling of any transport struct, because the verifier flows are distinct (`webpki::verify_for_usage` against the CA chain for mTLS; ed25519 against a kind-or-pinned signer pubkey for envelopes). The CA happens to be the issuer for both mTLS leaves and envelope-signer certs, but the runtime types those certs feed into are distinct.
 
-### Single CA, no intermediate, in C0/C1
+### Single root CA, no intermediate, in C0/C1
 
 A `Ca` value represents a self-signed rete root. All six kinds are issued through the same `Ca::sign_csr(csr_pem, &SpiffeId, Kind, validity)` path — the `Kind` argument selects the X.509 extension policy. Control-plane and management-plane signing identities are *regular principals under the CA* (with restricted X.509 extensions), not intermediate CAs.
 
-The C0 design includes mgmt-envelope verification (operator-signed via `management-plane/<name>`); C1 adds ctrl envelopes. Existing florete docs settle on pinning for both: the operator pubkey is delivered with `ca.crt` at enrollment, and CP pubkeys are listed dynamically in mgmt's `authorized_control_planes`. Whether to revisit that to kind-based-with-CA-chain is a design call worth making when envelope-verification code is actually being written, with HPKP-style lockout, multi-signer support, and revocation cadence as the live tradeoffs. **This ADR doesn't re-decide the verification scheme.** It does, however, settle the cert shapes those signers need (`Kind::ManagementPlane`, `Kind::ControlPlane`, sign-only ext policy) so the issuance path supports them today.
+The C0 design includes mgmt-envelope verification (operator-signed via `management-plane/<name>`); C1 adds ctrl envelopes. The florete docs at the time settled on pinning for both, and whether to revisit that to kind-based-with-CA-chain was left as a design call for when envelope-verification code was actually being written, with HPKP-style lockout, multi-signer support and revocation cadence as the live tradeoffs. **This ADR doesn't decide the verification scheme.**
+
+*It was decided later, in [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca), and it went kind-based-with-CA-chain: a signer's certificate travels inside the `signature` of what it signed and is validated against the node's trust anchors. **Nothing is pinned.** HPKP-style lockout is precisely the failure that ruled pinning out — a node absent across a rotation could never accept the successor. The one list that survives is `authorized_ctrl_signers`, and it is not a pinning mechanism: it holds **SPIFFE identities**, not keys, so it narrows *who* may sign ctrl without constraining *which certificate* they use — an ACL rather than a pin. It lives in `agent.json`, a mgmt artifact, because a plane may constrain the plane below it and never itself.* It does, however, settle the cert shapes those signers need (`Kind::ManagementPlane`, `Kind::ControlPlane`, sign-only ext policy) so the issuance path supports them today.
 
 This ADR's runtime scope is mTLS — the cert chain authorities (the rete `X509Bundle`, shared via DI) and local workload SVIDs (owned by each inbound/outbound consumer). Envelope verification implementation lands in a follow-up alongside mgmt/ctrl artifact loading.
 
@@ -159,7 +161,7 @@ The C1 milestone introduces `Kind::Vertex` for mesh-vertices. (The `vertex/` *na
 
 - the cost of an unused variant is nil,
 - post-hoc additions force `kind_of` and CLI `--kind` parsers to grow, and `match` arms in `Ca::sign_csr` to gain a new branch — touching every call site,
-- `retectl ca sign --kind control-plane` should work in C0 even though no envelope signing happens yet, because the CLI is the user-visible contract and adding a flag value later is more disruptive than starting wide.
+- Issuing a `control-plane` kind should be expressible in C0 even though no envelope signing happens yet, because the kind vocabulary is the user-visible contract and adding a value later is more disruptive than starting wide. *(Amended with C0 enrollment: the six kinds remain part of the identity model, but C0's CLI exposes a narrower slice — `retectl id issue` takes the signing kinds, and TLS-principal certs are issued inside `retectl issue-bundle` rather than one at a time. A CSR-consuming sign command belongs to the deferred Flow B.)*
 
 ### Why singular everywhere
 
@@ -193,7 +195,7 @@ and the deps are `pkcs8`, `x509-parser`, `zeroize` — all pure-Rust, lightweigh
 
 The in-tree parser remains a documented fallback if `spiffe` regresses or its API becomes inconvenient, but it's not the plan.
 
-### Why one CA, no intermediate, in C0/C1
+### Why one root CA, no intermediate, in C0/C1
 
 C0/C1 enrolls dozens of nodes/principals on a quarterly-or-slower cert-rotation cadence — well within manual operator capacity. Introducing an intermediate CA in C0 would cost:
 
@@ -210,7 +212,7 @@ This was a real design question worth articulating because the surface answer ("
 A CA issues *certificates* — bindings of an identity to a public key, structured as X.509 with an issuer signature. A signing authority signs *artifacts* — JSON envelopes with an `ed25519` payload. The verifier flows are different:
 
 - mTLS: build the leaf-to-root chain, run webpki's `verify_for_usage`, look at the leaf's URI SAN.
-- Envelope verify: take the artifact's signature `key_id` (a SPIFFE URI), use it to obtain the signer's pubkey under whichever trust scheme the envelope-verification follow-up settles on (kind-based with CA chain, pinning, or hybrid), verify ed25519.
+- Envelope verify: take the certificate carried in the artifact's `signature`, validate it against the node's trust anchors, read the SPIFFE URI from its SAN, check the kind matches the artifact's plane (`management-plane` for mgmt, `control-plane` for ctrl), and — **for ctrl only** — check that identity appears in `agent.json`'s `trust.authorized_ctrl_signers`; then verify ed25519. ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) settled the scheme this line left open.)
 
 The cert chain isn't even consulted at envelope-verify time. So the control-plane and mgmt-plane principals don't *need* to be CAs — they just need cert-borne identity for issuance audit (the operator signed the CP's cert at some point), which a regular leaf cert provides perfectly. Modeling them as CAs would have given them a power they don't need (issuing further certs) and shaped Rust code around a chain they don't participate in.
 
