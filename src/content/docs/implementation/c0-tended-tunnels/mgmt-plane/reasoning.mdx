@@ -17,7 +17,7 @@ An earlier draft also had **nodes pulling directly from git** (via an embedded g
 
 Replacement: nodes fetch compiled artifacts from a **Florete-protected coordinator** run on a management node — same mTLS auth path as every other service, same SPIFFE identity model, no new credential kind. See [Why a coordinator, not direct git pull by nodes](#why-a-coordinator-not-direct-git-pull-by-nodes) below for the detail.
 
-The git repo stays — as the operator's *authoring* workspace and shipment audit log. It holds YAML and the committed compiled tree — no certificate and no key; its commit history is C0's enrollment/revocation audit trail. Nodes never see it. (C1 adds a dedicated append-only `enrollment.log`; see [C1 Scope](/docs/implementation/c1-manual-mesh/scope).)
+The git repo stays — as the operator's *authoring* workspace and shipment audit log. It holds YAML and the committed compiled tree — no certificate and no key; its commit history is C0's revocation audit trail — it records a principal's declaration and removal, never an issuance. Nodes never see it. (C1 adds a dedicated append-only `enrollment.log`; see [C1 Scope](/docs/implementation/c1-manual-mesh/scope).)
 
 Alternatives considered and rejected for the authoring workspace:
 

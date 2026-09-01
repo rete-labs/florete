@@ -87,7 +87,7 @@ If an operator wants to record a snapshot of ctrl state for audit (e.g., "what f
 The same `retectl compile` invocation that produces mgmt artifacts also produces ctrl artifacts in C1. There's no separate command — they're emitted from the same source-of-truth YAMLs in one pass:
 
 ```
-retectl compile --repo my-rete/
+cd my-rete/ && retectl compile
 # emits, for each node — e.g. alpha:
 #   .flor/compiled/alpha/mgmt/agent.json
 #   .flor/compiled/alpha/mgmt/public.json
@@ -110,7 +110,7 @@ The label allocator is a ctrl-plane concern in B1+. In C1 it runs at compile tim
 
 - Per-link counter; for each path, walk hop-by-hop and assign the next unused labels for forward and backward directions.
 - The full label map for the rete is implicit — each node's ctrl artifact carries only its local slice (forwarding rows where this node is the transit, label bindings where this node hosts the initiator or target).
-- `retectl compile --repo X` produces identical output on any machine given identical inputs (same deterministic walk order as the rest of compile).
+- `retectl compile` produces identical output from one repository on any machine given identical inputs (same deterministic walk order as the rest of compile).
 
 In B1+ the allocator runs continuously inside the CP and re-runs whenever active paths change. The wire format is the same; only the producer changes.
 
@@ -123,7 +123,7 @@ Verification is split by the [layering rule](../../c0-tended-tunnels/mgmt-plane/
 **Agent (authenticity):**
 
 1. **Fetch mgmt** for this node from `/artifact/mgmt/<node>`.
-2. **Verify mgmt signature** against the agent's trusted mgmt-signer set — pinned at enrollment, carried in `agent.json`'s `trust` block, and rotated by the vouched-successor rule (see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)).
+2. **Verify mgmt signature**: validate the certificate carried in the envelope against the node's trust anchors, then verify the signature. There is no mgmt-signer list to consult — the anchors are mgmt's only ACL, and they arrive out of band at enrollment (see [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 3. **Fetch ctrl** for this node from `/artifact/ctrl/<node>`.
 4. **Verify ctrl signature**: validate the certificate carried in the envelope against the node's trust anchors, then check that the identity it certifies appears in `agent.json`'s `trust.authorized_ctrl_signers`, then verify the signature. Reject if the certificate does not chain to an anchor, if its identity is not authorized, or if no authorized CP is listed at all.
 5. **Stage and restart** — stage verified mgmt as an immutable set and flip `mgmt/current`; land verified ctrl as a per-artifact slot (`ctrl/<name>@v<K>.json`); restart the mesh vertex with both as explicit context ([Agent § Node layout](../../c0-tended-tunnels/mgmt-plane/agent#node-layout), [§ Sync](../../c0-tended-tunnels/mgmt-plane/agent#sync)).
@@ -216,7 +216,7 @@ From B1+, delivery becomes a direct Coordinator→agent mTLS channel, which coul
 - **Authority ≠ channel, with separable lifecycles.** `service/coordinator` (serving identity) and `control-plane/<name>` (decision authority) have different blast radii and rotation cadences — the identity-separation argument above. That both keys sit hot in one process today is a *deployment choice, not a trust-model fact*; the signature is what lets that choice be revisited later (an HSM-backed signer, a split signer service, quorum CPs) without redesign. Collapsing authority into the channel would close that door.
 - **Clean revocation and attribution.** Operator removes a CP's identity from `authorized_ctrl_signers` → agents stop accepting that CP's ctrl artifacts — no code change, no data flush, no re-keying of the serving endpoint; the same revocation pattern as identity revocation (remove from mgmt, propagate on next sync). And every artifact — including a snapshot captured for incident review — carries proof of *which* CP decided, evidence a TLS session never leaves behind; multi-CP coexistence (regional, A/B, quorum) depends on exactly this per-CP attribution.
 
-The cost is ~zero — one signature verification per fetched ctrl, against a key the agent already pinned via mgmt. The security benefit is real even when the signing key is hot in B1+: forging ctrl still requires either the CP key itself or operator-policy authorization, both of which the bounded-autonomy model already accounts for.
+The cost is ~zero — one signature verification per fetched ctrl, against an identity mgmt already authorized. The security benefit is real even when the signing key is hot in B1+: forging ctrl still requires either the CP key itself or operator-policy authorization, both of which the bounded-autonomy model already accounts for.
 
 ### Why ctrl artifacts don't go in git, even in C1 where they're deterministic
 

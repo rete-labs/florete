@@ -93,7 +93,7 @@ The trust material splits naturally along ownership lines:
 
 This shape mirrors the operational reality (each port is one principal's port), keeps wiring simple (no name-keyed lookup in a shared blob), and enables dynamic add/remove of inbounds/outbounds without rewiring shared state — important once we move past static C0 configuration.
 
-**Envelope-verification trust storage remains separate.** When envelope verification (mgmt, ctrl) lands, it introduces its own trust storage type — not a sibling of any transport struct, because the verifier flows are distinct (`webpki::verify_for_usage` against the CA chain for mTLS; ed25519 against a kind-or-pinned signer pubkey for envelopes). The CA happens to be the issuer for both mTLS leaves and envelope-signer certs, but the runtime types those certs feed into are distinct.
+**Envelope-verification trust storage remains separate.** When envelope verification (mgmt, ctrl) lands, it introduces its own trust storage type — not a sibling of any transport struct, because the verifier flows are distinct (`webpki::verify_for_usage` against the CA chain for mTLS; for envelopes, validating the certificate the envelope carries against the node's trust anchors and then checking ed25519 — see [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)). The CA happens to be the issuer for both mTLS leaves and envelope-signer certs, but the runtime types those certs feed into are distinct.
 
 ### Single root CA, no intermediate, in C0/C1
 
@@ -246,7 +246,7 @@ Because envelope-layer checks aren't the only attack surface. If a `ControlPlane
 ### Trade-offs
 
 - The published florete docs use plural URI segments and `--kind` flag values; they need an update as part of C0 implementation. (Side-deliverable.)
-- The `operator:<fingerprint>` `key_id` form referenced in [mgmt-plane.mdx](/docs/implementation/c1-manual-mesh/mgmt-plane) needs to be revised to a SPIFFE URI matching the new `Kind::ManagementPlane`. (Side-deliverable.)
+- The `operator:<fingerprint>` `key_id` form referenced in [mgmt-plane.mdx](/docs/implementation/c1-manual-mesh/mgmt-plane) needs revising. (Side-deliverable.) *Done, and it did not land as a SPIFFE URI: [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) removed `key_id` altogether in favour of the signer's certificate, which carries the SPIFFE ID in its SAN.*
 - Six `Kind` variants exist before three of them are exercised — small dead surface in C0.
 - If non-SPIFFE identity classes (DNS for ingress GW, `.onion`) eventually arrive *and* turn out to share verifier code with the SPIFFE rete, we will refactor at that point. We accept the refactor cost as the price of not abstracting prematurely.
 
