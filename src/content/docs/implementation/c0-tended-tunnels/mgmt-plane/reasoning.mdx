@@ -17,7 +17,7 @@ An earlier draft also had **nodes pulling directly from git** (via an embedded g
 
 Replacement: nodes fetch compiled artifacts from a **Florete-protected coordinator** run on a management node — same mTLS auth path as every other service, same SPIFFE identity model, no new credential kind. See [Why a coordinator, not direct git pull by nodes](#why-a-coordinator-not-direct-git-pull-by-nodes) below for the detail.
 
-The git repo stays — as the operator's *authoring* workspace and shipment audit log. It holds YAML, `ca.crt`, and the committed compiled tree; its commit history is C0's enrollment/revocation audit trail. Nodes never see it. (C1 adds a dedicated append-only `enrollment.log`; see [C1 Scope](/docs/implementation/c1-manual-mesh/scope).)
+The git repo stays — as the operator's *authoring* workspace and shipment audit log. It holds YAML and the committed compiled tree — no certificate and no key; its commit history is C0's enrollment/revocation audit trail. Nodes never see it. (C1 adds a dedicated append-only `enrollment.log`; see [C1 Scope](/docs/implementation/c1-manual-mesh/scope).)
 
 Alternatives considered and rejected for the authoring workspace:
 
@@ -66,12 +66,12 @@ CA private key stays on operator hardware (password-protected file or YubiKey PI
 
 ## Why only the CA cert lives in the repo (not individual signed certs)
 
-Signed identity certs are **public material** (public key + name + CA signature; nothing secret) — but they aren't *semantically required* in the rete repo. Each principal holds its own cert locally and presents it at mTLS handshake; verifiers only need `ca.crt` and the expected identity name.
+Signed identity certs are **public material** (public key + name + CA signature; nothing secret) — but they aren't *semantically required* in the rete repo. Each principal holds its own cert locally and presents it at mTLS handshake; verifiers only need the rete's trust anchors and the expected identity name.
 
 Options considered:
 
 - **Commit all certs to `identities/*.crt`** — operational convenience (one delivery channel), but redundant with the holder's local copy, clutters diffs, and creates confusion when certs expire.
-- **CA cert in repo + certs delivered via enrollment bundle** — clean separation. Repo holds only what's needed for compile and audit.
+- **No certificate in the repo; anchors and certs delivered via the enrollment bundle** — clean separation. The repo holds YAML source and the compiled tree, which is what compile and audit need; every certificate lives in `retectl`'s tree or on the node.
 
 Enrollment-event audit is preserved without committing certs: in C0 each sign action is a git commit that adds the principal (operator, principal, role, and timestamp in the commit metadata, plus the diff). C1 adds a dedicated append-only `enrollment.log` (sign/revoke record with cert fingerprints) — a strictly better audit than cert-in-repo, because it records the *decision* rather than just the resulting artifact.
 
@@ -140,7 +140,7 @@ An earlier design had users opening PRs with their CSRs. That failed real-pilot 
 - Giving users write access (even scoped) to the rete repo inverts the trust model — they could tamper with state beyond their own enrollment.
 - Per-user install tokens with write access effectively become signed URLs, so the git-ness adds no value over plain HTTPS delivery.
 
-Replacement: **operator issues a bundle per node** (covering the node's identity and every workload it hosts); delivery is out-of-band (Telegram, email, any channel); user runs `flor enroll`. Bundle contains the signed certs, CA cert, coordinator URL, and expected coordinator SPIFFE ID — no git credential, no deploy key.
+Replacement: **operator issues a bundle per node** (covering the node's identity and every workload it hosts); delivery is out-of-band (Telegram, email, any channel); user runs `flor enroll`. The bundle contains the signed certs, the trust anchors and the node's initial artifact set — no coordinator URL (the artifact set already names the coordinator), no git credential, no deploy key.
 
 This is how WireGuard / OpenVPN enterprise deployments work. Users never see git; operator is the only writer. The model also accommodates a Flow B for security-conscious users (principal generates keypairs, sends CSRs out-of-band, operator returns signed certs) that preserves key-hygiene — though C0 ships Flow A only; Flow B is deferred (an open question for [C1](/docs/implementation/c1-manual-mesh/scope)), see [CLI Surface](../cli).
 
@@ -194,7 +194,7 @@ The practical consequence: treat the compiled-artifact JSON Schema as public API
 
 ## Why signed mgmt artifacts and policy-bounded autonomy
 
-The rete's coordination point — coordinator today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the rete. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware with a dedicated `management-plane/<name>` signing principal (a sign-only identity issued separately from any user, distinct from the operator's `user/<op>` TLS principal — see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities)); agents verify locally against the corresponding public cert, delivered with `ca.crt` at enrollment. The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
+The rete's coordination point — coordinator today, a managed cloud service in B1+ — is the obvious blast-radius target. If it's compromised and it can mint or modify access state, an attacker who hijacks it owns the rete. The defense is to keep the signing key off the coordination point entirely: the operator signs every mgmt artifact on their own hardware with a dedicated `management-plane/<name>` signing principal (a sign-only identity issued separately from any user, distinct from the operator's `user/<op>` TLS principal — see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities)); agents verify locally against the certificate the artifact itself carries, validated against the trust anchors delivered at enrollment. The coordination point only stores and serves. It cannot grant access, change topology, or replace identities — only refuse to serve.
 
 This is the same posture as TUF / Sigstore / Tailscale's Tailnet Lock: sensitive state has a signed root of authority that lives outside the distribution path. We adopt it from C0 — even though C0 has no cloud component yet — because (a) verification logic is cheap to write once and grows with the system, (b) the operational story we sell to security-conscious buyers in B1+ ("you don't need to trust our cloud") is only credible if the property held from day one, and (c) retrofitting signature-checking into a deployed agent base is far harder than shipping it now.
 
@@ -263,7 +263,7 @@ So the rule for B1+ authoring UX:
 
 What we should *not* build: "sign with browser extension," "sign with cloud-stored key," or "delegate signing to a cloud agent." Those failure modes have a long, embarrassing history.
 
-What we do **now** in C0/C1: nothing UI-related (`retectl` is the only authoring surface anyway). One choice we lock in that keeps every UI option open later: **canonical-form-based signing** — the signature covers a deterministic serialization of the envelope, and the envelope carries a `key_id` so any UI surface can independently re-derive and re-display "what is being signed." That property alone keeps cloud-UI, local-GUI, mobile, hardware-token, and quorum-co-signing flows reachable without re-cutting the artifact format.
+What we do **now** in C0/C1: nothing UI-related (`retectl` is the only authoring surface anyway). One choice we lock in that keeps every UI option open later: **canonical-form-based signing** — the signature covers a deterministic serialization of the envelope, and the envelope carries the signer's certificate so any UI surface can independently re-derive and re-display "what is being signed" and by whom. That property alone keeps cloud-UI, local-GUI, mobile, hardware-token, and quorum-co-signing flows reachable without re-cutting the artifact format.
 
 ## Why SPIFFE IDs (not a bespoke `flor://` scheme)
 

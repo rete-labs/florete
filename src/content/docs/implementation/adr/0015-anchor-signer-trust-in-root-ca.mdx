@@ -1,0 +1,78 @@
+---
+title: "0015: Anchor Signer Trust in the Root CA"
+---
+
+## Status
+
+Accepted
+
+Obsoletes [ADR-0011: Bootstrap and Rotate Signer Trust](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust). Supersedes the trust-block section of [ADR-0010: Compiled Artifact Object Model](/docs/implementation/adr/0010-compiled-artifact-object-model); the rest of that record stands. Uses the signing-identity kinds of [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) and the envelope of [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract) unchanged. Arose from the C0 [Enrollment](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment) design.
+
+## Context
+
+ADR-0011 made artifact-signer trust a **pinned set carried in configuration**. A node received an initial `authorized_mgmt_signers` snapshot at enrollment, persisted it, and thereafter verified `agent.json` against the persisted set — adopting an updated list only when the artifact carrying it was signed by a key already in that set. A key was always introduced by an already-trusted key; nothing bootstrapped itself.
+
+That model is coherent and has two defects that only appear together with decisions taken elsewhere.
+
+**The chain has no anchor, so a leaked signer key is unrecoverable.** The set held bare public keys, and the validator's requirement that a signer's certificate be CA-signed runs on the operator's machine and reaches no node. So an attacker holding the current signer's private key can publish a set naming their own key and retiring the operator's; the operator's offline root CA cannot overrule it, because a successor is admitted by the chain and the attacker owns the chain. One leaked key becomes permanent loss of the management plane, recoverable only by physically re-enrolling every node.
+
+**The chain requires seeing every step, and the coordinator serves only the latest tree.** A node absent across a rotation returns to an artifact signed by a signer it has never heard of, rejects it against its pinned set, and can never advance — nothing older is fetchable. An overlap window does not fix this; it only sets a deadline, and the deadline is bounded below by the longest period a node may be unable to reach the coordinator. For a device out of contact for a week, an overlap of days is a trap.
+
+Neither defect is in ADR-0011 alone. Latest-only publication and chain-of-custody trust are each sound; their conjunction makes absence fatal.
+
+## Decision
+
+**A signer's certificate travels with what it signed, and is validated against the trust anchors the verifier already holds.**
+
+- **The envelope carries the signer's certificate.** `signature` becomes `{ alg, cert, value }`. `key_id` is removed: the certificate carries the SPIFFE ID in its SAN, and a second copy would be a second source for one fact.
+- **Verification is: extract the certificate, validate it against the anchors, check the signature.** In that order, and nothing else is consulted.
+- **`authorized_mgmt_signers` is removed.** No artifact carries a mgmt-signer set and no node persists one.
+- **`authorized_ctrl_signers` stays, and becomes a list of SPIFFE IDs rather than of keys.** A ctrl artifact is accepted when its carried certificate validates against the anchors **and** the identity that certificate names is on the list. Rotating a ctrl key touches nothing; **revoking a ctrl signer is the list edit**.
+- **A bundle's manifest carries its signature in the same shape**, a `signature` block over the canonical manifest minus itself — the routine an envelope uses, applied to a different document. There is no detached signature file: the signer's certificate lives in the manifest, so a verifier must parse before it can verify either way, and the advantage a detached form would have had disappears with it.
+- **The trust anchors are the node's `identity/anchors.pem`**, delivered at enrollment, one file holding one or more concatenated PEM certificates so that old and new anchors can be trusted together through an anchor rotation.
+- **Rotation of a signer is: mint a fresh certificate from the root CA, replace the operator's pair, sign with it.** There is no add-switch-retire sequence, no overlap window and no list edit. A node accepts the successor on the anchor's word.
+- **The agent still persists version high-water-marks.** Replay defence is unchanged and independent of signer trust.
+- **Enrollment remains the out-of-band trust anchor.** A bundle's integrity is an assumption the protocol does not provide, as for every PKI's root delivery. What a bundle now establishes is the *anchors*, not a signer set.
+- **A re-enrollment is verified**: the bundle's manifest carries its signer's certificate, validated against the anchors the node already holds. A first enrollment verifies no signature, having nothing to verify against, and says so.
+
+## Rationale
+
+**This is the standard flow.** CMS `SignedData`, JWS `x5c` and every code-signing scheme carry the signer's certificate with the signed message and validate it to a trust anchor. ADR-0011 built a bespoke pinning layer above that flow; both of its defects are costs of the layer rather than of the problem.
+
+**Self-carriage is not the circularity ADR-0011 forbade.** That prohibition was against an artifact **authorising** its own signer. Here an artifact merely **presents** one, and the authority to accept it is external and predates the artifact — the anchors arrived at enrollment. The distinction is the whole of why this is safe.
+
+**Once the anchor is the root CA, the pinned set has almost no work left.** It could restrict which CA-vouched signers may sign, and it could retire one. The first is a no-op while a rete has one signer, and the kind already separates `management-plane` from `control-plane`. The second reaches only nodes that have already received the list carrying the retirement — so as a revocation mechanism it protects exactly the nodes that did not need protecting, while the node you could not reach is the one it fails.
+
+**Both defects close, and the absence case closes without a mechanism.** An attacker with a signer key can sign artifacts and cannot mint a signer; the operator mints from the cold root, signs with it, and every node accepts — including nodes that were switched off, because acceptance rests on an anchor rather than on a list an absent node never received.
+
+**A signing certificate cannot introduce a successor**, which is what makes the root the only admitting authority. The `management-plane` and `control-plane` kinds carry `keyUsage: digitalSignature` with no `extKeyUsage` and no CA basic constraints, so a signing key cannot issue a certificate without becoming an intermediate — and an intermediate able to mint its own successor would reintroduce exactly the lockout above.
+
+**A plane may constrain the plane below it, never itself.** That is the general form of the asymmetry, and it is why one list survives.
+
+**The two planes are not symmetric.** A mgmt list gated its own delivery channel: the artifact carrying the update was itself verified against the list being updated, which is what made a node's absence fatal. The ctrl list has no such self-reference — it is delivered by **mgmt**, which is anchored independently, so a node absent across a ctrl rotation returns, verifies the current mgmt set against the anchors, and receives the new list in the ordinary way. Nothing deadlocks.
+
+And mgmt is not therefore unconstrained: **the trust anchors are its ACL**, arriving out of band at enrollment and delivered by no plane at all. The hierarchy is anchors → mgmt → ctrl, each level bounded by the one above it and none by itself.
+
+The second asymmetry is who holds the key. A mgmt signer's key sits beside the root key on the operator's own machine, so signer-only compromise is largely hypothetical and revocation earns little. A **ctrl signer is a running service** — hot by design, and hosted rather than held from B1 onward — so its compromise is exactly the realistic case, and an authority delegated by mgmt is precisely how the operator withdraws it without touching the root. The list is doing real work there and none here.
+
+**Alternatives considered.**
+
+- *Keep the pinned set and require an overlap window sized against the worst expected absence.* Rejected: the window is unbounded in the deployments that most need it, and the failure is a bricked node needing an operator visit.
+- *Keep the set but let a CA-vouched signer verify even when absent from it, making the set a retirement list.* Rejected as an intermediate step that keeps a field earning nothing: with acceptance already resting on the anchor, the residual list is a revocation mechanism, and revocation is deferred milestone-wide.
+- *Have the outgoing signer sign the incoming certificate.* Rejected: it makes the signer an intermediate, per the kind policy above.
+- *Keep an empty trust block reserved for a future narrowing ACL over **mgmt** signers.* Rejected: neither C0 nor C1 has a second mgmt signer, so its shape would be guesswork carried by every artifact. Reserve a property, not a field. The ctrl list is not this: it exists, has a caller, and is delegated rather than self-anchored.
+- *Remove the ctrl list too, for symmetry.* Rejected on both asymmetries above; symmetry between a self-anchored authority and a delegated one is not a property worth buying.
+
+## Consequences
+
+**A leaked mgmt-signer key cannot be blocked.** It signs valid artifacts until its certificate expires. This is accepted for C0 on two grounds: revocation lists are already deferred milestone-wide, so no new gap is introduced; and the root key and the signer key live in the same directory on the operator's machine, so a leak reaching one has reached the other, and a leaked root is unrecoverable by construction. **Revisit when the two stop sharing a location** — an intermediate, a CA service, or a hardware-held root — because that is when signer-only compromise becomes a real scenario and a revocation mechanism starts earning its cost.
+
+**Every artifact grows by a certificate.** A few hundred bytes per envelope, against a handful of artifacts per node. What it buys is that an envelope is verifiable **alone** — which the agent needs, since it verifies each artifact independently; which the coordinator needs, since it re-serves each byte-for-byte; and which ctrl artifacts need structurally, being independent streams with no set root to hang a certificate from.
+
+**The trust anchor becomes plural and its rotation becomes expressible.** `identity/anchors.pem` holds a set. A first anchor arrives only by enrollment. A successor may ride the mgmt plane when cross-signed by an anchor already in the set; where the outgoing anchor can vouch for nothing, re-enrollment is the channel. The recursion stops there: nothing anchors the root CA, and an attacker holding its key already mints any principal at will. That remains the irreducible root ADR-0011 named, and this record does not move it.
+
+**Vocabulary.** A **root CA** is an issuing authority; a **trust anchor** is what a verifier validates against. They usually coincide and are not the same thing — a deployment can anchor on an intermediate, and an intermediate is a CA that is not an anchor. This record uses both and never a bare "CA".
+
+**Ctrl revocation improves rather than survives.** Listing identities rather than keys means a ctrl signer's certificate can be replaced without an artifact changing anywhere, while removing its authority stays a single mgmt-signed edit — so rotation and revocation stop being the same operation, which they were when the list held keys.
+
+**What is unchanged.** The envelope's other fields, its `schema_version` gating, version monotonicity and the agent's high-water-marks, the signing-identity kinds and their X.509 extension policy, the delegation of ctrl authority by mgmt, and the rule that the agent is the sole verifier.

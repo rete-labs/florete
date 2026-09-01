@@ -4,7 +4,9 @@ title: "0011: Bootstrap and Rotate Signer Trust"
 
 ## Status
 
-Accepted
+Obsoleted by [ADR-0015: Anchor Signer Trust in the Root CA](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)
+
+The pinned-set model recorded here has two defects that appear only in combination with decisions taken elsewhere: the chain has no anchor, so a leaked signer key is unrecoverable; and it requires seeing every rotation step, which a node absent across one never does, because the coordinator serves only the latest tree. ADR-0015 replaces it with the standard flow — the signer's certificate travels with what it signed and is validated against the node's trust anchors. What survives unchanged: enrollment as the out-of-band trust anchor, version monotonicity and the high-water-marks, and the agent as sole verifier.
 
 Makes precise the artifact-signing trust model gestured at in the C0 [Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) (`authorized_mgmt_signers`, the enrollment bundle) and the C1 [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane) (`authorized_ctrl_signers`, agent-side verification). Uses the `management-plane` / `control-plane` signing-identity kinds of [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities). The signer-set *placement* (a `trust` block in `agent.json`) is fixed in [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model); this record owns its *semantics*.
 

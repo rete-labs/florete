@@ -37,7 +37,7 @@ This is also why publication should always go through mesh-flor in the standard 
 - **`links.yaml`** — declares allowed UDP peerings between mesh-vertices (a topology bound).
 - **`paths.yaml`** — declares allowed multi-hop routes at the mesh layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
 - **Three mgmt artifacts per node** — one `agent.json` plus `<name>.json` per vertex, flat under `<node>/mgmt/`. Standard topology produces `public.json` (link-vertex) and `rete.json` (mesh-vertex). Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/rete.json` (see [Ctrl Plane](../ctrl-plane/)).
-- **`authorized_ctrl_signers`** in `agent.json`'s `trust` block — the agent carries one or more authorized CP signing pubkeys (alongside the mgmt signers) and accepts ctrl artifacts only if signed by one of these. In C1 there's a single CP key, operator-held.
+- **`authorized_ctrl_signers`** in `agent.json`'s `trust` block — a list of **SPIFFE IDs** the agent will accept ctrl artifacts from. It narrows what the trust anchors already permit: a ctrl envelope carries its signer's certificate, that certificate must validate against the node's anchors, *and* the identity it certifies must appear in this list. In C1 there is a single CP identity, operator-held. Unlike mgmt, this list is **delegated by mgmt** rather than self-anchored, which is why it survives (see [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 - **Per-vertex FlorIO sockets** — each vertex that exposes FlorIO serves a socket at `<runtime-root>/vertices/<vertex-name>.sock`. The path is derived **at runtime** from the spawn-injected runtime root plus the vertex name — never compiled into artifacts, which carry no filesystem references (see [C0's Agent page](../../c0-tended-tunnels/mgmt-plane/agent#artifact-handling)); a FlorIO adapter references the serving link-vertex by *name*.
 - **Additional validator rules** — link validity, address feasibility, multi-hop path validity, principal-role coherence for services that appear as path initiators. (Label feasibility moves to ctrl-plane.)
 
@@ -76,7 +76,7 @@ rete:
   name: rete-lovers                 # same as C0
 
   ca:
-    cert: certs/ca.crt              # same as C0
+    validity_days: 3650             # same as C0
     # validity_days — default applies
 
   signers:
@@ -92,7 +92,7 @@ rete:
     # validity_days — default applies
 ```
 
-The compiler embeds the listed ctrl-signer pubkeys into `agent.json`'s `trust.authorized_ctrl_signers`, alongside the mgmt signers (see [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for placement). Agents accept ctrl artifacts only if signed by one of these keys. Rotating a ctrl signer is *simpler* than mgmt rotation: the operator publishes an updated `agent.json` — signed with the **mgmt** key — that lists the new ctrl pubkey. There's no vouched-successor chain, because ctrl authority is **delegated by mgmt**, not self-anchored; a compromised CP cannot rotate its own signers (see [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust)).
+The compiler embeds the listed ctrl-signer **identities** into `agent.json`'s `trust.authorized_ctrl_signers` (see [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for placement). An agent accepts a ctrl artifact when its carried certificate validates against the node's anchors and the identity that certificate names is on this list. **Rotating a ctrl key touches nothing**: the operator mints a fresh `control-plane/primary` certificate and the CP signs with it, exactly as mgmt rotation works. **Revoking a ctrl signer is the list edit** — the operator publishes an updated `agent.json`, signed with the **mgmt** key, without that identity. There is no vouched-successor chain and no self-reference: ctrl authority is **delegated by mgmt**, so a compromised CP can neither rotate nor retain its own authorisation ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 
 ### nodes.yaml (additions over C0)
 
@@ -281,7 +281,7 @@ flor-vertex                                 # vertex daemon; spawned by the agen
 
 `flor agent run` keeps its C0 behaviour and CLI shape (`[--rete <scope>]`, reading `agent.json` from the active artifact set); it just supervises N vertex instances rather than one, spawning each entry's `run` argv with the uniform `FLORWL_*` environment (see [C0's Agent page](../../c0-tended-tunnels/mgmt-plane/agent#supervision-contract)) in inventory list order. Launch mechanics are as pinned in [C0's Agent page](../../c0-tended-tunnels/mgmt-plane/agent#supervision-mechanics): the agent forks and supervises directly; per-workload launch runtimes are a reserved evolution.
 
-`retectl ca sign` adds `vertices` to its `--kind` enumeration (already foreshadowed in C0). The vertex's SPIFFE name is derived from `<node>/<vertex-name>`.
+Vertex certificates are issued as part of `retectl issue-bundle`, which packs every TLS principal a node hosts; the `vertex` kind was already foreshadowed in C0. The vertex's SPIFFE name is derived from `<node>/<vertex-name>`.
 
 ## Additional validator rules
 
@@ -317,7 +317,7 @@ This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelo
   "name": "agent",          // the consuming workload's name; "agent" reserved for the supervisor
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": { ... },
-  "signature": { "alg": "ed25519", "key_id": "spiffe://rete-lovers/management-plane/primary", "value": "<base64>" }
+  "signature": { "alg": "ed25519", "cert": "<base64-der-x509>", "value": "<base64>" }
 }
 ```
 
@@ -475,7 +475,7 @@ In C1 the only rule type is `list`; the rule body lists links explicitly under `
 
 Forwarding labels and the `forwarding_table` itself are **not in this artifact** — they're CP-shaped state and live in the ctrl artifact (see [Ctrl Plane](../ctrl-plane/)). The mgmt artifact carries only what the operator authored: who may reach what (`ingress`/`egress`) and which links are allowed (`links`). All routing — which links are active, the first hop, the labels, the forwarding table — is ctrl.
 
-The approved CP signing identities (`authorized_ctrl_signers`) are **not** in this vertex artifact — they live in `agent.json`'s `trust` block, where the agent (the sole verifier) reads them, alongside the mgmt signers. See `agent.json` below, with [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for the placement and [ADR-0011](/docs/implementation/adr/0011-bootstrap-rotate-signer-trust) for verification and rotation.
+The approved CP signing identities (`authorized_ctrl_signers`) are **not** in this vertex artifact — they live in `agent.json`'s `trust` block, where the agent (the sole verifier) reads them. There is no mgmt-signer list beside them: a mgmt signer is trusted on the anchors alone, and only the delegated ctrl authority is narrowed by a list. See `agent.json` below, with [ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model) for the placement and [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) for verification and rotation.
 
 ### `agent.json` payload
 
@@ -483,12 +483,7 @@ The approved CP signing identities (`authorized_ctrl_signers`) are **not** in th
 {
   "schema_version": "1.0",
   "trust": {
-    "authorized_mgmt_signers": [
-      { "spiffe_id": "spiffe://rete-lovers/management-plane/primary", "pubkey": "<base64-ed25519>" }
-    ],
-    "authorized_ctrl_signers": [
-      { "spiffe_id": "spiffe://rete-lovers/control-plane/primary", "pubkey": "<base64-ed25519>" }
-    ]
+    "authorized_ctrl_signers": [ "spiffe://rete-lovers/control-plane/primary" ]
   },
   "workloads": [
     { "name": "public", "run": ["flor-vertex"] },
@@ -539,7 +534,7 @@ Node-identity vs. mesh-vertex-identity aren't merged because they serve differen
 
 Enrollment flow is unchanged: `retectl issue-bundle --node alpha --rete <coordinator-url>` packages alpha's node identity *and* alpha's mesh-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/rete` principal for every node in C1 (derived from the rete mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the rete trust domain.
 
-CP signing identities are issued separately on the operator's own machine (`retectl ca sign --kind control-plane --name primary` produces the cert+keypair that signs ctrl artifacts). The CP key is *not* shipped in per-node bundles — only its public counterpart, embedded in `authorized_ctrl_signers` of `agent.json`'s `trust` block. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
+CP signing identities are issued on the operator's own machine (`retectl id issue --kind control-plane --name primary` mints the keypair and signs its cert). The CP key is *not* shipped in per-node bundles — only its **certificate**, embedded in `authorized_ctrl_signers` of `agent.json`'s `trust` block and verified against the node's trust anchors like any signer. This keeps the CP private key purely on the operator's workstation in C0/C1 (and on whichever host runs the CP service in B1+); no node ever sees it.
 
 The bundle may also include a current `agent.json` + per-vertex configs from the latest published state — sufficient for the agent's first run with no prior sync. Subsequent `flor agent sync` calls pull whatever the rete currently runs (which may be richer or simpler than what was bundled).
 
@@ -569,13 +564,13 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 - [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, <name>.json…}`, flat (`rete.json` always; a link-vertex file — named after its `name:` field in `nodes.yaml` — for each `quic`-type link-vertex on the node)
 - [ ] Two new principal kinds wired through issuance, compile, and runtime: `vertex/<node>/<name>` (rete mesh-vertex, named `rete` by convention) and `control-plane/<name>`
 - [ ] `via:` and `agent_via:` validation: required in C1 (multiple vertices per node), compiler resolves to target vertex for workload placement
-- [ ] `trust` block in `agent.json` carrying `authorized_mgmt_signers` and `authorized_ctrl_signers` (the agent is the sole signature verifier; the CA cert lives in the identity store)
+- [ ] every envelope carrying its signer's certificate in `signature`, validated against `identity/anchors.pem` (the agent is the sole signature verifier; no artifact carries a signer set — see [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca))
 - [ ] Connection-manager `adapters[]` list with both `florio` (for QUIC links via link-flor) and `udp` (direct in mesh-flor) implementations, plus the `links` typed-rule bound (named links; each a `peer` + `via` adapter) declaring which links reach which peer mesh-vertices
 - [ ] Multi-hop forwarder operates uniformly across mixed adapter types
 - [ ] `retectl compile` emitting the per-node mgmt layout (omitting the link-vertex file when no QUIC-type link-vertices are declared). The ctrl subtree is produced by the same `retectl compile` invocation but documented in [Ctrl Plane](../ctrl-plane/).
 - [ ] Additional validator rules (link validity, address feasibility, link-type coherence, multi-hop path validity, principal role coherence)
 - [ ] `retectl issue-bundle --node <n>` includes the node's mesh-vertex identity alongside workload principals; optionally bundles a current `agent.json` + vertex configs
-- [ ] `retectl ca sign --kind control-plane --name <name>` issues a CP signing keypair on operator hardware
+- [ ] `retectl id issue --kind control-plane --name <name>` mints a CP signing keypair on operator hardware
 - [ ] `flor-vertex --rete <scope> --name <name> [--set <version>]` daemon entry point (reads mgmt + mesh ctrl configs by name from the artifact set; loads identities from the scope's identity store; verifies the mgmt↔ctrl join)
 - [ ] `flor agent run` supervises its workloads (direct fork under the OS-managed agent service — see [C0's Agent page](../../c0-tended-tunnels/mgmt-plane/agent#supervision-mechanics); per-workload launch runtimes reserved); fetches mgmt and ctrl artifacts as separate streams from the coordinator
 - [ ] Example `my-rete/` repo with a 3-node mesh (alpha/beta/gamma) showing multi-hop paths through an internal-only node
