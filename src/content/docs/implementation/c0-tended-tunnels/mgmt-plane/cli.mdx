@@ -36,17 +36,19 @@ retectl id issue --kind <management-plane|control-plane>
                                             # rotated — the compiler signs artifacts with
                                             # the key it produces.
 retectl issue-bundle --node <node-name> [--validity <duration>]
-                                            # compile the rete, then pack the per-node
-                                            # enrollment bundle: trust anchors, the node
-                                            # identity, and every workload identity
-                                            # (users/services) YAML places on this node,
-                                            # plus that node's initial artifact set.
-                                            # Compiles so the packed set is the set that
-                                            # will be published. Flow A only in C0.
+                                            # pack the per-node enrollment bundle from
+                                            # the committed compiled tree: trust anchors,
+                                            # the node identity, and every workload
+                                            # identity (users/services) YAML places on
+                                            # this node, plus that node's artifact set.
+                                            # Compiles nothing, and refuses when the
+                                            # compiled tree is not committed. Needs no
+                                            # coordinator and no network at all.
+                                            # Flow A only in C0.
                                             # Always writes <repo>/bundles/<node>.bundle.
 
 retectl validate                            # schema + cross-ref + access consistency
-retectl compile [--node <name>]             # compile all nodes (or one); always writes
+retectl compile                             # compile the rete; always writes
                                             # <repo>/.flor/compiled/
 retectl publish                             # push compiled artifacts to the rete
                                             # coordinator (see Coordinator). No target
@@ -61,12 +63,13 @@ Notes:
 - **`retectl` runs inside a rete repository or not at all** — it walks up from the working directory to find `rete.yaml`, as git finds `.git`, and refuses outside one. `retectl init` is the one exception and has to be: it is what *creates* `rete.yaml`, so it refuses when the walk-up succeeds instead. The scope, the paths and the rete's name all follow from that, so no command carries a `--rete` flag to say which rete it means — and none carries an output path either: `compile` always writes `<repo>/.flor/compiled/` and `issue-bundle` always writes `<repo>/bundles/<node>.bundle`. The compiled tree is an *input* to the next compile, being the version ledger, so redirecting it elsewhere produces a tree that compiles from the wrong history.
 - **Operator-held material lives in `retectl`'s own tree**, `~/.retectl` (overridden whole by `RETECTL_HOME`), never in the repository: one identity store per rete at `retes/<scope>/identity/`, holding the root CA at `authorities/root.crt|.key` and the signers at `principals/<name>.crt|.key` — the same store shape a node uses, with different parts populated. The repository holds YAML source and the compiled tree and no secret and no certificate. The root key stays there in C0 — no command takes a path to it — and the hardening that would justify one is an intermediate; see [Enrollment § Genesis](../enrollment#genesis).
 - **A command group is named for its subject, never its actor.** `id issue` produces an identity; a bare verb like `compile` or `publish` acts on the rete implicitly. There is no `ca` group in C0: `retectl init` is the only thing that creates a root CA, and a group for CA rotation arrives with rotation. Throughout these pages a **root CA** is an issuing authority and a **trust anchor** is what a verifier validates against; a bare "CA" is never used, because the two stop coinciding as soon as intermediates exist.
-- `retectl issue-bundle` computes which principals live on a node (from `users.yaml` + `services.yaml`), issues each of their certs, and packages them with the trust anchors and the node's initial artifact set. One bundle per node, not per principal — a node hosting five services would otherwise mean five deliveries and five bearer files. The bundle carries no coordinator URL and no expected coordinator identity: `agent.json`'s `sync` block already names the coordinator, and a projected value transcribed into a second place is a divergence waiting to happen.
+- `retectl issue-bundle` computes which principals live on a node (from `users.yaml` + `services.yaml`), issues each of their certs, and packages them with the trust anchors and the node's artifact set as the committed tree holds it. One bundle per node, not per principal — a node hosting five services would otherwise mean five deliveries and five bearer files. The bundle carries no coordinator URL and no expected coordinator identity: `agent.json`'s `sync` block already names the coordinator, and a projected value transcribed into a second place is a divergence waiting to happen.
 - `--kind` selects the SPIFFE path namespace and the X.509 extension policy. All six kinds (`user`, `service`, `node`, `management-plane`, `control-plane`, `vertex`) remain part of the identity model; TLS-capable kinds get `keyUsage: digitalSignature, keyEncipherment` + `extKeyUsage: serverAuth, clientAuth`, signing-only kinds get `keyUsage: digitalSignature` only — see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities). What C0 exposes on the CLI is narrower: `id issue` accepts the signing kinds, and TLS-principal certs are issued as part of `issue-bundle` rather than one at a time.
 - **A CSR-consuming sign command belongs to Flow B and is not part of C0** ([Enrollment](../enrollment)). Nothing in C0 reaches it — `id issue` and `issue-bundle` each mint and sign inside one process — so `retectl id keygen` and `retectl id sign` are named here as the shape Flow B will take, and are not implemented surface.
 - **`retectl` warns on the certificates it touches** — the mgmt signer's at every `compile`, the root CA's at every `issue-bundle` — when either enters the last 20% of its validity, or 14 days, whichever is longer. It is the only component whose warning reaches the person who can replace them ([Enrollment § Decision Log](../enrollment#decision-log), ENRL-C0-33).
 - `retectl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (`agent.json` and `flor.json` per node, flat; plus `coordinator.json` on the management node). Artifacts contain **no filesystem references** — identity is referenced by SPIFFE ID and materialized by each node's identity store (see [Agent § Artifact handling](../agent#artifact-handling)). No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the coordinator (see [Coordinator](../coordinator)).
-- `retectl publish` uploads the current `.flor/compiled/` tree to the rete's coordinator; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes — and it stays separate even though `issue-bundle` compiles, because publish is the review gate rather than the compile step. Publish is idempotent — re-running with the same tree is a no-op on the server.
+- `retectl publish` uploads the current `.flor/compiled/` tree to the rete's coordinator; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes: publish is the review gate. Publish is idempotent — re-running with the same tree is a no-op on the server.
+- **The operator's order is `compile` → review → commit → `publish` → `issue-bundle`, and only the commit is enforced.** `issue-bundle` refuses an uncommitted compiled tree and requires nothing else — not a successful publish, not a reachable coordinator ([Enrollment § Decision Log](../enrollment#decision-log), ENRL-C0-35). The repository is the rete's source of truth and the coordinator is a cache of it, so a bundle is cut from the source; publishing promptly is what keeps the cache from lagging, not a precondition of issuing. That independence is deliberate and load-bearing: a dead management node is repaired by re-enrolling it, which needs a bundle, so a bundle that needed a publish would need the coordinator it is meant to replace (ENRL-C0-37).
 - **`retectl publish` is the only command that needs the network, and the only one that needs the local agent.** It reaches `coordinator-publisher` through the operator's SOCKS5 listener, discovered over `agent.sock`; everything else — `init`, `id issue`, `issue-bundle`, `validate`, `compile` — is fully offline. See [retectl local wiring](#retectl-local-wiring) below.
 - Nothing in `retectl` affects running agents directly. It reads and writes the rete repo plus operator-local CA material, and talks to the coordinator over the rete's own Florete. Safe to run anywhere the operator has the repo checked out and is enrolled as an operator principal.
 
@@ -127,9 +130,7 @@ flor agent sync   [--rete <scope>]          # fetch + verify + install latest ar
                                             # if only one rete enrolled. --dry-run shows
                                             # which version would install, no restart.
                                             # (commit-timeout/--confirm land in C1)
-flor agent status [--rete <scope>]          # local agent state, active artifact version,
-                                            # and held certificates with their expiry
-                                            # dates
+flor agent status [--rete <scope>]          # local agent state + active artifact version
 flor agent enable  [--rete <scope>]         # activate this scope's service wrapper and
 flor agent disable [--rete <scope>]         # start it (enrollment's step 2, standalone);
                                             # disable stops and deregisters it. Scope
