@@ -60,11 +60,11 @@ Two options were considered:
 
 Even at C0 scale, CA-based scales better — and by putting a SPIFFE URI in the SAN we produce real SPIFFE X.509-SVIDs, interoperable with SPIRE, Istio, Linkerd, Vault, and anything else in the SPIFFE ecosystem. Same amount of code as pinned-cert mode, forward-compatible with standards. Clean separation: **authentication** = CA signature at mTLS handshake; **authorization** = ACL check on SPIFFE ID.
 
-CA private key stays on operator hardware (password-protected file or YubiKey PIV slot). Never in the repo. Revocation via ACL removal is sufficient at C0 scale; CRL/OCSP is a B1+ concern.
+The root CA's private key stays on operator hardware, in `retectl`'s own tree, and never in the repo. **C0 protects it with filesystem permissions and nothing else** — passphrase protection lands in C1, and hardware custody (a PIV token, an HSM) in B1+ alongside the intermediate that makes an offline root practical; see [Enrollment § Decision Log](enrollment#decision-log), ENRL-C0-06. Revocation via ACL removal is sufficient at C0 scale; CRL/OCSP is a B1+ concern.
 
 **Why we don't pin cert fingerprints in `allow` entries.** A tempting "hardening" is to list each authorized cert's fingerprint next to its SPIFFE ID, to reject a rogue-CA cert bearing the same ID. It buys nothing in the rete model: a rete trusts exactly one CA (its own root), so a cert signed by any other CA fails the mTLS handshake outright, whatever SPIFFE ID it claims — there is no "same-ID cert from a different CA" to defend against. Fingerprint pinning earns its keep only in a multi-CA PKI, where you can't predict which of many trusted CAs signs a given identity; that is not the rete model, nor even the small-federation model. The genuine federation concern — ensuring a peer's SPIFFE **trust domain** is validated against the *right* CA rather than merely some trusted CA — is a different mechanism, tracked in [flor#51](https://github.com/rete-labs/flor/issues/51).
 
-## Why only the CA cert lives in the repo (not individual signed certs)
+## Why no certificate lives in the repo
 
 Signed identity certs are **public material** (public key + name + CA signature; nothing secret) — but they aren't *semantically required* in the rete repo. Each principal holds its own cert locally and presents it at mTLS handshake; verifiers only need the rete's trust anchors and the expected identity name.
 
@@ -228,7 +228,7 @@ C0/C1 are the degenerate case of the model: empty CP, empty agent autonomy, full
 
 ## Why cert rotation stays manual in C0/C1, and the B1+ shape
 
-Identity issuance in C0/C1 is **operator-driven and offline**: `retectl issue-bundle` runs on the operator's machine, mints certs from the offline CA, delivers them out-of-band. Validity is 90 days; renewal = the operator runs the same command before expiry. There's no automation because automation needs an online signer, and the whole zero-trust-cloud posture rests on "no online signing key."
+Identity issuance in C0/C1 is **operator-driven and disconnected**: `retectl issue-bundle` runs on the operator's machine, mints certs from the root CA held in `retectl`'s tree, and delivers them out-of-band. *Disconnected* rather than *offline* — the root key is read on every issuance, which is exactly why C0 does not pretend it is offline and why a genuinely offline root waits for the intermediate in B1+. Validity is 90 days; renewal = the operator runs the same command before expiry. There's no automation because automation needs an online signer, and the whole zero-trust-cloud posture rests on "no online signing key."
 
 This is fine at pilot scale (handful of principals, weekly cadence) and fits C0/C1's manual-mode framing. It becomes untenable at B1+ scale (hundreds of workloads, ephemeral instances), so a path forward is needed.
 

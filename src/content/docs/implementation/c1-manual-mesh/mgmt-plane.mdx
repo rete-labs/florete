@@ -75,18 +75,17 @@ C1 adds a `signers.ctrl` block listing the rete's authorized ctrl-envelope signe
 rete:
   name: rete-lovers                 # same as C0
 
-  ca:
+  root_ca:
     validity_days: 3650             # same as C0
-    # validity_days — default applies
 
   signers:
     mgmt:
       keys:
-        - { name: primary, cert: certs/management-planes/primary.crt }
+        - { name: primary }         # resolved in retectl's tree; same as C0
     ctrl:                           # NEW in C1
       validity_days: 365            # optional
       keys:
-        - { name: primary, cert: certs/control-planes/primary.crt }
+        - { name: primary }         # likewise — no certificate in the repo
 
   tls_principals:
     # validity_days — default applies
