@@ -18,6 +18,8 @@ Limitations:
 - Only TCP services are supported (can be located at the nodes as well as in internal IP LAN)
 - Only SOCKS5 inbound is supported (i.e. users must use clients with SOCKS5 support; services that connect to other services - too)
 - No NAT Traversal; server nodes must be Internet-facing (have a routable public IP)
+- Nodes are desktops, laptops and servers — machines with a maintained clock, an operator who can reach them, and no long disconnection. Embedded and vehicle-borne nodes are B2's, and nothing in C0 is sized for them
+- A pilot is bounded by the credential lifetime, 90 days by default. C0 has no automated rotation: re-keying is a fresh bundle couriered per node ([Enrollment](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log), ENRL-C0-25), so a pilot outliving its credentials costs an operator visit to every node
 
 **Success criteria**: the use case works stable for daily use.
 
@@ -151,9 +153,9 @@ We are not doing active control plane features, service discovery and various ad
 These are deliberately out of C0 and picked up (or decided) later:
 
 - **Windows support** — lands in [C1](/docs/implementation/c1-manual-mesh/scope). C0 targets Linux and macOS.
-- **`enrollment.log`** (append-only sign/revoke audit) — introduced in [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the git history of the rete repo is the audit trail.
+- **`enrollment.log`** (append-only sign/revoke audit) — introduced in [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the git history of the rete repo records a principal's declaration and removal and nothing else; **issuance is unrecorded**, so C0 has a revocation record and no enrollment record ([Enrollment](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log), ENRL-C0-24).
 - **Flow B / CSR-based enrollment** (principal-generated keypairs) — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). C0 enrolls via Flow A only (operator-generated keypairs); Flow B's commands are named but unbuilt.
-- **Encrypted bundles & one-time-URL delivery** — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the enrollment bundle is a plain file the operator delivers over any out-of-band channel; it is bearer material.
+- **Encrypted bundles & fetched-credential delivery** — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the enrollment bundle is a plain file the operator delivers over any out-of-band channel; it is bearer material, and nothing at the bundle level bounds the window between issue and enroll.
 - **Hosted landing page** — an open question for [C1](/docs/implementation/c1-manual-mesh/scope). C0 ships an install guide in the docs instead.
 - **External metrics collection & upload** — an upload/collection server is C1+/B1 (B1's coordinator becomes the consumer). C0 keeps observability node-local (see [Maintenance](#maintenance)).
 - **`flor agent sync` commit-timeout / auto-rollback** — the Cisco-IOS-style "confirm within a window or auto-roll-back" safety net moves to [C1](/docs/implementation/c1-manual-mesh/scope). In C0 the blast radius of a bad sync is bounded by keeping an out-of-band emergency-access path (see [Distribution & Reload · Safety Net](/docs/implementation/c0-tended-tunnels/mgmt-plane/distribution-and-reload#safety-net-server-nodes)), not by auto-rollback — pilots are limited and never rely on Florete as the single access path.
