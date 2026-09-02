@@ -189,11 +189,11 @@ This page is the design, written for whoever implements or changes the installer
 **An install carries the full executable set the host may need — not the subset its present role uses.** Two parts, and the second is why this is a rule rather than a list of three names:
 
 - **Every executable the node's agent could be asked to `run`** — `flor-vertex` and `flor-coordinator`. The agent's inventory names executables, so *which* of them runs is decided by the node's artifact set, and moving a service becomes a publish rather than a re-install. This sets ground for [B1 · Coordinator's placement entry](/docs/implementation/b1-cloud-control/coordinator): with binaries already present everywhere, the first Orchestrator ships **decisions only** — no registry, no image pull.
-- **The node's own supervisor and CLI** — `flor`: the agent, plus `install`, `uninstall`, `enroll`, `id`, `version`.
+- **The node's own supervisor and CLI** — `flor`: the agent, plus `install`, `uninstall`, `enroll`, `version`.
 - **The operator tooling** — `retectl`. Present on every install deliberately: the operator's workstation *is* an enrolled node ([Enrollment § Genesis](../mgmt-plane/enrollment#genesis)), so the two sets were never disjoint; the binary is small beside the daemons; and the plausible evolution runs the other way — `retectl` growing into an advanced-user tool (query the coordinator, publish a local service) would make a node-vs-operator split wrong retroactively. A `--without-retectl` knob was considered and dropped: its only payoff is bytes, and it would have to be threaded through every facade, the receipt, and every upgrade path.
 
 
-<Callout title="Shipping a CA-capable binary is not shipping CA authority">
+<Callout title="Shipping a root-CA-capable binary is not shipping that authority">
 `retectl` on any node can run `retectl init` — and produce a root CA for a rete nobody trusts. A rete's authority lives in its root CA's private key, which never leaves operator hardware, and in the trust anchors each node received at enrollment, against which every signer's certificate must chain ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)). Code is not capability here.
 </Callout>
 
