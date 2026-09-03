@@ -66,7 +66,7 @@ Two parallel namespaces, two conventions:
 
 | Namespace | Form | Examples |
 |---|---|---|
-| SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/primary`, `--kind management-plane`, `Kind::ManagementPlane` |
+| SPIFFE URI, CLI `--kind`, Rust `Kind` enum | **singular** type marker | `spiffe://<td>/management-plane/mgmt-signer`, `--kind management-plane`, `Kind::ManagementPlane` |
 | Filesystem directories holding collections of named instances | **plural** collection name | `identity/principals/alice.crt`, `artifacts/mgmt/sets/<v>/`, `<state-dir>/retes/<scope>/` |
 
 The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`agent.json`, `anchors.pem`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
@@ -94,10 +94,10 @@ rete:
     mgmt:
       validity_days: 365                                 # optional; default: 365
       principals:
-        - { name: primary }                              # resolved in retectl's own tree
+        - { name: mgmt-signer }                          # resolved in retectl's own tree
     # ctrl (introduced in C1):
     #   principals:
-    #     - { name: primary }
+    #     - { name: ctrl-signer }                      # must differ from the mgmt signer
 
   tls_principals:
     validity_days: 90                                    # optional; default: 90
@@ -260,7 +260,7 @@ users:
 
 **The operator is enrolled as a normal user.** The `user/fyodor` TLS principal is issued through the same `retectl issue-bundle --node fyodor-laptop` flow as any other user. What makes `fyodor` an *operator* is the `role: operator` grant — that's the role that allows them to call `coordinator-publisher`. The CLI / CA does nothing special for operators at the TLS-principal level.
 
-The **mgmt-envelope signing principal** is a separate identity, issued on operator hardware via `retectl id issue --kind management-plane --name primary`. Its name (`primary` by convention) is independent of any user — the keypair belongs to the *rete*'s signing authority, not to a specific person — and it names a **slot**, since a node accepts a signer on its certificate's chain to the anchors and never on its name. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the certificate is shipped to nodes, inside the `signature` of each envelope it signed, and is verified against the anchors delivered at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
+The **mgmt-envelope signing principal** is a separate identity, issued on operator hardware via `retectl id issue --kind management-plane --name mgmt-signer`. Its name (`mgmt-signer` by convention) is independent of any user, and unique across every principal the rete declares — signers included, since an operator's tree keys them flat by name ([Validate & Compile](../validate-and-compile), rule 3) — the keypair belongs to the *rete*'s signing authority, not to a specific person — and it names a **slot**, since a node accepts a signer on its certificate's chain to the anchors and never on its name. The cert is sign-only (`keyUsage: digitalSignature`, no `extKeyUsage`) so it cannot terminate TLS. Only the certificate is shipped to nodes, inside the `signature` of each envelope it signed, and is verified against the anchors delivered at enrollment. Issuing or rotating this key is an explicit operator step, never derived from `users.yaml`.
 
 **Multi-device users**: list all the user's devices. Each device is a node, so each gets its own bundle from `retectl issue-bundle --node <device>` and its own keypair for the same `user/alice` SPIFFE ID — bundles are per node and consumed by the enrollment that unpacks them, so nothing is copied between devices. Revoking alice removes the principal itself, so every device loses access at once.
 

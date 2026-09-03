@@ -213,7 +213,7 @@ Why this beats the obvious alternatives:
 
 What we do **now** in C0/C1 (cheap, hard to retrofit):
 
-1. Sign every mgmt artifact. Single `management-plane/<name>` signing principal (issued separately from any user; `primary` by convention), file-backed, ed25519. Its cert is sign-only (no TLS `extKeyUsage`) so a leak can't be re-used to impersonate any operator's or workload's TLS identity. Agents verify on every fetch.
+1. Sign every mgmt artifact. Single `management-plane/<name>` signing principal (issued separately from any user; `mgmt-signer` by convention), file-backed, ed25519. Its cert is sign-only (no TLS `extKeyUsage`) so a leak can't be re-used to impersonate any operator's or workload's TLS identity. Agents verify on every fetch.
 2. Add a `plane` discriminator to the envelope (`"mgmt"` today; `"ctrl"` reserved). The two artifact streams will be parallel files with separate envelopes — not one envelope with mixed signed/unsigned regions, which would make signature scope ambiguous and partial verification fragile.
 3. Keep the monotonic `version` already in the envelope; in B1+ ctrl artifacts will reference the mgmt `version` they obey, and agents will reject ctrl referencing a stale mgmt — same rollback-attack defense applied to CP.
 
