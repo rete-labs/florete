@@ -17,8 +17,9 @@ This page is the design, written for whoever implements or changes the installer
   subject     a host joining a rete as a node
 
   boundary    install leaves a host ready to enroll; enroll never installs
-              install  host-level machinery, below every rete
-              enroll   per-rete: identities, artifacts, activation, …
+              install       host-level machinery, below every rete
+              enroll        per-rete: identities & artifacts
+              agent enable  per-rete: activation
 
   executables one release version over four names, shipped whole to every host
               flor              agent daemon + node CLI
@@ -46,7 +47,7 @@ This page is the design, written for whoever implements or changes the installer
                       retes/<scope>/ is created by enroll and owned by the agent
               config  config.toml — user-editable
 
-  wrappers    one host-level template per install, activated per scope by enrollment
+  wrappers    one host-level template per install, activated per scope
               systemd   template unit — one file serves every scope
               launchd   plist rendered per scope — derived state, copies
 
@@ -544,7 +545,7 @@ Four things survive a plain uninstall, each for its own reason rather than as a 
 - **`install.lock`**, because **nothing reads it** — no decision anywhere turns on whether the file exists, only on whether the lock is held — so leaving it changes no behaviour, while removing it would mean releasing the lock in order to delete the file, and handing a concurrent installer a lock on something about to disappear. `--purge` has to accept exactly that race, since it removes the directory; a plain uninstall has no reason to.
 - **The `flor` user and group**, precisely *because* the scope roots do. They are owned `flor:flor`, and a reinstall that created a fresh service user could be assigned a different uid, leaving the survivors owned by a number that no longer means anything. A service user with no files is harmless; an orphaned ownership is not.
 
-A scope that survives an uninstall is **enrolled but inactive**, not "ready to enroll": reinstalling and running `flor agent enable` resumes it with no bundle and no operator involvement. That property belongs to enrollment's own two-step shape rather than to this page — see [Enrollment § Activation](../mgmt-plane/enrollment#activation).
+A scope that survives an uninstall is **enrolled but inactive**, not "ready to enroll": reinstalling and running `flor agent enable` resumes it with no bundle and no operator involvement. That is the ordinary resting state rather than a special one — `flor enroll` leaves a scope in it too, activation being `enable`'s alone — and it belongs to enrollment rather than to this page; see [Enrollment § Activation](../mgmt-plane/enrollment#activation).
 
 ## Platforms
 
@@ -775,7 +776,7 @@ Every binary logs as it sees fit — no code asks whether it is permitted to —
 
 ### Service registration
 
-**INST-C0-26. The installer ships the wrapper machinery; enrollment activates it per scope.**
+**INST-C0-26. The installer ships the wrapper machinery; `agent enable` after enrollment activates it per scope.**
 One host-level template per install, activating nothing. Each wrapper runs the agent for one scope, restarts it on failure, does *not* restart it on exit `78`, and owns the per-scope directories it can. A rendered per-scope copy (launchd, and Windows in C1) is derived state: reproducible from template plus scope name, so rendering is idempotent wherever it happens, the receipt lists the template rather than the copies, and any release that changes the template re-renders every scope under `retes/`, active or not.
 *Because* before enrollment there is nothing to run; and because `78` means *this config is not servable, and waiting will not change that*, so looping on it converts a clear stop into noise and, mid-upgrade, into repeated attempts to run a half-swapped set. The exemption covers permanence, not severity: a refusal to start because a host service is not answering exits `69` and is retried, since exempting environmental failure from restart keeps a node down long after the condition has passed.
 *Rejected* activating at install time — it would require identity material the installer does not have; treating rendered copies as installed files — a scope stopped today and resumed tomorrow would come up on a wrapper two releases old, a failure that is silent and unbounded in time.
