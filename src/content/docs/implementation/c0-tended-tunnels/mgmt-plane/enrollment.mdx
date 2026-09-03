@@ -18,8 +18,8 @@ This page is the design, written for whoever implements or changes enrollment. [
               once-per-rete sequence that makes the rete exist at all
 
   boundary    install   host machinery, below every rete
-              enroll    per-rete: identity material, initial artifacts, activation
-              agent     everything after — sync, supervision, the scope root
+              enroll    per-rete: identity material and initial artifacts
+              agent     everything after — activation, sync, supervision
 
   bundle      one per node, carrying every principal that runs on it
               form       tar container, one file, manifest first; entries are
@@ -66,6 +66,11 @@ This page is the design, written for whoever implements or changes enrollment. [
               the repo holds compiled artifacts, no secret and no certificate
 
   material    what enroll lands, under <state-dir>/retes/<scope>/
+              receipt.json  the scope root's schema_version and the enrollment
+                            phase, enrolling then enrolled; written before
+                            anything else, and enrolled is the commit point
+              scope.lock    the scope's one lock, held by whoever owns the scope
+                            — the agent for its life, enroll for its run
               identity/   anchors.pem, rete.json, authorities/ (empty in C0),
                           principals/<leaf>.crt|.key
               incoming/   artifact files deposited by enroll, awaiting the
@@ -82,8 +87,11 @@ This page is the design, written for whoever implements or changes enrollment. [
                                       for one node from the committed tree;
                                       refuses an uncommitted one, and needs no
                                       coordinator at all
-              flor enroll <bundle>    unpack, then activate
-              flor agent enable       activate alone; disable is its inverse
+              flor enroll <bundle>    unpack under the scope lock; refuses while
+                                      the scope is live and names what clears it
+              flor agent enable       activation, and the only thing that performs
+                                      it; disable is its inverse and releases the
+                                      scope for an enroll
 ```
 
 **FLOW**
@@ -111,28 +119,26 @@ This page is the design, written for whoever implements or changes enrollment. [
                     credentials it names
                  4  retectl issue-bundle --node <n> — packs the committed tree
                  5  deliver the bundle out of band
-                 6  flor enroll <bundle>, and nothing is written before it has
-              *       validated the manifest's signer certificate against the
-                      anchors it already holds, required it to be a
-                      management-plane kind, then checked the signature
-                      checked every entry against the manifest's digests
-                      checked every entry's name against what its content
-                      says, and every cert and envelope against the manifest
-                      shown the trust domain and the anchor fingerprints
-              *       refused a bundle whose trust domain, anchors or node
-                      differ from what this scope is pinned to
-              *  7  stop the scope's workloads and the agent
-                 8  create the scope root; write the identity plane, replacing
-                    the material of each principal the bundle names and leaving
-                    every other principal's untouched
-                 9  deposit the bundle's artifact files in incoming/ — no set
-                    structure, no pointer; staging is the agent's
-              *     agent/ and workloads/ survive untouched
-                10  activate this scope's wrapper instance
-                11  the agent starts and admits incoming/ before its first dial —
-                    verify, check the version mark, stage, activate, remove; an
-                    older set logs at INFO, a rejected one at WARN once — then it
-                    runs one immediate sync
+                 6  flor enroll <bundle>
+                    create retes/ and the scope root if either is absent
+                    take the scope lock, or refuse naming the holder
+                    read the receipt: gate the scope root's schema_version,
+                      determine fresh or re-enrollment
+                    process the bundle, and nothing is written before it has
+              *       validated the signature
+                      validated the bundle integrity & contents
+                    replace the receipt, phase enrolling
+                    write the identity plane, replacing the material of each
+                      principal the bundle names and leaving others untouched
+                    replace incoming/ wholesale with the bundle's artifact files
+              *       agent/ and workloads/ survive untouched
+                    replace the receipt, phase enrolled — the commit point
+                    remove the bundle
+                    print enabling hint & exit, releasing the lock
+                 7  flor agent enable, by whoever ran the enroll
+                      the agent takes the scope lock and refuses any scope whose
+                      receipt is absent, mid-run or unreadable; otherwise it admits
+                      incoming/ before its first dial
 
   revocation  1  remove the principal from YAML
               2  retectl compile && retectl publish
@@ -197,9 +203,11 @@ This page is the design, written for whoever implements or changes enrollment. [
                 one act that crosses between them
                 retes/ is created by whichever of the two runs first, identically
 
-  idempotence   a re-enroll cannot be atomic; what enroll promises is resume — a
-                partial scope root is keyed to the bundle that made it, and the
-                same bundle completes while a different one is refused
+  idempotence   a re-enroll cannot be atomic; what enroll promises is convergence
+                — any bundle this scope would accept completes an interrupted
+                run, and the phase says which run it is completing
+                no receipt means fresh; enrolling means still fresh, nothing
+                being pinned yet; enrolled means re-enrollment
 
   scope         the scope is the rete name verbatim, which is the trust domain;
                 .rete is never part of it, and a collision is a refusal
@@ -221,7 +229,7 @@ This page is the design, written for whoever implements or changes enrollment. [
 
 **Two acts share the name, and they differ in almost everything but vocabulary.** **Genesis** happens once per rete, entirely on operator hardware, and creates the authority every later act depends on. **Node enrollment** happens for every machine that joins, is repeated whenever a node is re-keyed, and is a two-party operation across a channel Florete does not control. They belong on one page because they share a command surface and because genesis *is* enrollment — the operator's own machine joins by exactly the flow any other node uses.
 
-**Install leaves a host ready to enroll; enroll never installs.** Everything below every rete — executables, the per-OS service wrapper — is the [installer](../../installer)'s. Everything per-rete arrives here: identity material, an initial artifact set, and the activation that starts the node's agent. Everything after that is the [agent](../agent)'s: syncing, supervising, and owning the scope root's contents. Enroll is the single act that crosses between them, which is why it is the only thing that creates a scope root and the only thing that hands one over.
+**Install leaves a host ready to enroll; enroll never installs.** Everything below every rete — executables, the per-OS service wrapper — is the [installer](../../installer)'s. Everything per-rete arrives here: identity material and an initial artifact set, and nothing more — enroll starts nothing. Everything after that is the [agent](../agent)'s: activation, syncing, supervising, and owning the scope root's contents. Enroll is the single act that crosses between them, which is why it is the only thing that creates a scope root and the only thing that hands one over.
 
 **Enrollment needs no network, and that is an invariant rather than a convenience** ([ENRL-C0-15](#decision-log)). A node that cannot reach anything comes up on what it was given and syncs when a path exists. This is the property that makes provisioning a vehicle at a depot the same operation as provisioning a server, and it must survive every later change to how bundles are delivered.
 
@@ -305,7 +313,13 @@ One flow serves a first enrollment and every later one — the [Shape](#shape)'s
 
 **Reading `incoming/` before the first dial is what makes one repair possible at all.** A node that has been offline long enough for the coordinator to have moved cannot reach the coordinator to learn where it went — the only thing that could tell it is a set it can no longer fetch. Re-enrollment fixes exactly that, and only because the bundle's set is genuinely admitted rather than assumed stale.
 
-**A failed enrollment is resumable rather than atomic**, the partial scope root being keyed to the bundle that produced it: renaming over a populated directory is atomic on no platform, and part of that directory must survive.
+**Enroll takes the scope before it looks at the bundle, and that order is the one thing about the sequence worth memorising** ([ENRL-C0-39](#decision-log)). Every check it performs — which path this run is on, whether the anchors verify the manifest, whether the bundle's claims match what the scope is pinned to — is a fact about the *scope*, not about the bundle, so reading any of them outside the lock is deciding on a value something else may change before the write lands. The natural-reading order, look at what you were handed and then go to the disk, is the wrong one.
+
+**So enroll refuses a live scope rather than quieting it.** It creates `retes/` and the scope root if either is missing, takes the scope's lock, and stops there if someone already holds it — naming the holder, and naming the `flor agent disable` that clears the ordinary one. It does not stop the agent itself: stopping and then acquiring leaves a gap a service manager can restart the agent into, where a refusal leaves none. What that costs is a command, and the person running `enroll` was expecting the scope down for a material change in any case.
+
+**The receipt is what a partial scope root says about itself.** `receipt.json` carries two things, the scope root's `schema_version` and a phase, and enroll writes the phase `enrolling` before any material and replaces it with `enrolled` as its last act. That replacement is the **commit point**: everything before it is a scope that has not been enrolled, which is why an interrupted first enrollment leaves anchors that pin nothing. The phase, not the presence of `anchors.pem`, is what tells a later run whether it is doing a fresh enrollment or a re-enrollment — anchors written by a crashed run would otherwise verify a second bundle against the first bundle's word.
+
+**A failed run therefore converges rather than resuming.** Renaming over a populated directory is atomic on no platform and part of that directory must survive, so atomicity was never available; what stands in for it is that **any bundle this scope would accept completes an interrupted run**. Nothing on disk records which bundle started it, `incoming/` is replaced wholesale rather than merged, and material left by the interrupted run is inert by the same rule that leaves a removed principal's material in place. The operator who re-cut the bundle after a crash is the ordinary case, and it works.
 
 **The scope is the rete's name verbatim.** That name is the SPIFFE trust domain, may be dotted, and **never includes the `.rete` hostname suffix** — `flor.demo` is a scope, `flor.demo.rete` is not; the suffix belongs to hostnames of the form `<service>.<rete>.rete`. The only constraint is length, since the scope appears in the agent's socket path and macOS bounds those. Two independent retes that chose the same name cannot both be enrolled on one host, and that is a refusal naming the conflict rather than a flag to work around.
 
@@ -319,7 +333,9 @@ A server enrolled over SSH, a provisioning script, and a machine enrolling at fi
 
 ## Activation
 
-**Enrollment is two steps, and an uninstall reverses only the second** ([ENRL-C0-20](#decision-log)). What survives an uninstall is a scope root that is enrolled-but-inactive, resumable with no bundle at all — the alternative charges a re-issued bundle for a reinstall, and a bundle is bearer material that must be couriered. It also lets a multi-rete node leave one rete without touching the others. `disable` is neither revocation nor purge.
+**Enroll activates nothing** ([ENRL-C0-20](#decision-log)). `flor agent enable` is the only thing that does, and enrolling a node is therefore two commands rather than one command with two steps: enroll writes the material, prints the `enable` that finishes the job, and exits — releasing the scope lock as it goes, which is the point. Enroll cannot both hold that lock and start the party that needs it, and releasing early would put its last act outside the lock it took to make the act safe; handing activation to `enable` removes the choice instead of picking the less bad half.
+
+**What that costs is a node that stays down until someone enables it**, where enroll used to bring it back by itself. The mitigation is a printed command rather than a mechanism, which is the same answer `flor install` gives when it reports each surviving scope's `enable` line and starts nothing. A node that is enrolled-but-inactive is a resting state this design already relies on: it is exactly what survives an uninstall, resumable with no bundle at all — the alternative charges a re-issued bundle for a reinstall, and a bundle is bearer material that must be couriered. It also lets a multi-rete node leave one rete without touching the others. `disable` is neither revocation nor purge, and it is what an operator runs to hand a live scope over to an enroll.
 
 **"Activate" names an act, never a service manager.** Today it instantiates the wrapper the installer placed — see [Installer § Service registration](../../installer#service-registration) — but a nested rete, where one rete's agent runs as a supervised workload of another's, would make activation *adding a supervision entry* instead. The installer owns the wrapper and this page owns the act, so nothing forecloses that; the contract simply does not name systemd.
 
@@ -557,25 +573,50 @@ C0 enforces nothing on the interval between issue and enroll. Guidance covers it
 Three distinct things. The CA is the issuing authority and not a principal; it signs certificates and never envelopes. The mgmt signer is a signing principal whose key is cold, lives on operator hardware, and is loaded by no vertex. The operator's identity is an ordinary TLS principal, bundle-delivered and revocable like anyone's. `primary` names a **slot** rather than a description, and rotation keeps the name: since a node matches a signer by certificate and never by a persisted name ([ENRL-C0-12](#decision-log)), a fresh certificate is minted for `primary` and the old pair replaced — no successor name, and no second `signers.mgmt.keys` entry.
 *Because* a signing identity must not be revocable by an HR event — merging it with the operator's user entry means revoking a departing operator breaks artifact verification for the whole rete. And signing envelopes with the root key would put it in the path of every compile, which is the one place it must never be.
 
-**ENRL-C0-20. Enroll in two steps, and reverse only the second.**
-`flor enroll` unpacks and then activates; `flor agent enable` performs activation alone, with `disable` as its inverse. Uninstall reverses activation and leaves the scope root.
+**ENRL-C0-20. Keep activation out of enroll.**
+`flor enroll` unpacks and stops there; **`flor agent enable` is the only thing that activates**, with `disable` as its inverse. Enrolling a node is therefore two commands rather than one command with two steps, and enroll prints the `enable` that finishes the job. Uninstall reverses activation and leaves the scope root.
 **"Activate" names an act, never a service manager.** Today it instantiates the installer-placed wrapper; a nested rete would make it a supervision entry instead, and the contract prose must not foreclose that by naming systemd.
 *Because* the alternative charges a **re-issued bundle** for a reinstall — bearer material couriered out of band for a node that already holds valid identity — and because a multi-rete node must be able to leave one rete without touching the others. `disable` is neither revocation nor purge.
-*Accepting* that enroll always activates in C0. A `--no-start` escape is deferred for want of a caller: a node whose network is not ready retries rather than fails, a maintenance window is `disable` a second later, and development uses the directory overrides.
+*Because* **enroll cannot both hold the scope lock and start the party that needs it** ([ENRL-C0-39](#decision-log)). Activating while holding it deadlocks; releasing first would put enroll's last act outside the lock it took to make the act safe. Handing activation to `enable` removes the choice rather than picking the less bad half.
+*Because* **the operator is already there**. `enroll` is a couriered-bundle act with a person or a script at the keyboard, and the same caller runs `enable` on the next line; the cost is one command in a sequence that already has five.
+*Accepting* that a re-keyed node **stays down until someone enables it**, where enroll used to bring it back by itself. The mitigation is the installer's: enroll's last line prints the exact `flor agent enable` for the scope ([Installer § Install](../../installer#install) reports the same way), and a node that is enrolled-but-inactive is a documented resting state rather than a failure.
+*Accepting* that "enroll in two steps" stops describing enroll and starts describing the operator's sequence. What the split was actually protecting is untouched: uninstall still reverses activation alone, and a scope root still resumes with no bundle.
+*Revisit* an activating flag, or a `stop`/`start` pair beside `enable`/`disable`, when something wants a takedown that survives a reboot. C0 needs neither: the receipt makes a reboot mid-enroll safe, since the agent refuses a scope reading `enrolling`.
+*Rejected* enroll activating and enroll stopping, both for the lock reason above; and a `--no-start` escape, which is this decision as a flag and therefore two paths where one will do.
 *Rejected* a per-scope removal command. Several remedies on this page end in removing a scope root by hand — a leaked signer key, moving a scope to a different node, replacing a rete whose root must change, and a partial root whose bundle is gone — and C0 still ships nothing for it: `flor uninstall --purge` removes everything and `disable` removes nothing. A pilot is not expected to need it, and a command nobody exercises is a command nobody has tested. The pages say "by hand" and mean it.
 
 **ENRL-C0-21. Enroll by depositing, and re-enroll by replacing only what the bundle names.**
-Enroll verifies before it writes anything, stops the scope itself, then writes the identity plane — replacing the material of **each principal the bundle names and leaving every other principal's untouched** — and **deposits** the artifact files in `incoming/` rather than staging them. `agent/` and `workloads/` survive. A re-enrollment is refused when the bundle differs from what the scope is pinned to in any of the three claims of [ENRL-C0-13](#decision-log). A failed run is **resumable**: the partial scope root is keyed to the bundle that produced it, so the same bundle completes and a different one is refused. The sequence is the Shape's `enroll` block.
+Enroll verifies before it writes anything, refuses while the scope is live rather than stopping it ([ENRL-C0-39](#decision-log)), then writes the identity plane — replacing the material of **each principal the bundle names and leaving every other principal's untouched** — and **deposits** the artifact files in `incoming/` rather than staging them. `agent/` and `workloads/` survive. A re-enrollment is refused when the bundle differs from what the scope is pinned to in any of the three claims of [ENRL-C0-13](#decision-log). A failed run converges rather than resuming a particular bundle, and the receipt and lock that make that work are [ENRL-C0-39](#decision-log)'s. The sequence is the Shape's `enroll` block.
 *Because* a bundle-delivered set is another intake path, and treating it as one keeps monotonicity a rule rather than an exception: writing it straight into `artifacts/` would install a stale set unchecked and reopen the replay window the version mark exists to close. **Staging is the agent's** — it is part of its intake and belongs in one place — and enroll runs before the agent does, so a handover is needed either way. Making it a drop of files rather than a call into set machinery keeps the boundary narrow. It is consumed **before the first dial** because that is the whole of the repair path: a node offline long enough that the coordinator moved cannot reach it to learn where it went, so a set arriving only after a successful sync arrives never.
 *Because* the authoritative statement of which principals live on a node is the **artifact set**, not the bundle. A bundle is a delivery, so reading its contents as a census makes a subset bundle destructive — invisible in C0, whose bundles carry everything, and wrong the moment a rotation delivers one principal's material.
-*Because* an agent reading the identity plane while enroll rewrites it is a race, and leaving the stop to a human makes correctness depend on a documented step.
-*Accepting* that re-enrollment is not atomic and cannot be — renaming over a populated directory is atomic nowhere, and part of that directory must survive. One resume mechanism serves both cases, since a node is enrolled once and re-enrolled whenever it is re-keyed, so giving the rare path the stronger guarantee would be backwards.
+*Because* an agent reading the identity plane while enroll rewrites it is a race — closed by the scope lock rather than by a stop, so correctness rests on the lock and not on the operator having read the step ([ENRL-C0-39](#decision-log)).
+*Accepting* that re-enrollment is not atomic and cannot be — renaming over a populated directory is atomic nowhere, and part of that directory must survive; what stands in for atomicity is [ENRL-C0-39](#decision-log)'s convergence, one mechanism for both cases, since a node is enrolled once and re-enrolled whenever it is re-keyed.
 *Accepting* that **`flor enroll` succeeds before the set it delivered has been admitted**, and cannot report what the agent will make of it. The gap is real: on a fresh enrollment no artifact signature has been checked at all, so a set signed by a key that does not chain to the anchors the same bundle delivered enrolls cleanly and is rejected only at intake — and the bundle is already deleted, though it could not have helped, its content being malformed in this case. What C0 owes this is noise rather than a mechanism.
 *Accepting* that the two non-admissions are different events: a set **ignored as older** is expected, since a bundle's set legitimately goes stale between issue and enroll, and logs at INFO; a set **rejected as invalid** logs at WARN once, at the admission attempt. The slot is removed either way, and nothing on the node records that it was rejected.
 *Accepting* that material for a principal removed from YAML since the last bundle is left in place rather than swept. It opens nothing, no peer's access check naming that principal.
 *Revisit* the sweep when a bundle can legitimately carry a subset. It is deferred for a reason that is not tidiness — **artifacts are re-fetchable and identity material is not** — so an over-eager sweep is unrecoverable where the artifact cleanup pass is merely wasteful; it would have to run only after a set activates, never touch the node principal, and survive a momentarily-wrong set.
 *Revisit* enroll performing the intake itself when `incoming/` proves a source of silent failures in practice rather than in principle; reading `flor agent`'s status before completing would be the better shape, and C0 defers it.
 *Rejected* replacing the whole identity subtree, correct today and wrong later for a reason that will not announce itself; starting the agent and handing the set over its control socket, which inverts the enroll-then-activate order and needs a socket that may not ship; enroll performing the intake through a shared library function, which would make its success truthful and puts set construction and the version mark in a second caller to buy a better error message; and keeping a rejected slot as evidence, which preserves bytes nobody can re-admit in a directory scanned at every start.
+
+**ENRL-C0-39. Make a partial enrollment converge, with a receipt for the phase and one lock for the scope.**
+`retes/<scope>/receipt.json` carries exactly two things: the **scope root's `schema_version`** and the enrollment **phase**, `enrolling` or `enrolled`. It is written before anything else lands in the scope root and replaced with `enrolled` as the last act of enroll, which makes that replacement the **commit point** — the pin of [ENRL-C0-13](#decision-log) becomes real there and not before. The phase decides which path a run takes: **no receipt is a fresh enrollment**, **`enrolling` is still fresh** because nothing has been pinned yet, and **`enrolled` is a re-enrollment**. `retes/<scope>/scope.lock` is the scope's single advisory lock, held by the agent for as long as it serves and by `flor enroll` for its whole run; a holder is named rather than queued for, and the name enroll prints is the `flor agent disable` that clears the ordinary one. **Enroll takes it before it reads anything**: creating `retes/` and the scope root comes first, because the lock lives inside the scope root; everything after — the receipt, the anchors, the pinned claims — is read under the lock and acted on under the same one. **Enroll releases it upon exit and activates nothing** ([ENRL-C0-20](#decision-log)). The agent reads the receipt before serving and **refuses a scope whose receipt is absent, reads `enrolling`, or carries a `schema_version` this release cannot understand**, naming the way out in each case. There is **no bundle identity on disk**: any bundle this scope would otherwise accept completes an interrupted run, and `incoming/` is replaced wholesale rather than merged.
+*Because* **every check enroll performs reads scope state, so a read outside the lock is a decision something else may already have invalidated.** The receipt chooses the path, the anchors verify the manifest, the pinned claims decide whether the bundle applies at all — none is a property of the bundle alone, and a concurrent agent or a second enroll can move any of them between the read and the write. Taking the lock first collapses that window instead of narrowing it, which is why the ordering is scope-then-bundle and not the reverse the flow reads more naturally as.
+*Because* the phase is the only thing that can decide fresh from re-enrolled, and the material cannot.
+*Because* written first with a phase, a receipt states a fact rather than an intention — the installer's rule ([Installer § Install](../../installer#install)), and it is what makes a crashed run recognisable as ours instead of as a mystery tree.
+*Because* the lock has to be the scope's rather than enroll's. A lock belonging to enroll would not exclude the agent, which a service manager can restart mid-write, and that is the collision that corrupts an identity plane. One lock every owner of the scope takes closes it, and it is the same guarantee the agent already wanted for itself.
+*Because* a held flock dies with its holder, so a killed enroll or a power loss strands nothing and leaves no file for anyone to clear by hand. The file's existence means nothing; the held lock is the lock.
+*Because* the version gates the scope root, not the receipt. What a downgrade risks is an older `flor agent run` reading `identity/`, `artifacts/` and `agent/`, and [Installer § Downgrade](../../installer#downgrade) already reserved this refusal for the agent on exactly that ground — the installer cannot judge whether an older binary can serve a node's state, and the agent can. The number gates by [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)'s one rule, own major and minor-older-or-equal, so a plain downgrade reaches releases sharing it and no further.
+*Because* a persisted artifact outlives the process that wrote it, which is the whole reason it needs a version at all. Producer and consumer are one release within a single run and not across a crash and a retry: an operator whose enroll died and who reaches for the previous release is the ordinary way an older binary meets a newer scope root.
+*Accepting* the lock has to sit in the scope root, not the runtime root. The agent's per-scope lock lived in the runtime root and the agent removes that root on a clean stop ([Agent § Local IPC](../agent#local-ipc)), so stopping the agent before enrolling would delete the directory holding the lock it is about to take. The scope lock in the scope root exists whenever the scope does.
+*Accepting* that enroll no longer promises to finish the run it started, only to converge. Leftover material from an interrupted run is inert by [ENRL-C0-21](#decision-log)'s rule, and `incoming/` is replaced rather than merged, so what survives a crash is stale material and never a mixture.
+*Accepting* that a crash can leave a **torn pair** — one bundle's certificate beside another's key — since two files cannot be renamed as one. Each is written to a temporary name and renamed in, so every file is old-or-new; the pair is repaired by the next run, and the public-key correspondence of [ENRL-C0-16](#decision-log) is what names the state rather than leaving it to a failed handshake.
+*Accepting* that the agent gains a runtime dependency on a file `flor enroll` writes, and that the scope root gains a version that never fires in C0, nothing having migrated yet. Its value is that the first migration finds the refusal already in place instead of inventing it.
+*Accepting* that enroll **refuses a live scope rather than quieting it**, which is one more command for the operator and no window at all for anyone: a stop-then-acquire sequence has a gap a service manager can restart the agent into, where a refusal has none. The person who ran `enroll` expects the scope down for a material change in any case.
+*Accepting* that a refused bundle can leave an **empty scope root** behind on a first enrollment, the container having been created before the bundle was read. It carries no receipt, so it is exactly a scope that has not been enrolled — inert to the agent, and completed by the next run rather than needing a cleanup.
+*Revisit* whether `enable`/`disable` should be joined by a `stop`/`start` pair, once something wants an agent down without deregistering it. C0 does not: `disable` is the only takedown, and a reboot inside an enroll is safe because the agent refuses a scope whose receipt reads `enrolling`.
+*Revisit* the bundle's identity on disk when something must **decide** on content rather than report it. The digest is cheap to add and earns nothing today; the caller that would want it is the set-identity question of [ENRL-C0-35](#decision-log), which is a design rather than a field.
+*Rejected* **keying the partial scope root to the bundle that made it** — recording the manifest digest and refusing a different bundle, which is what this entry replaces. It blocks no attacker, since a fresh enrollment verifies nothing and anyone who can drop a bundle can remove the partial root first, while on a re-enrollment anything reaching the write stage has already passed the signature and the three pinned claims. What it does block is an operator who re-cut the bundle, and their way out is a hand-removal C0 ships no command for ([ENRL-C0-20](#decision-log)).
+*Rejected* recording the digest for a **warning** alone, which buys a sentence nobody can act on differently — that the run is completing an interrupted one is the whole of the actionable fact; a separate `enroll.lock`, on the agent-exclusion argument above; leaving the lock in the runtime root; and versioning the receipt rather than the scope root, which would let a receipt field block a downgrade the trees were perfectly happy with.
 
 **ENRL-C0-22. Create `retes/` from one library function, whichever component runs first.**
 `retes/` is `0755`, owned by root in system mode and by the invoking user in user mode; `retes/<scope>/` is `0700`, owned by the service user. Both the installer and `flor enroll` create it through the same function.
