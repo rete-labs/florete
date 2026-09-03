@@ -118,7 +118,7 @@ X.509 alone cannot prevent a TLS-capable key from being misused for application-
 
 Earlier drafts of florete's mgmt-plane spec used `"key_id": "operator:<fingerprint>"` ad-hoc — the operator's mgmt-envelope signing key was *not* a SPIFFE principal in the docs, while the control-plane signing key already was. This asymmetry coupled the operator's TLS-capable `user/<op>` cert with their envelope-signing key, which is the wrong shape for separate compromise lifecycles.
 
-We introduce `Kind::ManagementPlane` (URI segment `management-plane`, mirroring `control-plane`). The operator now holds two keypairs — `user/<op>` for mTLS, `management-plane/<name>` for envelope signing — and mgmt artifact `key_id` becomes a SPIFFE URI matching CP's shape. The kind distinction lets a future envelope verifier discriminate by SPIFFE-URI shape regardless of whether the trust scheme ends up being kind-based or pinning-based.
+We introduce `Kind::ManagementPlane` (URI segment `management-plane`, mirroring `control-plane`). The operator now holds two keypairs — `user/<op>` for mTLS, `management-plane/<name>` for envelope signing. The kind distinction lets a future envelope verifier discriminate by SPIFFE-URI shape regardless of whether the trust scheme ends up being kind-based or pinning-based.
 
 ## Rationale
 
@@ -225,7 +225,7 @@ The earlier florete spec used `"key_id": "operator:<fingerprint>"` for mgmt enve
 - Both are SPIFFE-shaped principals so envelope verification can treat them uniformly under whichever trust scheme is chosen later.
 - Both need their compromise blast radius decoupled from any TLS use (the operator's `user/<op>` cert is TLS-capable; the operator's mgmt-signing cert should not be).
 
-Introducing `Kind::ManagementPlane` symmetrises the design. The operator's workflow becomes "hold two keypairs": `user/<op>` for mTLS to coordinator-publisher, `management-plane/<name>` for envelope signing. The mgmt envelope's `key_id` becomes a SPIFFE URI matching CP's shape. Other user principals don't sign envelopes; the X.509 ext policy and the envelope verifier together enforce that only `control-plane/*` and `management-plane/*` keys do.
+Introducing `Kind::ManagementPlane` symmetrises the design. The operator's workflow becomes "hold two keypairs": `user/<op>` for mTLS to coordinator-publisher, `management-plane/<name>` for envelope signing. Other user principals don't sign envelopes; the X.509 ext policy and the envelope verifier together enforce that only `control-plane/*` and `management-plane/*` keys do.
 
 ### Why cert extensions, not just an application-layer envelope check
 

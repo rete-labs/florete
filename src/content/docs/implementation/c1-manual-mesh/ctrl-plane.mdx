@@ -94,7 +94,7 @@ cd my-rete/ && retectl compile
 #   .flor/compiled/alpha/ctrl/rete.json
 ```
 
-The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl artifact is signed with the operator's CP signing key. In C0/C1 both keys live on the operator's workstation — same machine, separate files (`~/.flor/operator-mgmt.key` and `~/.flor/control-planes/primary.key`). They are *not* the same key; conflating them would couple mgmt-signing-authority lifecycle with CP-signing-authority lifecycle, which becomes painful as soon as B1+ wants to put the CP key on a different host (managed cloud or BYO on-prem).
+The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl artifact is signed with the operator's CP signing key. In C0/C1 both keys live on the operator's workstation — same machine, separate principals in `retectl`'s own tree at `~/.retectl/retes/<scope>/identity/principals/` (see [C0 · Enrollment](../../c0-tended-tunnels/mgmt-plane/enrollment#decision-log), ENRL-C0-06). They are *not* the same key; conflating them would couple mgmt-signing-authority lifecycle with CP-signing-authority lifecycle, which becomes painful as soon as B1+ wants to put the CP key on a different host (managed cloud or BYO on-prem).
 
 `retectl publish` pushes both subtrees:
 
