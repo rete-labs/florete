@@ -93,10 +93,10 @@ rete:
   signers:
     mgmt:
       validity_days: 365                                 # optional; default: 365
-      keys:
+      principals:
         - { name: primary }                              # resolved in retectl's own tree
     # ctrl (introduced in C1):
-    #   keys:
+    #   principals:
     #     - { name: primary }
 
   tls_principals:
@@ -115,7 +115,7 @@ The rete `name` doubles as the SPIFFE trust domain: every principal in this rete
 
 **Algorithm is not configurable in C0.** All keys are Ed25519. A per-category `algorithm` slot will appear when a second algorithm is actually supported (B1+, e.g. for hardware tokens or post-quantum schemes); until then, exposing the field would be cosmetic.
 
-**Signer references carry a name and no path.** `signers.mgmt.keys[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<rete>/management-plane/<name>`), and the certificate itself is resolved in `retectl`'s own tree — **no certificate lives in the repository**. The compiler reads it there and signs with it, embedding that certificate into the `signature` of every envelope it emits, so a node validates each artifact's signer against its trust anchors without holding any signer list. Rotation is minting a fresh certificate from the root CA and replacing the operator's pair — no list edit, no overlap window, and not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
+**Signer references name a principal, and carry no path and no key.** The block is `signers.mgmt.principals[]` rather than `keys[]`: since [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) each entry holds neither a public key nor a certificate path, only a name, so what it lists is the **principals** authorised to sign — the same word the identity store and [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) use for them. `signers.mgmt.principals[].name` is the SPIFFE name segment (the cert's URI is `spiffe://<rete>/management-plane/<name>`), and the certificate itself is resolved in `retectl`'s own tree — **no certificate lives in the repository**. The compiler reads it there and signs with it, embedding that certificate into the `signature` of every envelope it emits, so a node validates each artifact's signer against its trust anchors without holding any signer list. Rotation is minting a fresh certificate from the root CA and replacing the operator's pair — no list edit, no overlap window, and not a re-enrollment event. C1 adds the symmetric `signers.ctrl.keys[]` block.
 
 
 ### nodes.yaml
