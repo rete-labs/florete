@@ -80,11 +80,11 @@ rete:
 
   signers:
     mgmt:
-      keys:
+      principals:
         - { name: primary }         # resolved in retectl's tree; same as C0
     ctrl:                           # NEW in C1
       validity_days: 365            # optional
-      keys:
+      principals:
         - { name: primary }         # likewise — no certificate in the repo
 
   tls_principals:
