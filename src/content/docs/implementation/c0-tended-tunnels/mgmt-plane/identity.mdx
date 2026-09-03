@@ -109,8 +109,8 @@ Examples:
 - `spiffe://rete-lovers/service/api` — api service (rete-scoped).
 - `spiffe://rete-lovers/service/alpha/ssh` — SSH on node alpha.
 - `spiffe://rete-lovers/node/alpha` — alpha's node principal (used to reach the coordinator service over Florete).
-- `spiffe://rete-lovers/management-plane/primary` — the rete's mgmt-envelope signing identity (operator-held, issued by `retectl id issue --kind management-plane --name primary`). The name is operator-chosen and `primary` is the convention: it names a **slot**, and because the agent matches signers by certificate rather than by name, a rotation issues a fresh certificate for the same name rather than inventing a successor name.
-- `spiffe://rete-lovers/control-plane/primary` — the rete's primary CP signing identity (operator-held in C0/C1; cloud-held in B1+).
+- `spiffe://rete-lovers/management-plane/mgmt-signer` — the rete's mgmt-envelope signing identity (operator-held, issued by `retectl id issue --kind management-plane --name mgmt-signer`). The name is operator-chosen and `mgmt-signer` is the convention: it names a **slot**, and because the agent matches signers by certificate rather than by name, a rotation issues a fresh certificate for the same name rather than inventing a successor name. It must differ from every other principal's, signers included — an operator's tree stores signers flat by name, so a shared one loses a private key (see [Validate & Compile](../validate-and-compile), rule 3).
+- `spiffe://rete-lovers/control-plane/ctrl-signer` — the rete's CP signing identity (operator-held in C0/C1; cloud-held in B1+). A distinct slot from the mgmt signer above, and necessarily a distinct name.
 
 C1 extends this with two further kinds:
 

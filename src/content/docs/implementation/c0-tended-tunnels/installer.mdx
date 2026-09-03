@@ -397,7 +397,7 @@ The names mirror the XDG variables they shadow, so there is no mapping to learn.
 
 ### Service registration
 
-Settled boundary, restated from [Agent § Supervision mechanics](../mgmt-plane/agent#supervision-mechanics): **the installer ships the machinery, enrollment activates it per scope.** The installer places one wrapper per host — a template, instantiated per scope — and activates nothing; [enrollment](../mgmt-plane/enrollment) or `flor agent enable` does that.
+Settled boundary, restated from [Agent § Supervision mechanics](../mgmt-plane/agent#supervision-mechanics): **the installer ships the machinery, `agent enable` after enrollment activates it per scope.** The installer places one wrapper per host — a template, instantiated per scope — and activates nothing.
 
 The wrapper carries the same four obligations everywhere, and only the spelling is per-OS:
 
