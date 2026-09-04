@@ -1,0 +1,133 @@
+---
+title: Scope
+description: Scope of the A0 milestone "Alef Authoring"
+---
+
+## Goals
+
+### Use Case
+
+The resulting Florete system must be suitable for pilot usage by Florete Team (dogfooding), friends and enthusiasts:
+- 1-3 server nodes, 2-10 services, 1-3 users
+
+Limitations:
+- Offline management plane only, and no control plane (i.e. no coordinator, no agent)
+- Enrolled & maintained manually by single operator
+- All **initiators** (users, and services acting as callers) can reach **targets** (services) by 1-hop connections (i.e. no relaying is supported)
+- Only TCP services are supported (can be located at the nodes as well as in internal IP LAN)
+- Only SOCKS5 inbound is supported (i.e. users must use clients with SOCKS5 support; services that connect to other services - too)
+- No NAT Traversal; server nodes must be Internet-facing (have a routable public IP)
+- Nodes are desktops, laptops and servers — machines with a maintained clock, and operator who can reach them (physically or via ssh)
+- Cross-platform, with only Linux target in A0 (Mac joins in C0, Windows in C1)
+- User-mode only (system-mode joins in C0)
+- Requires separate access path for remote nodes even for normal operations (cannot rely on Florete as the single connectivity: re-enrolling a running node requires separate SSH access, because enroll needs flor-vertex to be terminated)
+- Requires ~/.retectl backup as the only safety measure for root CA
+- Requires re-enrollment of each node before 90-day cliff of TLS principals' certificates (A0 enrollment extends the cliff, as a node is freshly re-keyed); no mechanisms for monitoring & alerting in A0, so operator must rely on his own timer/calendar item.
+
+### Maintenance
+
+For A0 we need the bare minimum to run the pilots successfully.
+
+**A0 observability is node-local.** Every flor process logs to the host's **syslog socket** (`/dev/log` on Linux); the user guide documents how to view and export those logs.
+
+**No metrics are collected and reported.** The observability is limited to bare logs of events. Metrics will be added in C0.
+
+## Deliverables
+
+What A0 ships.
+
+### Installer
+
+Single channel & target: GitHub Releases, `linux-x86_64`.
+
+```bash
+install.sh                # fetch, unpack, check integrity and call `flor install`
+flor install              # install in user-mode only
+flor uninstall [--purge]  # uninstall with optional purge
+flor version              # print installed version
+```
+
+### Enroller
+
+```bash
+flor enroll <bundle>   # join node to rete or update its state
+```
+
+### Network Proxy
+
+```bash
+flor-vertex   # run by node supervisor — systemd in A0
+```
+
+### Rete-authoring CLI
+
+```bash
+retectl init                    # initialize new rete
+retectl validate                # validate rete config
+retectl compile                 # compile rete for all nodes
+retectl id issue                # mint signing principals
+retectl issue-bundle --node <n> # pack identities and artifacts for a node
+                                # in A0 re-mints identities each time
+```
+
+### Documentation
+
+- **Operator playbook** — bootstrap, issuing bundles, publishing a service, rolling out a change, emergency rollback. Includes example `flor.demo` repo.
+
+- **User guide** — installing `flor`, enrolling, and how to view/export logs when reporting a problem.
+
+- **Top-level docs** — new Overview (short-term), updated Vision and Roadmap.
+
+### Legal
+
+- Establish [CLA process](https://github.com/rete-labs/florete/issues/20)
+
+## Environments
+
+- **Dev environment** to be implemented as multiple node scopes running at the same PC.
+- **Test environment** to be implemented as a single server node (VM) + user node connected over Internet.
+- **Production environment** for dogfooding [to be determined](https://github.com/rete-labs/florete/issues/149).
+
+## Deferred Features
+
+- A way for `retectl issue-bundle` to issue only artifacts, without re-minting identities. This should be considered right after A0's release.
+
+## Release Gate
+
+A0 ships when it passes **our own internal tests** and we are **dogfooding** it for a week without emergencies (stable operation, no crashes, no outages due to Florete).
+
+## Tracking
+
+The concrete A0 work items live on GitHub:
+
+- [rete-labs A0 progress board](https://github.com/orgs/rete-labs/projects/2/views/7) — the cross-repo release phase plan.
+- [rete-labs/florete · A0. Alef Authoring](https://github.com/rete-labs/florete/milestone/6) — design & docs.
+- [rete-labs/flor · A0. Alef Authoring](https://github.com/rete-labs/flor/milestone/5) — code.
+
+## Development Constraints
+
+Implementation must be done mainly in Rust language, in an async fashion using Tokio runtime.
+
+### Evolution
+
+We must design the A0 version in a way to be extensible for future work, but without over-engineering.
+
+### Security
+
+Core security feature, mTLS, is mandatory for A0 release. Because we're going to use this prototype in production: dogfooding and for pilots with friends. Also not doing Zero Trust from ground up can result in architectural oversights and non-upgradable solutions (e.g. we could have used insecure MPLS, but it isn't clear how to secure it properly later).
+
+So we must produce a design and implementation that is secure from day one.
+
+### Cross-platform
+
+For A0, our target OS is **Linux only**. But macOS and Windows targets will be added in future releases. So we need to design our implementation in a way that is portable to different OSes without much effort.
+
+## No-Goals
+
+We don't want to check "recursive hypothesis": it was successfully checked in previous prototype, the approach is working and with known limitations.
+
+We don't want to build abstract Portal APIs in Rust. That was checked and it works, but is very clunky. It seems Rust isn't designed for such trait-based APIs. It works best with typed, struct-based APIs.
+
+We don't want to make an execution environment for workloads and dynamic components etc. This task is out of scope for A0.
+
+We are not doing online control plane features (coordinator, agent), service discovery and various adaptive mechanics in A0.
