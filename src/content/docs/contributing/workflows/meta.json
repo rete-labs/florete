@@ -1,11 +1,11 @@
 {
     "pages": [
+        "ai-first-development",
         "issue-tracking",
         "commit-messages",
         "git-workflow",
         "design",
         "code-review",
-        "ai-usage",
         "ai-vscode-setup",
         "create-github-repo",
         "writing-docs"
