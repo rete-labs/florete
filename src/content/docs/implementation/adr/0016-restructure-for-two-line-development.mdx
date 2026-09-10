@@ -1,0 +1,106 @@
+---
+title: "0016: Restructure Project for Two-line Development"
+---
+
+## Status
+
+Accepted
+
+Obsoletes [ADR-0002: Use Single-Crate Project](/docs/implementation/adr/0002-use-single-crate) entirely — both its single-crate clause and its publication clause. Arose from the [AI-First Development](/docs/contributing/workflows/ai-first-development) design, and records the part of it that reaches `flor` itself: AIFIRST-05, AIFIRST-10, AIFIRST-11, AIFIRST-13, AIFIRST-14 and AIFIRST-27. This record fixes the structure of the two repositories; how code is generated and checked around that structure — the generation environment and both CIs — is designed separately.
+
+## Context
+
+ADR-0002 structured `flor` as one Cargo crate holding a library and every binary, and published that crate to crates.io. Both halves were reasoned for a single development line over a small codebase with no external consumer, and it said so: a workspace was discarded as "unnecessary complexity", and publication was justified by docs.rs, by community credibility, and by holding the name.
+
+Both premises are gone.
+
+**The codebase acquires a real consumer, and it consumes one unit at a time.** Florete is now built by two implementation lines over one design corpus. `flor` is the decision-driven line — human-designed, reviewed diff by diff; `flor-dist` is the spec-driven line — agent-generated, released and maintained. A **unit** is a crate whose public API a human authors before either line implements it, and each line supplies a crate satisfying that API. Substitution is the moment the product stops being built over the generated implementation of one unit and starts being built over the reviewed one. That requires a unit's implementation to be pinnable without dragging the rest of `flor` with it, and it requires the two implementations to be interchangeable inside one dependency graph.
+
+**The publication clause was never carried out, and what it promised has since been retracted.** ADR-0002's own consequence already withdrew `cargo install flor` as a supported installation path, on the [C0 Installer design](/docs/implementation/c0-tended-tunnels/installer#distribution-and-integrity). What was left standing — publish to hold the name and to render docs.rs — is a reservation with nothing nameable to put in it.
+
+## Decision
+
+**`flor` becomes a Cargo workspace holding a crate for every unit.** One crate per unit, and a crate for each of them whether or not the reviewed line has implemented it yet: a crate whose functions are unimplemented still yields a complete public API, which is what a contract has to be before either line builds against it. Which code is a unit, and which is ordinary code bound only by the corpus and the conformance suite, is recorded per milestone in that milestone's `decomposition.mdx` rather than here.
+
+**`flor-dist` holds the generated implementations and the integration, and it assembles and packages every executable.** It is a separate repository sharing no history with `flor`. `flor` additionally holds the append-only conformance suite with its defect ledger, which belongs to neither implementation. The contract is the crate in `flor`, and its interface is extracted from a pinned revision wherever it is needed.
+
+**The assembly is `flor-dist`'s root manifest, and every dependency of the product is declared there.** Each unit is declared once in its `[workspace.dependencies]`, from the `flor` source at the revision it is pinned to, and so is every third-party crate, with its version requirement. Generated crates refer to units and third-party crates by name only — never by a source or a version of their own. Which line supplies a unit is a `[patch]` entry in the same file: a unit still generated is redirected to its local crate, and since the redirection applies to the whole graph, it reaches the dependencies declared inside reviewed crates as well. Substitution removes that entry, a one-line edit reversed by restoring it, and the patch table is a standing inventory of which units are still generated.
+
+**Each unit resolves to exactly one package in the graph of every executable, in every build configuration** — enforced mechanically rather than trusted. Pins therefore stay per unit: units that depend on one another are forced to a common revision by the check, and units that do not are left independent.
+
+**Binaries belong to `flor-dist` because they are integration, not because a unit may not be one.** Where a binary's own logic has to be reviewed it becomes a unit like any other, with its crate in `flor`. A workspace build produces its own bin targets and not a dependency's, so such a unit reaches the product through a one-line `main` in `flor-dist` over its entry point — assembly rather than implementation, and human-owned like the manifest around it. What differs from a library unit is enforcement: the contract of a binary is its CLI and its output, carried by fixtures and by the guide rather than by a public-API diff.
+
+**Generation codes against a unit's interface, never against its body.** A build of `flor-dist` checks out `flor`'s whole tree, so bodies are within the generating agent's reach, and the boundary is held by instruction rather than by keeping them out: behaviour generated code relies on that a contract does not state is filed as a finding. That holds for every unit, substituted ones included — they are what generated code calls, and so where coding against observed behaviour would do its damage. A contract may still be tagged before its body exists, so the generated line builds against a frozen API while `flor` fills it in; only the assembly move waits for a working implementation.
+
+**Each repository has its own CI, and no pipeline runs backwards.** `flor`'s CI covers what `flor` can build alone. It cannot run the conformance suite, which is black-box over the product, so `flor-dist`'s CI executes it over a pinned revision of `flor` — only `flor-dist` builds the product. Hosting is not building: nothing in `flor`'s build depends on `flor-dist`.
+
+**In `flor-dist`, what decides, judges or packages is human-owned.** The root manifest that carries the assembly and every dependency, the CI configuration, and the release and packaging plumbing are written and reviewed by humans, however much of the code around them is generated. A gate the generated line can rewrite judges nothing, and a suite owned by humans is worth nothing if its executor is not.
+
+**Third-party dependencies are approved by humans, through the same mechanism as units.** Declaring one is an edit to the root manifest, so a generated crate that needs a crate not yet declared proposes it as a finding, and a human declares it. A reviewed crate's own third-party dependencies are declared in `flor` and reviewed with the diff that adds them. Versions move within the declared requirements; the lockfile records them and is not reviewed. What judges the resolved graph beyond that belongs to the CI's design.
+
+**Nothing is published to crates.io.** Not the unit crates, not the product, and no reservation crate. No registry name is held, and `cargo install flor` is not a supported path.
+
+## Rationale
+
+We considered four structures for the code:
+
+1. **Keep the single crate and export a curated `pub` surface from it.**<br/>
+   *Discarded* because pinning that crate drags the entire implementation into `flor-dist`, which is exactly what substituting one unit at a time must avoid, and it couples every unit's version to every other's.
+
+2. **One repository per unit.**<br/>
+   *Discarded* because a workspace already tags and versions its members separately, so this multiplies repositories, CI configurations and issue trackers for nothing the workspace does not give.
+
+3. **Two long-lived branches, or two directories, in one repository.**<br/>
+   *Discarded* on the review regimes rather than on taste. The decision-driven line requires human review of every diff and the spec-driven line forbids code review outright, so one repository means one CI, one CODEOWNERS and one set of branch protections covering opposite rules — every change needs classifying, and a misclassification is silent. Separately, generated history is regeneration-shaped: wholesale per-unit rewrites in the same log would degrade `git log`, blame and bisect for the careful history that depends on them. A merge between the two lines is not a merge in any case — once the agent has restructured anything, it either conflicts on nearly every file or succeeds textually while breaking semantically.
+
+4. **A workspace of per-unit crates in `flor`, with `flor-dist` assembling the graph and packaging the product** — as chosen.<br/>
+   *Accepted* because it is the smallest structure in which substitution is a one-line act, the boundary between the lines is mechanical rather than disciplinary, and every artifact the two lines share — contracts, suite, reviewed implementations — stays on one side of it.
+
+A crate boundary is also the only boundary that holds here. `pub(crate)` is visible throughout its crate, so a module boundary is advisory; in a codebase where one line is never read by a human, an advisory boundary erodes without anyone noticing. A crate boundary is checked by the compiler.
+
+**Why the assembly is a place rather than a rule.** A unit names a contract, not an implementation, so which line satisfies it is not a property of the depending code and must not be written into it. Putting that decision in one manifest is what makes substitution reversible by the same edit that performed it, what lets a reviewed unit sit *above* generated ones instead of dragging reviewed implementations down its whole subtree, and what gives the DD-authored share a place to be read off rather than counted by hand.
+
+**Why every dependency is declared at the root.** A dependency declared inside a generated crate would let that crate choose its own supplier: a path to a generated implementation, written into its manifest, routes around a substitution from a file no human reads. Declaring units and third-party crates alike in the human-owned manifest closes that, and it keeps one mechanism for both — choosing a third-party crate is a judgement about whom to trust, of the same kind as choosing which line supplies a unit, so it is made in the same place by the same people. Reviewing the lockfile instead was rejected: it would put a human on every version bump, reintroducing review on the generated line through the back door.
+
+**Why the graph invariant is enforced.** Nothing about the assembly is safe by construction. Cargo will resolve two revisions of one unit without complaint; the compiler objects only where a type crosses between the copies, and where none does, the product runs with two of the unit and two of whatever state it holds. The invariant is the cheap mechanical answer, and it lets pins stay per unit — the alternative, pinning `flor` wholesale, imposes the constraint the dependency graph does not, and is paid for by dragging every unit's unreleased work along with each bump. It is stated over each executable's graph rather than over the lockfile, because a lockfile lists every workspace member whether or not anything links it — including a generated implementation kept after its substitution until it is deleted last.
+
+**Mechanisms verified before recording**, in throwaway workspaces rather than argued from the documentation:
+
+- a git dependency resolves a crate inside a workspace in another repository by package name alone, with no subdirectory path. Substitution needs no registry.
+- a `[patch]` entry over the `flor` git source redirects a unit to a generated crate in `flor-dist` across the whole graph — whether the unit is declared among the root's workspace dependencies and inherited by name, or declared inside a reviewed crate as a plain path dependency internal to `flor`'s own workspace. The executable's graph then holds one package for that unit and types unify across the seam; removing the entry substitutes the reviewed crate everywhere at once.
+- different units resolve at different tags of the same git source, so per-unit pinning is available.
+- two revisions of *one* unit also resolve, silently: the build succeeds and the program runs with both copies unless a type crosses between them.
+- `cargo tree -d` reports that duplicate at identical package versions, discriminating by source, and names which dependent pulled each side — so the invariant is both checkable and diagnosable.
+- after a substitution, the lockfile still carries the generated implementation as a workspace member beside the reviewed crate that replaced it, while the executable's graph holds only the reviewed one — which is why the invariant is stated per executable.
+- a workspace build produces its own bin targets and not those of a git dependency, which is why a binary-shaped unit reaches the product through a `main` in `flor-dist` rather than directly.
+- a git dependency checks out the whole repository tree at each pinned revision, directories outside any crate included — which is why bodies and the suite are within a generating agent's reach whenever it builds `flor-dist`.
+
+**On publication**, we considered reservation crates holding `flor` and `florete`, publishing the product crate to occupy the name, publishing the unit crates as ADR-0002 intended, and publishing nothing. We publish nothing.
+
+The reservation question reduces to naming a use, and there is none: not the installer, which retracted `cargo install flor`; not the unit crates, which are internal APIs for building our own software and would become an accidental SDK that the real one later has to compete with and disambiguate; not the generated product, which serves no user through a registry and would put agent-generated code there under an implied promise. What is left is a third-party SDK that does not exist and would plausibly be named for what it is. Holding two names for years behind placeholder READMEs is squatting, which the registry's policy disfavours and which we would have to keep explaining, in a project whose public argument is about doing things properly.
+
+What ADR-0002 wanted from publication is either not bought by publishing units or cheaply had elsewhere: credibility comes from both repositories being public, and `cargo doc` renders the same API. Its surviving benefit — that other Florete repositories can depend on the library — is precisely what now happens, at unit granularity and by tag rather than by version.
+
+## Consequences
+
+**Benefits**:
+- A unit's reviewed implementation can be pinned on its own, and substitution is a one-line edit reversible by the same line until the generated implementation is deleted.
+- Crate boundaries are compiler-enforced, which is the only enforcement available on a line nobody reads.
+- Both implementations of a unit keep one package name, so no substitution needs a rename or an adapter.
+- A reviewed unit may sit anywhere in the graph, above generated units as well as beneath them, so what gets reviewed is decided by consequence rather than by depth.
+- Every dependency of the product, internal or third-party, is decided in one human-owned file.
+- The two review regimes get two repositories, two CI configurations and two sets of protections, instead of one of each covering contradictory rules.
+
+**Trade-offs**:
+- The versioning overhead ADR-0002 was written to avoid, now paid for a reason it did not anticipate.
+- The corpus spans two repositories, so a suite change and the generated-line change it accompanies are two pull requests in two repositories — friction on exactly the path that must not be skipped, and an author on a `flor` branch needs a product build from `flor-dist` to watch a new suite test fail.
+- Tags accumulate without rhythm, so the tag list is not a changelog and something else has to be.
+- A duplicated unit is diagnosed rather than prevented; without the check it reaches a release silently.
+- A generation that needs a new third-party crate waits for a human to declare it. That is accepted: it is the one supply-chain choice that needs a judgement.
+- A version bump within a declared requirement is reviewed by nothing, so a compromised release of a crate already declared passes until something outside review catches it.
+- The generation boundary is held by instruction and audited after the fact, not prevented. A reliance nobody reports couples generated code to a reviewed body until a refactor breaks it, and what catches the break then is the suite. The suite sits in the same tree and is reachable the same way, so AIFIRST-28 is held by the same instruction; A0 is where both are measured.
+- docs.rs, discoverability and the small credibility of a published crate are forgone. Someone else may take `flor` or `florete`, and an SDK later wanting that exact name will need another one. That is a bounded, nameable cost. *Revisit* when a third-party SDK is actually designed.
+
+**One release version still identifies the whole installed set, by another mechanism.** ADR-0002's single crate is what made `flor`, `flor-vertex`, `flor-coordinator` and `retectl` carry one number, and the [Installer](/docs/implementation/c0-tended-tunnels/installer) and [Coordinator](/docs/implementation/c0-tended-tunnels/mgmt-plane/coordinator) designs rest on that property rather than on the crate. It survives relocated: every executable is built and released together from `flor-dist` at the product release version, which is what a host reports and what a release note names. Unit crate versions stay in `0.x` and are an implementation detail of how that build is assembled — the outcome the installer design already anticipated when it wrote that should packaging ever split the crate, the release version remains the user-facing identity.
+
+**This record describes a structure that does not exist yet.** `flor` today is the pre-A0 single crate ADR-0002 specified, binaries included, and `flor-dist` has not been created. Splitting the workspace and standing up the second repository is ordered work behind the A0 design pass, the A0 decomposition and the pre-generation contracts; nothing here is a description of the current tree.

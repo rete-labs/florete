@@ -14,6 +14,7 @@
         "0012-version-artifact-contract",
         "0013-use-fundle-di-framework",
         "0014-provision-log-sinks",
-        "0015-anchor-signer-trust-in-root-ca"
+        "0015-anchor-signer-trust-in-root-ca",
+        "0016-restructure-for-two-line-development"
     ]
 }

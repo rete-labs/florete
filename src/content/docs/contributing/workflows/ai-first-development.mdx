@@ -31,8 +31,9 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
               release then build: SD holds the leading edge, DD follows behind it
               the frontier moves, never closes
 
-  repos       flor        DD; one crate per unit, no binaries, no registry
-              flor-dist   SD; own history, no common ancestor, owns every binary
+  repos       flor        DD; one crate per unit, no registry
+              flor-dist   SD; own history, no common ancestor; assembles the
+                          graph and packages every executable
 
   corpus      everything SD generates from
               prose       florete/src/content/docs/
@@ -41,10 +42,15 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
 
   unit        a crate with a human-authored public API, contracted by definition
               SD and DD each supply a crate satisfying it
+              a binary may be one; flor-dist still assembles and packages it
               what becomes a unit before generation is decided by fan-out,
               or by an obligation over all inputs, or by a consequence
               the next release cannot take back
               the rest is bound by the corpus and the suite
+
+  assembly    flor-dist's workspace root alone says which line supplies a unit:
+              its own dependency by source, one inside a DD crate by [patch]
+              each unit resolves to exactly one package, enforced mechanically
 
   suite       append-only, human-owned, held in flor; black-box, both lines
               conformance tests   against a contract; what the product promises
@@ -73,7 +79,7 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
       → contract frozen
       → flor-dist builds a second configuration: the DD crate by git tag
       → suite green in BOTH configurations
-      → the dependency move lands; SD implementation deleted last
+      → the assembly move lands; SD implementation deleted last
 
   release
       candidate built and CI-green        X.Y.Z-rc.N, no release note
@@ -88,8 +94,8 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
               nothing flows out of SD except findings against the corpus
               both consume all of it; DD requires the decisions, SD the
               scope and the contracts, and takes decisions if available
-              generation reads interfaces, never DD bodies — the input is
-              the API dump the diff gate produces, not a checkout
+              generation codes against interfaces, never against DD bodies;
+              a reliance on what a contract leaves unsaid is a finding
               SD proposes a contract change as a finding; it never makes one
 
   human loop  both  scope, acceptance, failure modes, the security boundary,
@@ -146,11 +152,11 @@ The frontier never closes, and that is the design rather than a failure to finis
 
 One rule keeps the arrangement from collapsing. The corpus flows to both lines and DD crates flow to SD, but nothing flows out of SD except findings: what the generated line learns about the design is filed against the corpus and enters through a design pass, never as a direct amendment made under release pressure.
 
-That rule is also what defines the corpus. It is everything SD generates from — and since nothing flows out of the generated line, whatever that line reads is by construction ours to author. "What must a human own" is therefore a consequence rather than a judgement made case by case.
+That rule is also what defines the corpus. It is everything SD generates from — and since nothing flows out of the generated line, whatever that line generates from is by construction ours to author. "What must a human own" is therefore a consequence rather than a judgement made case by case.
 
 It has two homes. The prose half is in `florete`: a milestone's scope, its decisions, and the operator and user guides, which bind as input rather than following the code and which carry the use cases that have to work. The other half is the contracts, and they live as code in `flor`, because a public API in Rust is not prose and belongs where it compiles. Both lines consume all of it, and what differs is what each requires: SD can be generated from scope and contracts alone and takes the decisions where they exist, while DD cannot start until they are settled.
 
-A DD implementation is not corpus at all. `flor-dist` depends on DD crates, but generation reads their interfaces and never their bodies: the agent is handed the public-API artifact and its documentation rather than a checkout of `flor`. An agent that reads a body codes against what it observes instead of what was promised, and the invariants it absorbs that way become load-bearing without anyone having written them down, which surfaces as a silent break the next time DD refactors behind its contract. Keeping the bodies out of context is a boundary; telling an agent to ignore what it can see is not. One convenience falls out of it: a contract can be tagged before its body exists, so a crate whose functions are unimplemented still yields a complete interface, and SD generates against a frozen API while DD fills it in. Only the dependency move waits for a working implementation.
+A DD implementation is not corpus at all. `flor-dist` depends on DD crates, and building it puts their bodies within the agent's reach, but generation codes against their interfaces and never against their bodies. An agent that relies on a body codes against what it observes instead of what was promised, and the invariants it absorbs that way become load-bearing without anyone having written them down, which surfaces as a silent break the next time DD refactors behind its contract. It does that where a contract is silent, so the rule is to report rather than to look away: behaviour generated code relies on that the contract does not state is filed as a finding, which is how a contract learns it had a gap. One convenience falls out of coding against contracts: a contract can be tagged before its body exists, so a crate whose functions are unimplemented still yields a complete interface, and SD generates against a frozen API while DD fills it in. Only the assembly move waits for a working implementation.
 
 Because a contract is corpus, changing one is a design decision. An agent that finds a unit's API wrong, or missing something it needs, proposes the change as a finding and a human takes it through the pass — that is among the more useful things generation reports, and it is still not a licence to write one.
 
@@ -158,7 +164,7 @@ Because a contract is corpus, changing one is a design decision. An agent that f
 
 Before a milestone is generated at all, one class of thing has to be designed: whatever a regeneration cannot undo. That is anything read from outside the unit — another component reading a public API, a later version reading on-disk state or an artifact format, a peer reading a wire format, a person reading the CLI or an error message. Everything else is the agent's to decide, because being wrong about it costs one unit's regeneration rather than a break in something already deployed.
 
-A unit is a crate whose public API a human writes before either line implements it. Being contracted is what makes it a unit, so there is no such thing as an uncontracted one — only code that is not a unit, bound by the corpus and the suite and by nothing else. SD and DD each supply a crate satisfying that API, and a substitution is a one-line change to which of them a binary depends on. Which code is a unit, and which is not, is recorded per milestone in `decomposition.mdx`.
+A unit is a crate whose public API a human writes before either line implements it. Being contracted is what makes it a unit, so there is no such thing as an uncontracted one — only code that is not a unit, bound by the corpus and the suite and by nothing else. SD and DD each supply a crate satisfying that API, and a substitution is a one-line change, in `flor-dist`'s workspace root, to which of them supplies it. A binary's own logic can be a unit like any other — what a unit names is a contract, and which line satisfies it is decided where the graph is assembled rather than by where the code sits; the executable is then built in `flor-dist` from a one-line `main` over that unit's entry point. Which code is a unit, and which is not, is recorded per milestone in `decomposition.mdx`.
 
 The boundary is a crate rather than a module because a module boundary inside one crate is advisory: `pub(crate)` is visible throughout, so in a codebase nobody reads it erodes without anyone noticing. A crate boundary is checked by the compiler, and conformance is checked the same way wherever the contract's form allows — by a tool rather than by a reviewer. A human reviews the API; a public-API diff enforces it, and fixtures enforce the external contracts beside it in the same gate.
 
@@ -194,7 +200,9 @@ Kept as a gate, a failure carries information instead: either the agent misread 
 
 A unit moves DD-ward when something says it should: the threat-model pass flags it, or its defect rate crosses the ceiling. Never a quota — the need is observable, and allocating the work by arithmetic invites gaming it. Among candidates, severity decides and shape breaks ties, since a data-shaped unit drops into any consumer while a lifecycle-shaped one brings a runtime and a shutdown protocol with it. A unit can move once everything it depends on is contracted, which is a much weaker condition than everything it depends on being DD-authored.
 
-The step itself is fixed. Freeze the unit's contract; have `flor-dist` build a second configuration that takes the DD crate by git tag where the first takes the SD one by path; require the suite green in both; land the dependency move; then delete the SD implementation. The suite is black-box over the product, so a DD crate is never green on its own — only a build of the product carrying it is, which is why the second configuration exists before the move rather than after it. Deleting last is what keeps every earlier step reversible by the same one-line change, and running both configurations is what catches a DD crate that passes on its own terms while changing behaviour the product depends on.
+The step itself is fixed. Freeze the unit's contract; have `flor-dist` build a second configuration that takes the DD crate by git tag where the first takes the SD one by path; require the suite green in both; land the assembly move; then delete the SD implementation. The suite is black-box over the product, so a DD crate is never green on its own — only a build of the product carrying it is, which is why the second configuration exists before the move rather than after it. Deleting last is what keeps every earlier step reversible by the same one-line change, and running both configurations is what catches a DD crate that passes on its own terms while changing behaviour the product depends on.
+
+Both configurations are expressed in one place. `flor-dist`'s workspace root names a source for every dependency it declares itself, and redirects, through a `[patch]` entry over the `flor` source, the ones declared inside DD crates — which is what lets a DD unit sit above generated ones instead of dragging reviewed implementations down the whole subtree beneath it. The constraint that comes with it is that each unit must resolve to exactly one package in the graph: Cargo will otherwise resolve two revisions of one unit without complaint, and unless a type happens to cross between the copies, the product ships both of them and both of whatever state they hold. Enforcing that mechanically is what keeps a unit's pin its own rather than the repository's.
 
 DD work happens in the gap after a release rather than alongside the next one. Scheduled in the same window the two compete for the same people, and SD wins every time — it has customers where DD has principles.
 
@@ -239,7 +247,7 @@ A0, C0 and C1 exist because designing C1 whole proved intractable, and that rema
 *Accepting* that the sellable artifact arrives later, and that A0 rehearses only the data-shaped substitutions.
 
 **AIFIRST-26. Define the corpus as everything SD generates from.**
-It has two homes and one test of membership. Prose lives in `florete` — a milestone's scope, its decisions, and the operator and user guides, which bind as input rather than following the code. Contracts live in `flor`, as the public API of every unit, because a Rust API is not prose and belongs where it compiles. A DD implementation is not corpus: SD depends on DD crates, but generation reads their interfaces only.
+It has two homes and one test of membership. Prose lives in `florete` — a milestone's scope, its decisions, and the operator and user guides, which bind as input rather than following the code. Contracts live in `flor`, as the public API of every unit, because a Rust API is not prose and belongs where it compiles. A DD implementation is not corpus: SD depends on DD crates, but generation codes against their interfaces only (AIFIRST-27).
 *Because* nothing flows out of SD, so whatever SD generates from is by construction ours to author — which makes "what must a human own" a consequence of the direction rule rather than a judgement made case by case.
 *Because* the guides define the use cases that must work, which is a stronger input than the design pages and the reason they are written before either line implements anything.
 *Accepting* that the corpus spans two repositories.
@@ -253,7 +261,7 @@ A contract is authored first when something outside the unit reads it: **another
 *Rejected* closing each milestone's design fully first — most of what remains is regenerable detail. *Rejected* letting the agent decide every gap — it would freeze a wire protocol and a user-facing surface with no review.
 
 **AIFIRST-05. Decompose the product into units, and check every contract the strongest way its form allows.**
-A page `implementation/<milestone>/decomposition.mdx` holds the decomposition and grows with the milestone. A unit is a crate whose public API is authored before either implementation (code with no contract is not a unit, bound by the corpus and the suite and by nothing else). SD and DD each supply a crate satisfying the API, and substitution swaps which one a binary depends on. Conformance is checked by tools in `flor-dist`'s CI — internal contracts by public-API diff, external ones by fixtures — in one gate. A contract's form follows its subject, an API being only the most obvious: a format is fixtures, a user-facing surface can be the guide that documents it, a style is rules plus golden output, and behaviour is conformance tests where nothing cheaper pins it. Detail follows consequence, and enforcement follows form — mechanical in that gate where the form allows, by review on DD where it does not, by nothing on SD where neither reaches. A human reviews the contract; nobody reviews the implementation.
+A page `implementation/<milestone>/decomposition.mdx` holds the decomposition and grows with the milestone. A unit is a crate whose public API is authored before either implementation (code with no contract is not a unit, bound by the corpus and the suite and by nothing else). SD and DD each supply a crate satisfying the API, and substitution swaps which one the assembly selects. Conformance is checked by tools in `flor-dist`'s CI — internal contracts by public-API diff, external ones by fixtures — in one gate. A contract's form follows its subject, an API being only the most obvious: a format is fixtures, a user-facing surface can be the guide that documents it, a style is rules plus golden output, and behaviour is conformance tests where nothing cheaper pins it. Detail follows consequence, and enforcement follows form — mechanical in that gate where the form allows, by review on DD where it does not, by nothing on SD where neither reaches. A human reviews the contract; nobody reviews the implementation.
 *Because* the corpus specifies behaviour but never drew code boundaries, and a boundary retrofitted into generated code is an evolution step on that code.
 *Because* a crate boundary is compiler-enforced where a module boundary is advisory, and in code nobody reads, an unenforced boundary erodes unnoticed.
 *Because* the suite captures bugs that were found rather than everything that was promised, so it cannot be the only gate.
@@ -293,16 +301,21 @@ The agent proposes an API and generates consumers against it; the human judges a
 ### Repositories and code flow
 
 **AIFIRST-10. Keep the lines in two repositories, `flor` and `flor-dist`.**
-`flor` is the DD workspace — one crate per unit, no binaries. `flor-dist` holds the SD implementations, the integration and every binary. They share no history.
+`flor` is the DD workspace, and it holds a crate for every unit, since a contract exists as compilable code before a body fills it (AIFIRST-27). `flor-dist` holds the SD implementations and the integration, assembles the graph, and packages every executable. They share no history. Binaries live in `flor-dist` because they are integration, not because a unit may not be one: where a binary's own logic has to be reviewed it becomes a unit like any other, with its crate in `flor`. Cargo builds a workspace's own bin targets and not a dependency's, so the executable is produced in `flor-dist` by a one-line `main` over that unit's entry point — assembly rather than implementation, and human-owned like the manifest around it.
 *Because* the review regimes are incompatible: DD requires review of every diff and SD forbids it, so one repository would mean one CI, one CODEOWNERS and one set of protections covering opposite rules, with misclassification silent.
 *Because* SD's history is regeneration-shaped, and wholesale rewrites in the same log would degrade blame and bisect for the line that depends on them.
+*Accepting* that a DD binary can only be compile-tested in `flor`, against whatever bodies exist there; its real exercise is the suite, which only `flor-dist` can run.
 *Rejected* branches or directories in one repository — a boundary held by discipline breaks on one inattentive command. *Rejected* naming the SD repository for the product — it is read mainly by agents and is not a front door.
+*Rejected* forbidding a binary-shaped unit — a DD binary needs no dependency running from `flor` into `flor-dist`, because what a unit names is a contract and which line satisfies it is decided by the assembly (AIFIRST-11). Nor is the shim a consolation prize: the shape it makes possible is a unit sitting *above* generated units rather than only beneath them, which is what the assembly rule buys and what lets a binary's logic be reviewed at all. What differs from a library unit is enforcement — its contract is the CLI and the output, carried by fixtures and by the guide rather than by a public-API diff.
 
 **AIFIRST-11. Move DD code to SD as git-tagged crates, and publish nothing.**
-Each unit is its own crate, tagged on demand: when it becomes substitutable, or when a fix must reach SD. `flor-dist` depends on a path for SD implementations and on a git tag for DD ones, and substitution is that one-line change. Nothing goes to crates.io.
+Each unit is its own crate, tagged on demand: when it becomes substitutable, or when a fix must reach SD. `flor-dist`'s workspace root is the single place that says which line supplies each unit — a dependency it declares itself by source, a path for an SD implementation and a git tag for a DD one; a dependency declared inside a DD crate by a `[patch]` entry over the `flor` source, which reaches transitively and unifies the graph. Substitution is a one-line edit there either way, and the patch table is a standing inventory of which units are still generated. Nothing goes to crates.io.
 *Because* a copy would make every fix a two-site change, and duplication in the security core is the worst case of it.
 *Because* publishing internal APIs creates an accidental SDK the real one would have to disambiguate — and nothing we would put on a registry has a user, since the installer ships binaries and `cargo install flor` was already retracted.
+*Because* the graph will otherwise carry a unit twice and say nothing about it: Cargo resolves two revisions of one unit without complaint, and the compiler objects only where a type crosses between the copies — otherwise the product ships two of the unit and of whatever state it holds. So the assembly carries an invariant of its own: **each unit resolves to exactly one package in every build configuration**, enforced mechanically, and scoped to our own units so that ordinary third-party duplicates cannot mute it.
+*Because* that check is also what keeps pins per unit rather than repository-wide: units that depend on one another are forced to a common revision by it, and units that do not are left independent — which is the constraint the dependency graph actually imposes, rather than a coarser one declared over the whole repository and paid for by dragging every unit's unreleased work along with each bump.
 *Accepting* that `flor` and `florete` may be taken by someone else; the binary name, the crate names and the brand do not depend on the registry.
+*Accepting* a third mechanical check in the gate, and that a duplicate unit is diagnosed rather than prevented.
 *Revisit* when a third-party SDK is designed.
 *Rejected* vendoring a copy.
 
@@ -310,16 +323,20 @@ Each unit is its own crate, tagged on demand: when it becomes substitutable, or 
 The current `flor` code is AI-generated under human review, so it is DD by nature: hardened to A0 and split into contract-satisfying crates, it becomes DD's first units. Its APIs open the loop in AIFIRST-09 and its CLI surface is reused. SD is generated from the corpus and inherits none of it.
 *Because* seeding SD would make its first act an evolution step over pre-A0 code that does not match the design — the operation the model concedes agents cannot do — and would give SD an agent-mutated descendant of DD's own history.
 
-**AIFIRST-27. Hand generation an interface dump, never a checkout of `flor`.**
-What SD reads of a DD crate is the public-API artifact the diff gate already produces, with its documentation and nothing else. A contract may therefore be tagged before its body exists: a crate whose functions are unimplemented still yields a complete interface, so SD generates against a frozen contract while DD fills it in, and only the dependency move waits for a working implementation.
-*Because* an agent that reads a body codes against observed behaviour rather than against the contract, and the invariants it picks up that way become load-bearing without being written down — the coupling the contracts exist to prevent, and one that surfaces as a silent break the next time DD refactors.
-*Because* the boundary is then mechanical: the bodies are not in context, rather than in context under an instruction to ignore them.
-*Rejected* a separate contracts repository — it splits a contract from its implementation across repositories, multiplying the cost of the early API churn that AIFIRST-09 deliberately front-loads. *Rejected* `<unit>-api` interface crates — the standard Rust shape, but it re-expresses a contract as traits and forces indirection at every call site to buy an isolation the dump gives for nothing.
+**AIFIRST-27. Generate against contracts, and turn every reliance on a body into a finding.**
+Generating agents build against the real `flor` — a git dependency checks out its whole tree, bodies and suite included — and are instructed to code against each unit's public API and documentation. Reading a body is not forbidden; relying on what a contract does not state is reported instead: wherever generated code depends on behaviour the contract leaves unsaid, however the agent learned it, the agent files a finding. A contract may still be tagged before its body exists — a crate whose functions are unimplemented still yields a complete interface — so SD generates against a frozen contract while DD fills it in, and only the assembly move waits for a working implementation.
+*Because* an agent that relies on a body codes against observed behaviour rather than against the contract, and the invariants it picks up that way become load-bearing without being written down — the coupling the contracts exist to prevent, and one that surfaces as a silent break the next time DD refactors.
+*Because* that coupling forms where a contract is silent: an agent reads a body exactly when the interface does not answer its question, so what does the damage is less the reading than the gap it closes without anyone learning of it. Reported, the reliance is a finding (AIFIRST-19) and the contract improves; unreported, a gap in the corpus is papered over.
+*Because* keeping bodies out mechanically is not a boundary worth holding. `flor` is public and every build of `flor-dist` checks it out, so an environment airtight against it must also give up the web, local runs against the reviewed crates, and the upstream material generation draws on — and the gain would stay partial even then, since an agent that runs the product observes behaviour through the interface whether or not it reads a body.
+*Accepting* that the boundary is held by instruction and audited after the fact rather than prevented: what an agent opened is in its transcript.
+*Accepting* that the suite is reachable the same way, since it sits in the same tree, so AIFIRST-28 is held by the same instruction and the same audit.
+*Rejected* building generation against interface-only stand-ins of `flor`, in an environment with no route to it — mechanical, at the price of an extractor to maintain, no local run of any reviewed path, and an environment cut off from the web, for a gain black-box observation erodes anyway.
+*Rejected* a separate contracts repository — it splits a contract from its implementation across repositories, multiplying the cost of the early API churn that AIFIRST-09 deliberately front-loads. *Rejected* `<unit>-api` interface crates — the standard Rust shape, but it re-expresses a contract as traits and forces indirection at every call site, to buy a mechanical isolation this model has chosen not to pay for.
 
 ### Change and substitution
 
 **AIFIRST-13. Substitute by a fixed sequence, deleting the SD implementation last.**
-Freeze the unit's contract; have `flor-dist` build a second configuration taking the DD crate by git tag; require the suite green in both configurations; land the dependency move from path to tag; then delete the SD implementation.
+Freeze the unit's contract; have `flor-dist` build a second configuration taking the DD crate by git tag; require the suite green in both configurations; land the assembly move; then delete the SD implementation.
 *Because* deleting last keeps every earlier step reversible by the same one-line change, and running both configurations catches a DD crate that passes on its own terms while changing behaviour the product depends on.
 *Because* the suite is black-box over the product, not individual crates.
 *Rejected* substituting automatically on a DD release — it couples a release decision to a product decision and removes the human from a change that reaches customers.
