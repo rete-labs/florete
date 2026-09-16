@@ -6,5 +6,5 @@
         "installer",
         "observability"
     ],
-    "defaultOpen": true
+    "defaultOpen": false
 }
