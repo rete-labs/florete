@@ -28,9 +28,9 @@ Separate three layers that the convenience-name-as-SNI design had collapsed into
 
 ### Three layers
 
-1. **User-facing name** — the `.rete` convenience hostname (DNS-compatibility glue). Human/tool input; *resolved* to an identity.
-2. **Identity** — the SPIFFE ID, and its validated dialable view [`Dialable`](#dialable). The canonical, durable name: it is what appears in cert SAN, ACLs, compiled artifacts, and the transport API. **Authoritative.**
-3. **Wire routing hint** — SNI. *Derived from* the identity by the transport. The receiver recovers the *identity* by **lookup, never by parsing it out of SNI**; SNI itself is a routing label the transport may give richer structure than a bare identity (Istio encodes port and subset in it, for example) and route on. It is not the user-facing name, and is free to evolve.
+1. **User-facing name** — the `.rete` convenience hostname, which only services have (DNS-compatibility glue), carried by [`ServiceHostname`](#targetable-and-servicehostname). Human/tool input; *resolved* to an identity.
+2. **Identity** — the SPIFFE ID, and its validated connect-target view [`Targetable`](#targetable-and-servicehostname). The canonical, durable name: it is what appears in cert SAN, ACLs, compiled artifacts, and the transport API. **Authoritative.**
+3. **Wire routing hint** — SNI. *Derived from* the identity by the transport. The receiver recovers the *identity* by **lookup, never by parsing it out of SNI**; SNI itself is a routing label the transport may give richer structure than a bare identity (Istio encodes port and subset in it, for example) and route on. It is not the user-facing name — it is derived from the identity independently of it — and is free to evolve.
 
 The identity layer is the stable core; the name and the routing hint are replaceable layers above and below it.
 
@@ -40,23 +40,30 @@ Turning a name into an identity requires **namespace context**. In C0 the contex
 
 With context, the node-vs-rete shape is unambiguous *even for dotted trust domains*: strip the `.rete` suffix, strip the known trust-domain suffix, and the residual label count decides — 1 label ⇒ rete-scoped, 2 ⇒ node-scoped.
 
-### `Dialable`
+### `Targetable` and `ServiceHostname`
 
-`Dialable` is a validated identity newtype admitting exactly the kinds that have a hostname and may be a `connect` target: `Service` and `Vertex`. It carries **no** DNS-representability constraint. The kind restriction is enforced at the construction site, not by a type zoo:
+Two types carry what one used to, because the two meanings change for different reasons:
 
-- external ingress (SOCKS5) builds **services only**;
-- flor-internal code builds **either** (it dials vertices for mesh transit);
-- the Endpoint API `connect(caller: &X509Svid, target: &Dialable)` accepts both.
+- **`Targetable`** is a validated identity newtype admitting exactly the kinds that can be a connection's target — `Service` and `Vertex` today, `Node` and `Workload` reserved ([Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log), ID-C0-15). It carries no hostname. The kind restriction is enforced where the value is born, not by a type zoo; `publish` builds one from each SVID it registers, and the Endpoint API `connect(caller: &X509Svid, target: &Targetable)` accepts any.
+- **`ServiceHostname`** is the `.rete` codec, for services alone. `resolve(host, ctx_td) -> Result<ServiceHostname>` strips `.rete`, strips the context trust domain, and lets the residual labels decide the scope; a non-matching trust-domain suffix is a foreign rete, unsupported in C0. `render()` is infallible concatenation, `<service>[.<node>].<trust-domain>.rete`. A `ServiceHostname` converts into a `Targetable`, a service always being one.
 
-The codec is `render(&Dialable) -> String` (infallible concatenation, `<name>[.<node>].<trust-domain>.rete`, full form including the trust domain) and `resolve(host, ctx_td) -> Result<Dialable>` (strip `.rete`, strip the context trust domain, residual labels decide scope; a non-matching trust-domain suffix is a foreign rete — unsupported in C0). This mirrors the existing [`NodeScopableKind`](/docs/implementation/adr/0005-use-spiffe-identities) discipline of making illegal states unrepresentable, and documents the *dial from anyone, to a service or vertex* asymmetry of `connect`.
+The legacy path — SOCKS5 ingress — resolves a hostname to a `ServiceHostname` and connects to its `Targetable`; the native path — a FlorIO caller, or flor's own code dialing a vertex — builds a `Targetable` from an identity. Neither type checks DNS representability: that names of targetable kinds are single DNS labels is the validator's rule ([Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log), ID-C0-12).
 
 ### Dotted trust domains are allowed
 
-No single-label constraint anywhere, and no short-name↔trust-domain map. Contextual resolution removes the need for either. `render` is pure concatenation and produces a valid DNS string for a dotted trust domain (`tcp-echo.beta.demo.flor.rete`); `resolve` strips the *known* trust domain, so the residual is unambiguous regardless of how many labels the trust domain has.
+No single-label constraint anywhere, and no short-name↔trust-domain map. Contextual resolution removes the need for either. `render` is pure concatenation and produces a valid DNS string for a dotted trust domain (`tcp-echo.beta.flor.demo.rete`); `resolve` strips the *known* trust domain, so the residual is unambiguous regardless of how many labels the trust domain has.
 
 ### SNI is an internal routing hint, resolved by lookup
 
-The transport derives SNI from the identity through an `sni_for` seam — today `sni_for(d) == render(d)`, but `sni_for` is the contract and `render` an implementation detail it may diverge from. The server keys its published-cert registry by `sni_for(...)` and looks the incoming SNI up **directly**; it never parses an identity back out of SNI. Each registry entry carries the canonical `SpiffeId` (kind intact), so resolution is kind-preserving and needs no context on the server. Because resolution is by lookup, the wire label is free to evolve — carry richer routing structure, or become opaque/hashed so service names do not travel in clear — with no change visible to the identity layer. SNI is cleartext on the wire and visible to DPI; keeping sensitive routing data out of it, or adopting TLS Encrypted Client Hello (ECH), is a future option this decoupling preserves. SNI was never trusted (ADR-0006: SAN is authoritative); this formalizes it as a pure routing hint.
+The transport derives SNI from the target alone, through `sni_for(&Targetable)`, as a kind marker, a scope marker, the name, the node where there is one, the trust domain and `.rete`:
+
+```
+svc.rete.<service>.<td>.rete           svc.rete.api.flor.demo.rete
+svc.node.<service>.<node>.<td>.rete    svc.node.ssh.alpha.flor.demo.rete
+vtx.node.<vertex>.<node>.<td>.rete     vtx.node.public.alpha.flor.demo.rete
+```
+
+A kind that becomes targetable takes a kind marker of its own. The markers come first and fix how many labels precede the trust domain, so two identities one endpoint publishes never share a label — even across trust domains, where a marker at the end would let a node label pass for the start of a dotted trust domain — and no name has to be reserved to keep it so. The server keys its published-cert registry by `sni_for(...)` and looks the incoming SNI up **directly**; it never parses an identity back out of SNI. Each registry entry carries the canonical `SpiffeId` (kind intact), so resolution is kind-preserving and needs no context on the server. SNI needs no inverse and no uniqueness beyond one endpoint: what it must do is let the server choose a certificate from the ClientHello alone, before it has seen the client's. The label reads back from a packet capture; because resolution is by lookup, it is free to become opaque or hashed so service names do not travel in clear, with no change visible to the identity layer. SNI is cleartext on the wire and visible to DPI; keeping sensitive routing data out of it, or adopting TLS Encrypted Client Hello (ECH), is a future option this decoupling preserves. SNI was never trusted (ADR-0006: SAN is authoritative); this formalizes it as a pure routing hint.
 
 ### Exact SAN match remains the gate, and admits load balancing
 
@@ -85,9 +92,15 @@ So we borrow Istio's split (identity in the SAN, SNI as a routing hint) and its 
 
 The single-label constraint existed *only* to make `parse` context-free. It forbids dotted SPIFFE trust domains (interop loss), creates the node-vs-rete ambiguity for any multi-label suffix, and drives dash-mimicry. A short-name↔trust-domain map was considered and rejected: it works for small federations with known mappings but not for open/Internet-scale resolution. Contextual resolution degenerates to "ask your resolver," which scales the way DNS — and its eventual successor — does. The cost (names are no longer resolvable by pure string math) is the *correct* cost: a cross-rete name genuinely requires a directory.
 
-### Why `Dialable` rather than raw `SpiffeId` or a Service/Vertex type zoo
+### Why `Targetable` rather than raw `SpiffeId` or a Service/Vertex type zoo
 
-A raw `SpiffeId` target leaves "is this even dialable?" as a runtime error at every call site and hides the from-anyone/to-service-or-vertex asymmetry. A precise `Service`/`Vertex` pair was considered, but nothing downstream dispatches on the distinction — the verifier and the registry both use the canonical `SpiffeId` — so it would be precision with no consumer. One validated `Dialable`, with the kind enforced where the value is born, makes `render` infallible and illegal targets unrepresentable while keeping the `SpiffeId` as the single canonical value on the wire and in ACLs.
+A raw `SpiffeId` target leaves "can this be a target?" as a runtime error at every call site and hides the from-anyone/to-a-target asymmetry. A precise `Service`/`Vertex` pair was considered, but nothing downstream dispatches on the distinction — the verifier and the registry both use the canonical `SpiffeId` — so it would be precision with no consumer. One validated `Targetable`, with the kind enforced where the value is born, makes illegal targets unrepresentable while keeping the `SpiffeId` as the single canonical value on the wire and in ACLs.
+
+The type is named for what it guarantees — a principal that *can* be a target — while the binding names the role its value plays in one flow: `connect(caller, target: &Targetable)`. A service that initiates is still targetable and is not the target of that flow, so a type named `Target` would be false wherever a value is held for anything else. Keeping the hostname codec off it, on `ServiceHostname`, is what lets native connections — which name targets by identity — share the one `connect`, and what unties the hostname from the wire label.
+
+### Why a marked SNI rather than the hostname
+
+The hostname exists for what a person or a legacy application dials, and only services are dialled that way. Reusing it as SNI gave vertices a hostname nobody types and put a service and a vertex of one name on one node into one collision domain — a rule on names paid for by a projection with no consumer. A label of the transport's own, marked by kind and scope, keeps every identity an endpoint publishes distinct without any rule on names, and stays readable in a capture.
 
 ### Why SNI by lookup, not parse
 
@@ -104,14 +117,14 @@ Relaxing the gate to a hierarchical match (`service/<svc>` accepting `service/*/
 - Dotted, SPIFFE-standard trust domains work from day one; interop is preserved.
 - Single-rete C0 stays trivial (context = the local trust domain) yet the seam — a Name Service — is multi-rete- and Internet-ready with no rework of the identity layer.
 - The wire routing hint can evolve (opaque/private SNI, alternative labels) without touching identities or user-facing names.
-- `render` is infallible; illegal `connect` targets are unrepresentable via `Dialable`.
+- `render` is infallible; illegal `connect` targets are unrepresentable via `Targetable`; one `connect` serves the legacy and the native path.
 - Load balancing (both shapes) is reachable without changing the SAN gate or the `publish`/registry model.
 
 ### Trade-offs
 
 - Name resolution is no longer a pure string function; it needs context (a trust domain now, a Name Service later). Cross-rete names cannot be resolved purely locally — by design.
-- A user-facing name and a wire routing hint coexist conceptually even though they are the same string in C0; the seam adds a small indirection (`sni_for`).
-- ADR-0006's SNI/`dns::parse` mechanism is amended; the `dns::format` / `dns::parse` helpers become `render` / `resolve` over `Dialable`.
+- A service has two derived strings — its hostname and its wire label — which never coincide; nothing has to explain a coincidence between them.
+- ADR-0006's SNI/`dns::parse` mechanism is amended; the `dns::format` / `dns::parse` helpers become `render` / `resolve` on `ServiceHostname`, and `connect` takes a `Targetable`.
 
 ### Evolution
 

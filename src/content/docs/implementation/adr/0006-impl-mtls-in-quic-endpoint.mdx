@@ -6,7 +6,7 @@ title: "0006: Implement mTLS in QuicEndpoint"
 
 Accepted
 
-**Amended by [ADR-0007: Decouple Naming, Identity, and Routing](/docs/implementation/adr/0007-decouple-naming-identity-routing)** (naming/SNI mechanism only). The mTLS design below — SAN as the authoritative gate, the custom verifiers, the peer-identity type-state split, publish/accept, per-call `ClientConfig` — stands. What ADR-0007 supersedes: SNI is an internal routing hint the server resolves by **registry lookup, not `dns::parse`**; name→identity resolution is **contextual** (a trust domain now, a Name Service later); trust domains **may be dotted**; and `dns::format` / `dns::parse` become `render` / `resolve` over a validated `Dialable` type. Amended passages below are flagged inline.
+**Amended by [ADR-0007: Decouple Naming, Identity, and Routing](/docs/implementation/adr/0007-decouple-naming-identity-routing)** (naming/SNI mechanism only). The mTLS design below — SAN as the authoritative gate, the custom verifiers, the peer-identity type-state split, publish/accept, per-call `ClientConfig` — stands. What ADR-0007 supersedes: SNI is an internal routing hint the server resolves by **registry lookup, not `dns::parse`**; name→identity resolution is **contextual** (a trust domain now, a Name Service later); trust domains **may be dotted**; and `dns::format` / `dns::parse` become `render` / `resolve` on a services-only `ServiceHostname`, while `connect` takes a validated `Targetable`. Amended passages below are flagged inline.
 
 ## Context
 
@@ -34,7 +34,7 @@ This is the same role SNI plays in service-mesh sidecars (Istio, Linkerd-with-SP
 
 ### SNI carries the Florete convenience DNS name
 
-> **Amended by [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing).** SNI is now an internal routing hint the server resolves by **registry lookup** (keyed by the rendered name), never by `dns::parse` — so the kind a vertex name would otherwise lose is preserved, and the wire label may later become opaque. The convenience-name *shape* below still holds as today's `render` output, but it is the *user-facing* name (resolved with context), decoupled from the wire SNI; the trust domain may be dotted. The `dns::format` / `dns::parse` helpers named below are replaced by `render` / `resolve` over a `Dialable` type.
+> **Amended by [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing).** SNI is now an internal routing hint the server resolves by **registry lookup** (keyed by a kind-and-scope-marked label derived from the target, unrelated to the hostname), never by `dns::parse` — so the kind a vertex name would otherwise lose is preserved, and the wire label may later become opaque. The convenience-name *shape* below still holds for services as `ServiceHostname`'s `render` output, but it is only the *user-facing* name (resolved with context), and never the wire SNI; the trust domain may be dotted. The `dns::format` / `dns::parse` helpers named below are replaced by `render` / `resolve` over a `Dialable` type.
 
 The SNI string is the **`.rete` convenience DNS name** derived from the target's SPIFFE ID:
 
@@ -63,7 +63,7 @@ QuicConnector::connect(&self, caller: &X509Svid, target: &SpiffeId)
     -> Result<QuicConnection, Report<Error>>;
 ```
 
-Internally, `connect` calls `Resolver::resolve(target) -> SocketAddr` to find where to dial, derives the SNI via `sni_for(target)` (see [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing); `target` is a `Dialable`), builds a per-call rustls `ClientConfig` with the caller SVID and a `SpiffeServerVerifier` parameterised by the expected target, and dials.
+Internally, `connect` calls `Resolver::resolve(target) -> SocketAddr` to find where to dial, derives the SNI via `sni_for(target)` (see [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing); `target` is a `Targetable`), builds a per-call rustls `ClientConfig` with the caller SVID and a `SpiffeServerVerifier` parameterised by the expected target, and dials.
 
 ### Each consumer owns its own SVID
 
@@ -114,7 +114,7 @@ The internal type is mockable via mockall like today; the public type is also mo
 
 ### Custom rustls verifiers
 
-- `SpiffeResolvesServerCert` — `rustls::server::ResolvesServerCert` impl. **(Amended by [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing).)** Reads the SNI and looks it up **directly** in the endpoint's published-cert registry, which is keyed by `sni_for(svid.spiffe_id())` (the transport's SNI-derivation seam, today the rendered `.rete` name; populated by `QuicPublisher::publish`) and holds each entry's canonical `SpiffeId`. No `dns::parse`. A miss (unknown SNI, nothing published for it) means no cert is presented and the handshake fails — that's the right outcome.
+- `SpiffeResolvesServerCert` — `rustls::server::ResolvesServerCert` impl. **(Amended by [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing).)** Reads the SNI and looks it up **directly** in the endpoint's published-cert registry, which is keyed by `sni_for(svid.spiffe_id())` (the transport's SNI-derivation seam — a kind-and-scope-marked label, unrelated to the hostname; populated by `QuicPublisher::publish`) and holds each entry's canonical `SpiffeId`. No `dns::parse`. A miss (unknown SNI, nothing published for it) means no cert is presented and the handshake fails — that's the right outcome.
 - `SpiffeClientCertVerifier` — validates the inbound peer cert chain against the rete's `X509Bundle` (using `webpki` directly or `WebPkiClientVerifier` if it composes cleanly). The leaf's URI SAN is what authenticates the peer; surfaced to the acceptor via `peer_identity()` and returned as the `SpiffeId` in `accept`.
 - `SpiffeServerVerifier` — validates the outbound peer cert chain against the bundle, then verifies the leaf's URI SAN equals the *expected target* `SpiffeId` passed to `connect`. SAN match is the gate; SNI is not consulted.
 

@@ -34,7 +34,7 @@ For A0 we need the bare minimum to run the pilots successfully.
 
 ## Deliverables
 
-What A0 ships.
+What A0 ships. How it works is A0's [Design](/docs/implementation/a0-alef-authoring/design).
 
 ### Installer
 
@@ -56,7 +56,14 @@ flor enroll <bundle>   # join node to rete or update its state
 ### Network Proxy
 
 ```bash
-flor-vertex   # run by node supervisor — systemd in A0
+flor-vertex --scope <node>.<rete>   # run by systemd from the flor@.service unit
+```
+
+The installer writes the unit, and the operator starts and stops each node's proxy with systemd; A0 has no activation command of its own:
+
+```bash
+systemctl --user enable --now flor@<node>.<rete>   # start a node's proxy, and at every boot
+systemctl --user stop flor@<node>.<rete>           # stop it, e.g. before re-enrolling
 ```
 
 ### Rete-authoring CLI
@@ -84,7 +91,7 @@ retectl issue-bundle --node <n> # pack identities and artifacts for a node
 
 ## Environments
 
-- **Dev environment** to be implemented as multiple node scopes running at the same PC.
+- **Dev environment** to be implemented as several nodes of one rete on the same PC, each in its own scope, run by hand without systemd.
 - **Test environment** to be implemented as a single server node (VM) + user node connected over Internet.
 - **Production environment** for dogfooding [to be determined](https://github.com/rete-labs/florete/issues/149).
 

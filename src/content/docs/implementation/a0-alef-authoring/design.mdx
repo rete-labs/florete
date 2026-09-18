@@ -149,7 +149,7 @@ An A0 node runs one long-lived process, `flor-vertex`, and nothing supervises it
 
 The unit tells the vertex one thing, its scope — `flor-vertex --scope %i` — and the vertex works out the rest ([DSGN-A0-09](#decision-log), [DSGN-A0-10](#decision-log)). It takes the state root's lock shared and its scope's lock exclusively, and holds both while it runs. It reads `receipt.json` and refuses a scope that was never enrolled, is mid-enrollment, or was written by a release it cannot read. It opens the one artifact under `artifacts/mgmt/`, refusing a scope root that holds more than one, takes its own name from that artifact's envelope, and derives every path it needs from the scope. No `FLORWL_*` variable is set or read. These are jobs C0 gives the agent, and in A0 they are the vertex's until a supervisor holds the scope.
 
-What a node holds follows from the same absence. The scope root is C0's without what the agent owns, the artifact sitting directly at `artifacts/mgmt/<vertex>.json` ([DSGN-A0-11](#decision-log)). The compiler emits no `agent.json`, the bundle carries no node principal, and nothing is created in the runtime directory ([DSGN-A0-02](#decision-log)). A node's identity is its name as the manifest states it, pinned in `identity/rete.json`.
+What a node holds follows from the same absence. The scope root is C0's without what the agent owns, the artifact sitting directly at `artifacts/mgmt/<vertex>.json` ([DSGN-A0-11](#decision-log)). The compiler emits no `agent.json`, the bundle carries no node principal, and nothing is created in the runtime directory ([DSGN-A0-02](#decision-log)). A node's identity is its name as the manifest states it, pinned in `identity/scope.json`.
 
 The vertex serves every principal it holds material for, as in C0. In A0 a principal named without its material is a producer's mistake rather than a passing state, and the vertex's warning is where it shows ([DSGN-A0-05](#decision-log)).
 
@@ -173,7 +173,7 @@ A0 changes a node in one way, by re-enrolling it ([DSGN-A0-06](#decision-log)). 
 
 ## Several nodes on one host
 
-Every scope is named by its node and its rete: `retes/<node>.<rete>/` on disk and `flor@<node>.<rete>` as a unit ([DSGN-A0-14](#decision-log)). The handle finds a scope; what the scope is lives in `identity/rete.json`. A node name is a single DNS label, so a handle always splits back into its two parts. The operator's own tree belongs to a rete rather than to a node, and is keyed by the rete alone.
+Every scope is named by its node and its rete: `retes/<node>.<rete>/` on disk and `flor@<node>.<rete>` as a unit ([DSGN-A0-14](#decision-log)). The handle finds a scope; what the scope is lives in `identity/scope.json`. A node name is a single DNS label, so a handle always splits back into its two parts. The operator's own tree belongs to a rete rather than to a node, and is keyed by the rete alone.
 
 A host can therefore hold several nodes of one rete, each its own scope under its own unit. Enrolling the second one takes `--multi-node`; without it, enroll refuses before writing anything and names the scope that is already there.
 
@@ -193,7 +193,7 @@ The line format and its vocabulary are [C0's](/docs/implementation/c0-tended-tun
 
 ## Names
 
-A supervised workload — a process a supervisor runs on a node — is named `workload/<node>/<name>` in the SPIFFE framework, as a name and never as a principal, and the supervisor itself is `workload/<node>/agent` ([DSGN-A0-19](#decision-log)). An artifact's node and name are that workload, and its plane says which of the workload's configurations it is. A vertex's workload takes the vertex's declared name. The rete's entities — nodes, vertices, services — are distinct from the workloads that back them: an entity may be backed by one workload, by several, or by a process nobody supervises. A0 supervises nothing, yet its compiler names the vertex's artifact and its log frames the vertex's records by this naming.
+A supervised workload is named `workload/<node>/<name>`, and the supervisor `workload/<node>/agent`, as [Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log) decides (ID-C0-09); a vertex's workload takes the vertex's declared name, and that is what an artifact's node and name address. A0 supervises nothing, yet its compiler names the vertex's artifact and its log frames the vertex's records by this naming.
 
 The vertex's configuration lists the TLS principals it terminates mTLS for as its `attachments`, the principals attached to the vertex from above ([DSGN-A0-20](#decision-log)).
 
@@ -216,9 +216,9 @@ This page states what A0 does differently and cites C0 for the rest: where A0 fo
 ### What the absent agent and coordinator leave
 
 **DSGN-A0-02. Emit no `agent.json`, mint no node principal, and create no runtime root.**
-A node's mgmt set is its vertex's artifact alone; the bundle carries user and service principals and no `node/<name>`; nothing is created in the runtime directory. A node's identity is the manifest's `node` claim, pinned in `identity/rete.json`.
+A node's mgmt set is its vertex's artifact alone; the bundle carries user and service principals and no `node/<name>`; nothing is created in the runtime directory. A node's identity is the manifest's `node` claim, pinned in `identity/scope.json`.
 *Because* each exists for the agent: `agent.json` carries a supervision inventory, a sync block and an endpoint map for `agent.sock`; the node principal authenticates the agent to the coordinator; the runtime root holds `agent.sock`. A0 has neither end of any of them.
-*Accepting* that the set has no root document, its coherence being the bundle's; and that, expiry being warned by whatever touches a certificate ([ENRL-C0-33](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)).
+*Accepting* that the set has no root document, its coherence being the bundle's; and that expiry is warned by whatever touches a certificate ([ID-C0-23](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)).
 *Rejected* a reduced or empty `agent.json`, an artifact the compiler keeps filling for no reader; a node principal minted and unused, a ninety-day bearer credential couriered for nothing and minted afresh at C0's re-enrollment (DSGN-A0-21); an empty runtime root, a mode rule and a cleanup path for a directory holding nothing.
 
 **DSGN-A0-03. Sign every artifact, and verify no envelope on the node.**
@@ -273,7 +273,7 @@ The unit runs `flor-vertex --scope %i`. The vertex opens its set's one artifact,
 `receipt.json` is C0's ([ENRL-C0-39](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)). The scope lock is held by `flor-vertex` for its life and by `flor enroll` for its run, and enroll refuses a live scope rather than stopping it. Before serving, the vertex refuses a scope whose receipt is absent, reads `enrolling`, or carries a schema version it cannot read, exiting `78`.
 *Because* what the two guard — an interrupted enrollment, and a process reading the identity plane while enroll rewrites it — does not depend on the agent, and in A0 the vertex is that process.
 *Accepting* that the lock and the receipt check live in the vertex only until a supervisor holds the scope, and move to it unchanged.
-*Rejected* deciding freshness from `identity/rete.json`, which is written before the commit point; a lock only enroll takes, which excludes no live reader; asking systemd whether the unit is active, a read outside any lock; checking the receipt at an activation step, which a reboot bypasses.
+*Rejected* deciding freshness from `identity/scope.json`, which is written before the commit point; a lock only enroll takes, which excludes no live reader; asking systemd whether the unit is active, a read outside any lock; checking the receipt at an activation step, which a reboot bypasses.
 
 **DSGN-A0-11. Write artifacts in place.**
 Enroll writes each artifact to `artifacts/mgmt/<vertex>.json`, its destination read out of its own envelope. There is no `incoming/`, no intake, no `current` pointer and no `sets/`.
@@ -301,7 +301,7 @@ Where `coordinator` and `coordinator-publisher` are both declared, the rules req
 
 **DSGN-A0-14. Handle a scope as `<node>.<rete>`, and require `--multi-node` for a second node of one rete.**
 Every scope root is `retes/<node>.<rete>/` and every unit instance `flor@<node>.<rete>`. Enroll derives the handle from the manifest's node and trust-domain claims. A fresh enrollment refuses when a sibling scope holds another node of the same rete unless `--multi-node` is passed, and the refusal names the sibling, the flag, and removing that scope by hand where the new bundle replaces it. A node name is a single DNS label. Several nodes of one rete on one host are a supported arrangement.
-*Because* `identity/rete.json` already records a scope as its node and trust domain, so a handle rendering both is a lookup key equal to the identity: the same node enrolled twice is a re-enrollment, and two nodes of one rete cannot collide.
+*Because* `identity/scope.json` already records a scope as its node and trust domain, so a handle rendering both is a lookup key equal to the identity: the same node enrolled twice is a re-enrollment, and two nodes of one rete cannot collide.
 *Because* the rendering is unambiguous only where a node name holds no dot, and a dotted handle passes through systemd's instance escaping unchanged.
 *Because* a refusal before anything is written leaves the bundle on disk, where a warning after a completed enroll finds it already deleted.
 *Accepting* that a renamed node or a misdelivered bundle would otherwise land as a second scope, which is what `--multi-node` guards; and that sibling records are read without their locks.
@@ -341,19 +341,10 @@ Every event C0 will count carries its bounded values as `tracing` fields in C0's
 
 ### Naming
 
-**DSGN-A0-19. Name a supervised workload `workload/<node>/<name>`, as a name and never a principal.**
-A supervised workload — a process a supervisor runs, always on one node — has the canonical name `spiffe://<rete>/workload/<node>/<name>` and holds no SVID; the supervisor is `workload/<node>/agent`. What an envelope addresses by its node and name is this workload, its plane choosing which of the workload's configs it is. A workload running one vertex takes that vertex's declared name. Workload names are unique per node, `agent` and `coordinator` are not vertex names, and cross-kind name uniqueness binds principals rather than workloads. Entities and workloads stay distinct: a node, a vertex or a service is backed by a workload, by several, or by a process nobody supervises.
-*Because* the naming framework already holds names that are not principals, and the envelope already carries this pair, so the name costs no field.
-*Because* identity belongs to what is connected to — a service may be backed by several workloads, and a workload may publish several services or none — so a workload is named beside principals, never by one.
-*Because* only a per-vertex name gives the two vertices C1 runs on a node two names.
-*Accepting* strings that coincide by rule and mean nothing by coinciding — the coordinator's workload beside its services, a vertex's workload beside the vertex; that no artifact carries the full form until something reads it; and that the scope root keeps the supervisor's state apart from the workloads'.
-*Revisit* workloads as attachments: a group of workloads backing one service and needing to reach one another would open it, a workload identity saying that directly where the alternative is a private service invented for the access list.
-*Rejected* a local name with no canonical form; borrowing the name of the principal a workload acts as, always or only where it acts as exactly one; a fixed vertex workload name, one name for what C1 makes two.
-
 **DSGN-A0-20. Call the TLS principals a vertex serves its `attachments`.**
 The vertex payload lists the principals the vertex terminates mTLS for as `attachments`.
 *Because* a vertex is a point of attachment, where a layer's users attach, and the word names that relation rather than a credential — holding in C1, where a mesh vertex attaches to a link vertex in the same sense.
-*Because* *workload* names a supervised process (DSGN-A0-19), and a payload field's name lasts as long as its major version.
+*Because* *workload* names a supervised process ([ID-C0-09](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)), and a payload field's name lasts as long as its major version.
 *Rejected* `workloads`, one word for two things on one node; `tls_principals`, ambiguous in C1 where a mesh vertex is itself a TLS principal; settling the name at C0, a major version for the same result.
 
 ### Forward

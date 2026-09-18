@@ -61,7 +61,7 @@ Trust-bundle authorities are converted to `webpki::TrustAnchor` at verifier cons
 A SPIFFE ID's path encodes which kind of principal it identifies and (sometimes) the node it is scoped to — those facets matter to issuance, ACL, and CLI surfaces. We project them onto two enums:
 
 ```rust
-pub enum Kind { User, Service, Node, Vertex, ControlPlane, ManagementPlane }
+pub enum Kind { User, Service, Node, Vertex, ControlPlane, ManagementPlane, Workload }
 pub enum Scope { Rete, Node(String) }   // node-name segment, not a SpiffeId
 ```
 
@@ -76,7 +76,9 @@ pub fn scope_of(id: &SpiffeId) -> Result<Scope, ScopeError>;
 
 `Scope::Node` carries a bare `String` — the node-name segment from the SPIFFE path, not a derived `SpiffeId` for the `node/<name>` principal. The string is already validated as a SPIFFE path component (the `spiffe` crate enforced charset/syntax when parsing the parent SPIFFE ID). Synthesizing the host-node SPIFFE ID is a higher-layer concern (ACL, artifact validation) — `Scope` carries what the path *encodes*, not what it *refers to*.
 
-All six kinds are recognised from day one even though `Vertex`, `ControlPlane`, and `ManagementPlane` aren't exercised at runtime in C0. The cost of an unused variant is nil; pre-declaring removes the migration moment when C1 introduces vertex identities and the control-plane.
+All seven kinds are recognised from day one even though C0 issues no `Vertex`, `ControlPlane` or `Workload` certificate.
+
+`Workload` names a supervised workload — a process a supervisor runs on a node — as `spiffe://<rete>/workload/<node>/<name>`. It is a kind with **no credential policy yet**, so nothing is issued under it. The node principal shows why a principal's name and the process using it stay apart: its subject is the node, its owner is the agent — the workload `workload/<node>/agent` — and its terminator is the vertex ([Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log), ID-C0-03).
 
 ### Singular form, everywhere
 
@@ -97,7 +99,7 @@ This shape mirrors the operational reality (each port is one principal's port), 
 
 ### Single root CA, no intermediate, in C0/C1
 
-A `Ca` value represents a self-signed rete root. All six kinds are issued through the same `Ca::sign_csr(csr_pem, &SpiffeId, Kind, validity)` path — the `Kind` argument selects the X.509 extension policy. Control-plane and management-plane signing identities are *regular principals under the CA* (with restricted X.509 extensions), not intermediate CAs.
+A `Ca` value represents a self-signed rete root. Every principal kind is issued through the same `Ca::sign_csr(csr_pem, &SpiffeId, Kind, validity)` path — the `Kind` argument selects the X.509 extension policy, and `sign_csr` refuses a kind with none. Control-plane and management-plane signing identities are *regular principals under the CA* (with restricted X.509 extensions), not intermediate CAs.
 
 The C0 design includes mgmt-envelope verification (operator-signed via `management-plane/<name>`); C1 adds ctrl envelopes. The florete docs at the time settled on pinning for both, and whether to revisit that to kind-based-with-CA-chain was left as a design call for when envelope-verification code was actually being written, with HPKP-style lockout, multi-signer support and revocation cadence as the live tradeoffs. **This ADR doesn't decide the verification scheme.**
 
@@ -109,8 +111,9 @@ This ADR's runtime scope is mTLS — the cert chain authorities (the rete `X509B
 
 `Ca::sign_csr` applies a `Kind`-conditional extension policy:
 
-- `User`, `Service`, `Node`, `Vertex` — `keyUsage: digitalSignature, keyEncipherment`; `extKeyUsage: serverAuth, clientAuth`. mTLS-capable. (`digitalSignature` is required by TLS itself — the leaf signs the CertificateVerify message — so it can't be omitted.)
+- `User`, `Service`, `Node`, `Vertex` — `keyUsage: digitalSignature, keyEncipherment`; `extKeyUsage: clientAuth`, and `serverAuth` as well for a kind that can be a connection's target — `Service` and `Vertex` today. mTLS-capable. (`digitalSignature` is required by TLS itself — the leaf signs the CertificateVerify message — so it can't be omitted.) A certificate grants no more than its kind can do, so a leaked user or node key cannot be presented as a server ([Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log), ID-C0-04).
 - `ControlPlane`, `ManagementPlane` — `keyUsage: digitalSignature` only; no `extKeyUsage`. TLS verifiers reject these certs at handshake; envelope verifiers accept them.
+- `Workload` — no policy yet; `sign_csr` refuses it.
 
 X.509 alone cannot prevent a TLS-capable key from being misused for application-layer signing; whatever envelope-verification scheme lands later (kind-based, pinning, or hybrid) is the ultimate gate. The cert extensions provide defense-in-depth, not strict isolation.
 
@@ -155,13 +158,13 @@ We considered wrapping `SpiffeId` in a custom type to preserve the option of gro
 
 The reversal is deliberate. An earlier draft of this ADR endorsed the enum on forward-compat grounds. Re-examining the future use cases (DNS at an ingress gateway, `.onion` for self-authenticated clients), they all live in *different layers* — public-facing TLS, anonymity-network entry points — that don't share verifier flows, ACL machinery, or trust roots with the rete-internal traffic. Forcing them into a shared `Identity` type creates an abstraction with no real shared behaviour to abstract over. YAGNI applied at the right granularity.
 
-### Why six kinds from day one
+### Why every kind from day one
 
-The C1 milestone introduces `Kind::Vertex` for mesh-vertices. (The `vertex/` *naming* namespace is broader than the TLS-principal kind: link-vertices carry canonical `vertex/<node>/<name>` names without SVIDs — a name alone confers no principal status; see identity.mdx.) The control-plane and management-plane kinds both arrive as the artifact-signing flows materialise (C1 for ctrl envelopes; ManagementPlane is introduced by this ADR to symmetrise mgmt envelope signing). All six are pre-declared in C0 because:
+`Kind` names a SPIFFE path's namespace, not an issuance: a vertex is a principal whether or not it holds an SVID, and C0's link vertices are named and issued nothing ([Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log), ID-C0-02). The control-plane and management-plane kinds both arrive as the artifact-signing flows materialise (C1 for ctrl envelopes; ManagementPlane is introduced by this ADR to symmetrise mgmt envelope signing). `Workload` names supervised processes, which exist from C0's agent on. All seven are pre-declared in C0 because:
 
 - the cost of an unused variant is nil,
 - post-hoc additions force `kind_of` and CLI `--kind` parsers to grow, and `match` arms in `Ca::sign_csr` to gain a new branch — touching every call site,
-- Issuing a `control-plane` kind should be expressible in C0 even though no envelope signing happens yet, because the kind vocabulary is the user-visible contract and adding a value later is more disruptive than starting wide. *(Amended with C0 enrollment: the six kinds remain part of the identity model, but C0's CLI exposes a narrower slice — `retectl id issue` takes the signing kinds, and TLS-principal certs are issued inside `retectl issue-bundle` rather than one at a time. A CSR-consuming sign command belongs to the deferred Flow B.)*
+- Issuing a `control-plane` kind should be expressible in C0 even though no envelope signing happens yet, because the kind vocabulary is the user-visible contract and adding a value later is more disruptive than starting wide. *(Amended with C0 enrollment: the kinds remain part of the identity model, but C0's CLI exposes a narrower slice — `retectl id issue` takes the signing kinds, and TLS-principal certs are issued inside `retectl issue-bundle` rather than one at a time. A CSR-consuming sign command belongs to the deferred Flow B.)*
 
 ### Why singular everywhere
 
@@ -247,7 +250,7 @@ Because envelope-layer checks aren't the only attack surface. If a `ControlPlane
 
 - The published florete docs use plural URI segments and `--kind` flag values; they need an update as part of C0 implementation. (Side-deliverable.)
 - The `operator:<fingerprint>` `key_id` form referenced in [mgmt-plane.mdx](/docs/implementation/c1-manual-mesh/mgmt-plane) needs revising. (Side-deliverable.) *Done, and it did not land as a SPIFFE URI: [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) removed `key_id` altogether in favour of the signer's certificate, which carries the SPIFFE ID in its SAN.*
-- Six `Kind` variants exist before three of them are exercised — small dead surface in C0.
+- `Kind` variants exist before they are exercised — small dead surface in C0 — and `sign_csr` can fail on its `Kind` argument, since `Workload` has no policy yet.
 - If non-SPIFFE identity classes (DNS for ingress GW, `.onion`) eventually arrive *and* turn out to share verifier code with the SPIFFE rete, we will refactor at that point. We accept the refactor cost as the price of not abstracting prematurely.
 
 ### Evolution beyond C1

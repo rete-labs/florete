@@ -503,7 +503,7 @@ An upgrade drops active tunnels exactly as a config sync restart does — same m
 
 ### Migrations are not the installer's
 
-**A release that changes the shape of node state does not migrate it from here.** The installer never enters `retes/`, so it neither snapshots nor migrates nor restores; the agent migrates what it owns, and an explicit operator-invoked command handles what must not happen automatically. None of it is C0 code — the first release has nothing to migrate *from* — and the design is [tracked separately](#deferred-from-c0).
+**A release that changes the shape of node state does not migrate it from here.** The installer never enters `retes/`, so it neither snapshots nor migrates nor restores; the agent migrates what it owns, and an explicit operator-invoked command handles what must not happen automatically. None of it is C0 code — a node arriving from A0 is re-enrolled rather than migrated ([DSGN-A0-21](/docs/implementation/a0-alef-authoring/design#decision-log)) — and the design is [tracked separately](#deferred-from-c0).
 
 *Because* the alternative concedes every channel but this one. `install.sh` is a C0 scope reduction rather than the shape this ends in: dpkg, pacman and Homebrew will each place files their own way and none will run our migration logic, while all of them can be asked to stop a service and replace a file. So a guarantee that must hold everywhere cannot live in the installer, and node state is exactly such a guarantee. The industry agrees to an unusual degree — Django, Rails, Elasticsearch and GitLab all migrate in the application, and `pg_upgrade` is explicitly separate from the package step.
 
@@ -574,7 +574,7 @@ One consequence of the fetch path worth recording: the curl/tar route sets no qu
 Cut deliberately, to ship. Each names the milestone that picks it up, so none of them is a hole:
 
 - **Binary rollback** — retained previous binary sets, `flor install --rollback`, and the layout-compatibility marker they need → **C1**, alongside the artifact-side confirm/auto-rollback guard ([Downgrade](#downgrade)).
-- **Node-state migrations** — the agent's and an operator-invoked command's, not the installer's ([Migrations](#migrations-are-not-the-installers)). Tracked as its own design, since nothing in C0 has anything to migrate from.
+- **Node-state migrations** — the agent's and an operator-invoked command's, not the installer's ([Migrations](#migrations-are-not-the-installers)). Tracked as its own design; C0 needs none, a node arriving from A0 being re-enrolled rather than migrated ([DSGN-A0-21](/docs/implementation/a0-alef-authoring/design#decision-log)).
 - **`flor install --dry-run`** → **C1** with rollback: most of its value was reporting the compatibility verdict that C0 has no marker for. C0's install is idempotent and its guard is a refusal, which covers the accident dry-run would have caught.
 - **crates.io as an install path** — the crate is published to hold the name, and what `cargo install` should eventually mean is open ([Distribution](#distribution-and-integrity)). It is not a documented way to install flor in C0.
 - **A layout-compatibility marker**, and any check of it — it belongs with the migration design, and until something migrates there is nothing for it to say.
