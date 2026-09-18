@@ -3,7 +3,7 @@ title: Reasoning
 description: Design rationale for the C0 control and management plane decisions
 ---
 
-Captured justifications behind the decisions in the C0 control and management planes, organised by topic.
+Captured justifications behind the decisions in the C0 control and management planes, organised by topic. Decisions about principals, names, the root CA, credential life and the identity store are logged on [Identity](../identity#decision-log), and their reasoning lives there.
 
 ## Why git for source-of-truth (but not for distribution)
 
@@ -51,71 +51,11 @@ The full list of motivators:
 
 This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C0 the per-node output is two artifacts (`agent.json` + `flor.json`); in C1 a third is added for the second flor vertex in the recursive stack. The split is between supervisor (agent) and data-plane (vertex), so each consumer's contract stays minimal.
 
-## Why CA-based identity (not pinned certs)
+## Why one `attachments` list with typed `io[]` channels
 
-Two options were considered:
+An earlier draft of the per-node payload had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated initiator-vs-target with principal kind, and started straining as soon as a second flor binary (link-flor in C1) needed to carry an entry that's both initiator and target on a single FlorIO channel.
 
-- **Pinned certs per peer** — every node must hold every peer's cert. Adding one peer = updating every node's trust store. Tangles trust distribution with ACL distribution — two concerns, one file.
-- **CA-signed certs (SPIFFE X.509-SVIDs)** — nodes verify signatures, not exact certs. ACLs authorize by SPIFFE ID. Adding a peer = sign their cert, commit their name; existing nodes need no trust-store update.
-
-Even at C0 scale, CA-based scales better — and by putting a SPIFFE URI in the SAN we produce real SPIFFE X.509-SVIDs, interoperable with SPIRE, Istio, Linkerd, Vault, and anything else in the SPIFFE ecosystem. Same amount of code as pinned-cert mode, forward-compatible with standards. Clean separation: **authentication** = CA signature at mTLS handshake; **authorization** = ACL check on SPIFFE ID.
-
-The root CA's private key stays on operator hardware, in `retectl`'s own tree, and never in the repo. **C0 protects it with filesystem permissions and nothing else** — passphrase protection lands in C1, and hardware custody (a PIV token, an HSM) in B1+ alongside the intermediate that makes an offline root practical; see [Enrollment § Decision Log](../enrollment#decision-log), ENRL-C0-06. Revocation via ACL removal is sufficient at C0 scale; CRL/OCSP is a B1+ concern.
-
-**Why we don't pin cert fingerprints in `allow` entries.** A tempting "hardening" is to list each authorized cert's fingerprint next to its SPIFFE ID, to reject a rogue-CA cert bearing the same ID. It buys nothing in the rete model: a rete trusts exactly one CA (its own root), so a cert signed by any other CA fails the mTLS handshake outright, whatever SPIFFE ID it claims — there is no "same-ID cert from a different CA" to defend against. Fingerprint pinning earns its keep only in a multi-CA PKI, where you can't predict which of many trusted CAs signs a given identity; that is not the rete model, nor even the small-federation model. The genuine federation concern — ensuring a peer's SPIFFE **trust domain** is validated against the *right* CA rather than merely some trusted CA — is a different mechanism, tracked in [flor#51](https://github.com/rete-labs/flor/issues/51).
-
-## Why no certificate lives in the repo
-
-Signed identity certs are **public material** (public key + name + CA signature; nothing secret) — but they aren't *semantically required* in the rete repo. Each principal holds its own cert locally and presents it at mTLS handshake; verifiers only need the rete's trust anchors and the expected identity name.
-
-Options considered:
-
-- **Commit all certs to `identities/*.crt`** — operational convenience (one delivery channel), but redundant with the holder's local copy, clutters diffs, and creates confusion when certs expire.
-- **No certificate in the repo; anchors and certs delivered via the enrollment bundle** — clean separation. The repo holds YAML source and the compiled tree, which is what compile and audit need; every certificate lives in `retectl`'s tree or on the node.
-
-What the repo audits without committing certs is the **decision**: each git commit declares or removes a principal (operator, principal, role, and timestamp in the commit metadata, plus the diff). It does **not** audit issuance — `retectl issue-bundle` mints keys and signs certificates while committing nothing, a declaration may precede issuance by any interval, and re-issuance leaves no trace ([Enrollment § Decision Log](../enrollment#decision-log), ENRL-C0-24). Committing certificates would not have closed that gap either; it would record the resulting artifact and still miss the act. C1's dedicated append-only `enrollment.log` (sign/revoke record with cert fingerprints) is what supplies the issuance half.
-
-## Why principals are uniform (users and services)
-
-Istio (`AuthorizationPolicy` + SPIFFE IDs), Linkerd (`MeshTLSAuthentication`), and Consul (intentions) all treat services as principals of the same kind as human workloads. A service calling another service is mTLS between two identities, not a special case.
-
-For Florete, modelling both `user` and `service` as principals means a single role mechanism covers both "which users can reach which services" (ingress ACL) and "which services can call which other services" (egress from service perspective). The compiler evaluates the same matrix either way.
-
-This also makes p2p service pairs trivial: two services that call each other just hold two overlapping role grants. No special "p2p" primitive needed. The per-node `flor agent` workload extends the same principle: it owns the `node/<node>` identity and is wired into the vertex's `workloads` list like any other principal, with a SOCKS5 inbound channel for its outbound calls to coordinator. C1 extends the principle to mesh-vertices as a fourth kind for hop-by-hop mesh-layer mTLS, so all kinds — users, services, nodes, mesh-vertices — share the same principal mechanism.
-
-## Why `flor agent` is a separate principal from `flor vertex`
-
-C0 could plausibly be one process per node (the data-plane vertex doing its own coordinator talk on the side, with the node identity baked in). That works for C0's single-vertex case but breaks down the moment there's more than one vertex on a node — *which* of them owns the node identity and the coordinator poll loop? With C1's recursive stack right around the corner, picking that answer per release would be churn.
-
-Splitting up front avoids the issue: `flor agent` is a first-class workload that **owns** the node identity (`spiffe://<rete>/node/<node>`) and is the only thing that talks to the coordinator. The flor vertex below it is a pure data-plane component, driven entirely by its compiled config, with no awareness of the rete control plane. The agent, like any other principal, doesn't *hold* the node cert+key — it delegates the mTLS handshake to the vertex via a SOCKS5 channel, exactly as alice delegates her mTLS to flor. Same mechanism, applied to a workload that happens to live alongside its serving vertex on the same machine.
-
-This also maps cleanly to the HLD's [Execution Plane Agent concept](../../../../overview/high-level-design#execution-plane-green): the agent is the per-node supervisor of workloads, and the vertices it supervises are themselves workloads. Adding more vertex kinds (C1's link+mesh, future interrete layers) is just listing more entries under `vertices` in `agent.json`.
-
-How the agent launches a vertex is pinned in the [Agent](../agent) page: the OS service manager keeps the agent alive; the agent forks and supervises its workloads directly, with per-workload launch runtimes (system units, containers, a future WRI) reserved as evolution. The kubelet analogy stands; the WRI design itself remains deferred.
-
-## Why one `workloads` list with typed `io[]` channels
-
-An earlier draft of the per-node payload had `local_users` (with `socks5_proxy`) and `local_services` (with `upstream_addr`, sometimes also `socks5_proxy`). The split conflated initiator-vs-target with workload kind, and started straining as soon as a second flor binary (link-flor in C1) needed to carry an entry that's both initiator and target on a single FlorIO channel.
-
-Unifying to `workloads[].io[]` resolves the asymmetry: each channel's direction is intrinsic to its `kind` — `socks5` inbound, `tcp` outbound, `florio` bidirectional — so a workload is an initiator if it has any inbound-kind channel, a target if it has any outbound-kind channel, both if both. Users, services, the agent's `node/<node>` principal, and (in C1) mesh-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. There is no separate `direction` field (it would be redundant with `kind`, and would admit illegal pairings like an inbound `tcp`); a new direction is a new kind. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
-
-## Why per-service SOCKS5 outbound (no container namespaces)
-
-Big service meshes rely on **sidecars per pod + network namespaces** to separate services on the same host. Florete at C0 doesn't have an execution environment and can't assume containers.
-
-Options for distinguishing per-service egress on a shared host:
-
-| Mechanism | Verdict |
-|---|---|
-| Source-port heuristic | Unreliable |
-| `SO_PEERCRED` + OS user per service | Works, but forces OS-level per-service users |
-| Shared secret / token per service | Bootstrap problem |
-| Unix socket per service (app opens it) | Requires flor-aware apps |
-| **Per-service SOCKS5 proxy, port→identity** | **Works with any SOCKS5-aware client; no OS coupling** |
-
-SOCKS5 is supported by virtually all HTTP clients, gRPC clients, and database drivers via `ALL_PROXY` env var. Each service gets a dedicated localhost SOCKS5 port that flor binds to exactly one identity. Simple, portable, works today.
-
-Transparent outbound for non-SOCKS5 apps (iptables redirect, libc shim) is a later optimization, not a C0 blocker.
+Unifying to `attachments[].io[]` resolves the asymmetry: each channel's direction is intrinsic to its `kind` — `socks5` inbound, `tcp` outbound, `florio` bidirectional — so an attachment is an initiator if it has any inbound-kind channel, a target if it has any outbound-kind channel, both if both. Users, services, the agent's `node/<node>` principal, and (in C1) mesh-vertices are all rows in the same table — they differ only by SPIFFE-ID kind and by which `io` channels they expose. There is no separate `direction` field (it would be redundant with `kind`, and would admit illegal pairings like an inbound `tcp`); a new direction is a new kind. The schema also stops privileging SOCKS5 and TCP-upstream as the only northbound shapes; new `io.kind` values can be added without restructuring.
 
 ## Why C0 has no inter-node links (and no mesh-vertex identity)
 
@@ -129,7 +69,7 @@ Inter-node links appear only in C1, when mesh-flor is introduced on top and pair
 
 N principals × M roles is tractable; N principals × K services blows up fast. RBAC matches how teams already think about access. If someone needs an exception, create a new role (`developer-kafka-only`) rather than a principal-specific permission.
 
-Applies uniformly whether the principal is a user or a service, which is what makes the "principals are uniform" principle work without extra mechanism.
+Applies uniformly whether the principal is a user or a service, which is what lets one role mechanism cover both ([ID-C0-06](../identity#decision-log)).
 
 ## Why operator-issued bundles (not user-initiated PRs)
 
@@ -245,10 +185,6 @@ Migration between tiers is a config flip, not a re-architecture, because the pro
 
 A useful refinement available in either tier: **per-principal-class issuance policy.** High-risk principals (operator, infra services, anything reaching production data) keep long-lived offline-issued certs; low-risk workloads rotate frequently through the online intermediate. Same rete, two trust profiles, both expressed in operator-signed policy. This lets the operator pay the rotation/blast-radius cost only where convenience actually matters.
 
-**SPIFFE compatibility note.** C0/C1 produce SPIFFE-format-conformant X.509-SVIDs but don't implement SPIFFE *issuance* (the SPIRE Workload API). We're a SPIFFE-compatible trust domain whose certs any SPIFFE consumer (Istio, Linkerd, Vault, Envoy) can verify, but our own workloads don't yet receive SVIDs from a Workload-API endpoint — they hold static cert+key files installed at enrollment. The bounded intermediate adds the Workload API as a natural by-product: agents can dispense SVIDs to local workloads via SPIRE-compatible UDS, with rotation driven by the intermediate. We become SPIFFE-issuance conformant without abandoning the zero-trust posture. Until then, "SPIFFE compat" means format and trust shape, not issuance protocol. Don't oversell.
-
-What we do **now** in C0/C1: nothing on rotation automation. The operator-signed mgmt artifact references principals by SPIFFE ID only (identity material lives in the node's identity store), so future rotation replaces store files in place without recompiling the artifact — the schema doesn't need changing.
-
 ## Why authoring UI must be local (and what cloud UI can do)
 
 Operator-signed mgmt artifacts mean the signing step itself is part of the trust boundary. A cloud-hosted authoring UI weakens that boundary in a specific, well-known way: a compromised cloud serves JavaScript that displays payload B but constructs payload A for signing. Operator signs A thinking it's B. No amount of HTTPS, auth, or MFA fixes this — the JavaScript itself is the attack surface. The crypto industry learned this and answered with hardware wallets that re-render the to-be-signed transaction independently; the same lesson applies here.
@@ -264,21 +200,6 @@ So the rule for B1+ authoring UX:
 What we should *not* build: "sign with browser extension," "sign with cloud-stored key," or "delegate signing to a cloud agent." Those failure modes have a long, embarrassing history.
 
 What we do **now** in C0/C1: nothing UI-related (`retectl` is the only authoring surface anyway). One choice we lock in that keeps every UI option open later: **canonical-form-based signing** — the signature covers a deterministic serialization of the envelope, and the envelope carries the signer's certificate so any UI surface can independently re-derive and re-display "what is being signed" and by whom. That property alone keeps cloud-UI, local-GUI, mobile, hardware-token, and quorum-co-signing flows reachable without re-cutting the artifact format.
-
-## Why SPIFFE IDs (not a bespoke `flor://` scheme)
-
-Two use cases pull in opposite directions:
-
-- **Tool compatibility**: users want to type `ssh user@ssh.alpha.rete-lovers.rete`; curl, ssh, psql, browsers need hostnames they can resolve. Argues for a DNS-like form.
-- **Semantic cleanliness for identities**: network identities shouldn't pretend to be DNS when they aren't — SPIFFE uses `spiffe://` URIs precisely to avoid conflation. Argues for a URI form.
-
-The resolution: **both, interchangeably**. Canonical form is the SPIFFE URI `spiffe://<rete>/<kind>/<name>` — used in certs (SAN) and compiled artifacts. Convenience form is `<service>.[<node>.]<rete>.rete` — resolved by a local flor resolver.
-
-An earlier draft used a bespoke `flor://` scheme. Switching to `spiffe://` costs nothing and buys real compatibility: what we produce is a SPIFFE X.509-SVID by definition (trust domain in the authority, workload path in the URI, URI in the SAN). Any SPIFFE consumer — SPIRE agents, Istio, Linkerd, Vault, Envoy, third-party auditing — can ingest our identities without adapters. The brand loss is tiny; the optionality gain is large.
-
-Path-kind namespacing (`user/`, `service/`, `node/`, `vertex/<node>/`) is layered inside the SPIFFE path. Under `vertex/` the structure is node-scoped, mirroring `service/<node>/<service>` — the second segment is the host node, the third is the vertex name. SPIFFE itself leaves path structure to the implementer; we use these prefixes to prevent cross-kind collisions (alice-the-user vs. alice-the-service). The convenience hostname elides the `service/` segment because services are the only kind of entity a workload ever dials.
-
-`.rete` is unregistered. It's not a good DNS citizen in the strict sense (RFC 6761 reserves specific names, not this one), but Florete's stub resolver intercepts before the OS resolver sees it, so queries never leave the host. Alternatives like `.rete.test` or URI-only were considered; `.rete` won on ergonomics. Can be revisited if IETF registers something better.
 
 ## Why two binaries (`flor` + `retectl`)
 

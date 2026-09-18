@@ -15,7 +15,7 @@ What C1 adds is the **mesh layer**: mesh-vertex as a new principal kind (with SP
 
 Two framing notes worth getting right up front, because the obvious mental model is wrong in opposite directions for the two new pieces:
 
-**Mesh-vertex identity belongs to mesh-flor; the cert+key are *held* by link-flor.** Mesh-flor publishes itself as a service in the link layer — that's the recursive principle, exactly as the [HLD describes](../../../overview/high-level-design#service). Like any principal, mesh-flor delegates the mTLS handshake to a vertex (link-flor in this case), which holds the cert+key on its behalf. The shape is identical to C0 flor holding alice's cert+key: alice owns the identity, flor acts on her behalf. Link-flor isn't the mesh-vertex any more than C0 flor is alice.
+**Mesh-vertex identity belongs to mesh-flor; its TLS is *terminated* by link-flor.** Mesh-flor publishes itself as a service in the link layer — that's the recursive principle, exactly as the [HLD describes](../../../overview/high-level-design#service). Like any principal, mesh-flor delegates the mTLS handshake to a vertex (link-flor in this case), which holds the cert+key on its behalf. The shape is identical to C0 flor holding alice's cert+key: alice owns the identity, flor acts on her behalf. Link-flor isn't the mesh-vertex any more than C0 flor is alice.
 
 **Link-flor is a full vertex, not a UDP forwarder.** It has a QUIC transport endpoint that terminates mesh-vertex ↔ mesh-vertex mTLS, a UDP connection manager for the wire, and a FlorIO interface where it serves mesh-flor (its only local principal in the standard topology). It just doesn't act on its own behalf — like every other vertex, it acts on behalf of the workloads it carries.
 
@@ -151,10 +151,8 @@ services:
     via: rete
     addr: 127.0.0.1:27017
     groups: [db]
-  ssh:
-    at: alpha
+  alpha/ssh:
     via: rete
-    scope: node
     addr: 0.0.0.0:22
     groups: [admin]
 ```
@@ -325,7 +323,7 @@ Artifact identity is `(node, plane, name)`; there is no envelope `kind` — disp
 
 ### Workloads & IO
 
-Both vertex configs use a unified `workloads` shape — one entry per local workload (a [TLS principal](../../c0-tended-tunnels/mgmt-plane/identity#types-of-principal); initiator, target, or both). Each workload has zero or more `io` channels, and **each channel's direction is intrinsic to its `kind`** (matching C0 scope's "Inbound/Outbound" usage):
+Both vertex configs use a unified `workloads` shape — one entry per local workload (a [TLS principal](../../c0-tended-tunnels/mgmt-plane/identity#principals); initiator, target, or both). Each workload has zero or more `io` channels, and **each channel's direction is intrinsic to its `kind`** (matching C0 scope's "Inbound/Outbound" usage):
 
 - **inbound** kind (`socks5`) — the workload connects *into* flor here; flor originates outgoing connections on its behalf. Workload acts as an **initiator**.
 - **outbound** kind (`tcp`) — flor connects *out* to the workload here; flor delivers incoming connections. Workload acts as a **target** (service).
@@ -515,7 +513,7 @@ C1 adds two new principal kinds on top of C0's users, services, and nodes:
 | Mesh-vertex | No | **Yes** | `spiffe://<rete>/vertex/<node>/rete` | Hop-by-hop link-layer mTLS (one per node per rete, named `rete` by convention) |
 | Control plane | Reserved | **Yes** | `spiffe://<rete>/control-plane/<name>` | Signing authority for ctrl artifacts (one or more per rete; in C1 a single operator-held key) |
 
-Link-vertices are *named* in the same `vertex/<node>/<name>` namespace (`vertex/alpha/public`) but are **not principals** and receive no SVIDs — a name alone confers no principal status (see [C0's identity callout](../../c0-tended-tunnels/mgmt-plane/identity#types-of-principal)). Their canonical names become load-bearing in B2, as the derivation source for medium attachment-point labels; a link-vertex would gain an SVID only if it acted as a principal (e.g. a non-DAG vertex graph where a link-vertex `uses` the mesh for its return channel).
+Link-vertices are principals in the same `vertex/<node>/<name>` namespace (`vertex/alpha/public`) and are issued no SVID — a principal proves its name with an SVID only where one has been issued ([C0 Identity](../../c0-tended-tunnels/mgmt-plane/identity#principals)). Their canonical names become load-bearing in B2, as the derivation source for medium attachment-point labels; a link-vertex would gain an SVID only if it acted as a principal (e.g. a non-DAG vertex graph where a link-vertex `uses` the mesh for its return channel).
 
 A useful "owned-by / held-by" view across all four principal kinds:
 
@@ -528,7 +526,7 @@ A useful "owned-by / held-by" view across all four principal kinds:
 
 A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../../overview/high-level-design#vertex). Mesh-flor does the mesh-layer mTLS for its workloads; link-flor does the link-layer mTLS for mesh-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
 
-The `node/<name>` principal is the node's identity *within a specific rete's trust domain* — the rete's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. Mesh-flor holds the cert+key and runs mTLS for `node/<name>`, exactly as it does for user and service principals. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach coordinator through mesh-flor's SOCKS5 listener.
+The `node/<name>` principal is the node's identity *within a specific rete's trust domain* — the rete's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. Mesh-flor terminates mTLS for `node/<name>`, exactly as it does for user and service principals, and the material rests in the scope's identity store. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach coordinator through mesh-flor's SOCKS5 listener.
 
 Node-identity vs. mesh-vertex-identity aren't merged because they serve different layers and are held by different vertices — `node/<name>` is for control-plane traffic (agent ↔ coordinator), `vertex/<node>/rete` is for hop-by-hop mesh transit mTLS. A node joining multiple Florete retes has one `node/<name>` principal per rete (in each rete's own trust domain) and one flor-agent process per rete acting on its behalf.
 
