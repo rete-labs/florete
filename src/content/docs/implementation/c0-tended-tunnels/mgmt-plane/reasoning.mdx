@@ -49,7 +49,7 @@ The full list of motivators:
 6. **Determinism** — same-input same-output across machines; two operators independently compiling produce identical artifacts, detectable by diff.
 7. **Committed artifacts = inspectable, auditable shipments.** "What config did alpha actually get?" = `git log .flor/compiled/alpha/`. No need to reconstruct from YAML. Artifacts contain only path references (no secrets), so committing them is safe. The coordinator is the live wire path; git is the audit trail.
 
-This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C0 the per-node output is two artifacts (`agent.json` + `flor.json`); in C1 a third is added for the second flor vertex in the recursive stack. The split is between supervisor (agent) and data-plane (vertex), so each consumer's contract stays minimal.
+This is the same pattern as nginx.conf → loaded state, Terraform HCL → plan.json, or `kubectl apply` → etcd. In C0 the per-node output is two artifacts (`agent.json` + `hop.json`, named after its one vertex); in C1 a third is added for the second flor vertex in the recursive stack. The split is between supervisor (agent) and data-plane (vertex), so each consumer's contract stays minimal.
 
 ## Why one `attachments` list with typed `io[]` channels
 

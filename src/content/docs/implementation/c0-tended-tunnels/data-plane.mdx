@@ -48,7 +48,7 @@ Neither path puts a hostname on the wire. The endpoint derives the TLS server na
 ```
 svc.rete.<service>.<td>.rete           rete-scoped service   svc.rete.api.flor.demo.rete
 svc.node.<service>.<node>.<td>.rete    node-scoped service   svc.node.ssh.alpha.flor.demo.rete
-vtx.node.<vertex>.<node>.<td>.rete     vertex                vtx.node.public.alpha.flor.demo.rete
+vtx.node.<vertex>.<node>.<td>.rete     vertex                vtx.node.hop.alpha.flor.demo.rete
 ```
 
 The markers fix how many labels come before the trust domain, so two identities one endpoint publishes never share a server name, even when they belong to different trust domains. The server keys the certificates it publishes by this label and matches an incoming SNI by exact lookup; it never parses an identity out of it, and it is the SAN, not the SNI, that authenticates ([ADR-0006](/docs/implementation/adr/0006-impl-mtls-in-quic-endpoint)). The label reads back from a packet capture, and an opaque form stays possible behind the same derivation ([ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing)). A kind that becomes targetable takes a kind marker of its own.

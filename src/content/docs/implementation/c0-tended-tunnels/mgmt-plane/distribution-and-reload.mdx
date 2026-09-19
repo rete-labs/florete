@@ -47,7 +47,7 @@ Playbook for a change:
 
 1. Edit YAML (operator, on workstation).
 2. `retectl validate` — catch errors before anything reaches a node.
-3. `retectl compile` — regenerate `.flor/compiled/<node>/mgmt/{agent.json, flor.json}` for all nodes.
+3. `retectl compile` — regenerate `.flor/compiled/<node>/mgmt/{agent.json, <vertex>.json}` for all nodes.
 4. `git add -A && git commit && git push` — commit both YAML and compiled artifacts for audit (nodes don't read this, but it's the shipment log).
 5. `retectl publish` — upload the compiled tree to the coordinator. From this moment the change is live: every touched node picks it up at its next poll.
 6. To move faster than the poll on a specific node — or to spot-check one first — `flor agent sync` there (optionally preceded by `--dry-run` to preview).

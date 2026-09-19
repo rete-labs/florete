@@ -27,7 +27,7 @@ This spec is also the boundary that the rest of C0 (agent internals, identity, f
 - **Atomic full-artifact state delivery, with a monotonic version stamp.** Deltas are a later optimization; the version number is a zero-cost forward-compat anchor for them.
 - **Mgmt artifact is signed by the operator; agents verify locally.** The signing key is a SPIFFE principal in its own right — `management-plane/<name>` (convention: `mgmt-signer`), a sign-only identity issued explicitly via `retectl id issue --kind management-plane` and unrelated to any `users.yaml` entry (see [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities)). The operator holds three keys total: the rete's **root CA**, their own `user/<op>` TLS keypair (issued like any other user), and the rete's `management-plane/<name>` envelope-signing keypair — three deliberately distinct things, since a signing identity must not be revocable by an HR event and the root key must never sit in the path of a compile. None of them leave operator hardware — the rete's coordination server (today the coordinator, B1+ a managed cloud service) only stores and serves; it cannot mint or modify state. C0 is the degenerate case: every artifact is signed mgmt and there are no control-plane decisions yet. The envelope carries a `plane: "mgmt"` discriminator and a `signature` field from day one so a parallel `plane: "ctrl"` stream (signed by a `control-plane/<name>` principal) can land in C1 without schema churn. See [Decision authority layers](#decision-authority-layers) below for the evolution target.
 - **Operator-issued bundles, not user-initiated PRs.** Users never need git write access or forge accounts. The operator is the only writer of rete state.
-- **Stable boundary = the compiled per-node artifacts.** C0 produces an `agent.json` plus one `flor.json` per node from YAML; C1 adds a second vertex artifact for the mesh-flor layer with the same envelope; B1 fetches them from a coordination server; distributed control plane later emits them by consensus. The agent and vertex consume the same shapes throughout.
+- **Stable boundary = the compiled per-node artifacts.** C0 produces an `agent.json` plus one artifact per vertex, named after it, per node from YAML; C1 adds a second vertex artifact for the mesh-flor layer with the same envelope; B1 fetches them from a coordination server; distributed control plane later emits them by consensus. The agent and vertex consume the same shapes throughout.
 
 ## Details
 
@@ -40,7 +40,7 @@ A computing host may join more than one Florete rete — for example, a develope
 
 ### Rete scope
 
-Each rete a node joins gets its own **rete scope**: a per-rete namespace for runtime state and installed material on that host. The scope is identified locally by the rete name (from `rete.yaml`). The cryptographic anchor is the scope's `identity/anchors.pem`, pinned at the first enrollment.
+Each rete a node joins gets its own **rete scope**: a per-rete namespace for runtime state and installed material on that host. The scope is identified locally by the node and the rete it joins as, `<node>.<rete>` — `alpha.flor.demo` — so a host can hold several nodes of one rete, each its own scope ([Enrollment](enrollment#decision-log), ENRL-C0-41). The cryptographic anchor is the scope's `identity/anchors.pem`, pinned at the first enrollment.
 
 Per rete scope on the node:
 
