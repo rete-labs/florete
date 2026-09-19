@@ -267,7 +267,7 @@ The unit runs `flor-vertex --scope %i`. The vertex opens its set's one artifact,
 *Because* what the two guard — an interrupted enrollment, and a process reading the identity plane while enroll rewrites it — does not depend on the agent, and in A0 the vertex is that process.
 *Because* a held lock is held by an enroll or another vertex, which ends, so the vertex refuses it as a condition that may resolve rather than as a scope it cannot serve.
 *Accepting* that the lock and the receipt check live in the vertex only until a supervisor holds the scope, and move to it unchanged.
-*Rejected* deciding freshness from `identity/scope.json`, which is written before the commit point; a lock only enroll takes, which excludes no live reader; asking systemd whether the unit is active, a read outside any lock; checking the receipt at an activation step, which a reboot bypasses.
+*Rejected* deciding whether an enrollment finished from the identity store, which is written before the commit point; a lock only enroll takes, which excludes no live reader; asking systemd whether the unit is active, a read outside any lock; checking the receipt at an activation step, which a reboot bypasses.
 
 **DSGN-A0-11. Write artifacts in place.**
 Enroll writes each artifact to `artifacts/mgmt/<vertex>.json`, its destination read out of its own envelope. There is no `incoming/`, no intake, no `current` pointer and no `sets/`.

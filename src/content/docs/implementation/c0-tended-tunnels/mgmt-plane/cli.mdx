@@ -30,19 +30,20 @@ retectl init <rete-name>                    # once per rete, inside a fresh repo
                                             # trust domain, and write retectl's own
                                             # config template for this rete. The only
                                             # way a root CA comes into existence.
-retectl id issue --kind <management-plane|control-plane>
+retectl id issue --kind management-plane
                  --name <name>              # mint a keypair that stays in the operator's
                                             # custody and sign its cert. Signing kinds
                                             # only: a TLS key issued here would have
-                                            # nowhere to go. This is how a mgmt signer is
-                                            # rotated — the compiler signs artifacts with
-                                            # the key it produces.
+                                            # nowhere to go; C0 has no ctrl plane, so
+                                            # management-plane alone. This is how a
+                                            # mgmt signer is rotated — the compiler signs
+                                            # artifacts with the key it produces.
 retectl issue-bundle --node <node-name>
                                             # pack the per-node enrollment bundle from
                                             # the committed compiled tree: trust anchors,
-                                            # the node identity, and every workload
-                                            # identity (users/services) YAML places on
-                                            # this node, plus that node's artifact set.
+                                            # the node identity, and every user and
+                                            # service principal YAML places on this
+                                            # node, plus that node's artifact set.
                                             # Compiles nothing, and refuses when the
                                             # compiled tree is not committed. Needs no
                                             # coordinator and no network at all.
@@ -63,10 +64,10 @@ Notes:
 
 - **Source discovery.** The repo root is found by walking up from the working directory to `rete.yaml`, never named by a flag; outside a repo every command refuses. Then recursively glob `*.yaml`/`*.yml` under that root (skipping `.flor/`, `bundles/`, dotfiles; honoring `include`/`exclude` in `rete.yaml`), then merge same-kind collections into one whole-view before compiling. File layout is operator-chosen — see [Source Layout](../source-layout). There is no per-invocation file override: narrowing which files form the rete is `source.include`/`source.exclude` in `rete.yaml`, which is committed and reviewable, and a flag that selected a different set per run would be a second discovery rule with no repo root to anchor it.
 - **`retectl` runs inside a rete repository or not at all** — it walks up from the working directory to find `rete.yaml`, as git finds `.git`, and refuses outside one. `retectl init` is the one exception and has to be: it is what *creates* `rete.yaml`, so it refuses when the walk-up succeeds instead — and it **requires a git repository**, refusing outside one, since the compiled tree's commit state is what `issue-bundle` gates on ([Enrollment § Decision Log](../enrollment#decision-log), ENRL-C0-35). The scope, the paths and the rete's name all follow from that, so no command carries a `--rete` flag to say which rete it means — and none carries an output path either: `compile` always writes `<repo>/.flor/compiled/` and `issue-bundle` always writes `<repo>/bundles/<node>.bundle`. The compiled tree is an *input* to the next compile, being the version ledger, so redirecting it elsewhere produces a tree that compiles from the wrong history.
-- **Operator-held material lives in `retectl`'s own tree**, `~/.retectl` (overridden whole by `RETECTL_HOME`), never in the repository: one identity store per rete at `retes/<scope>/identity/`, holding the root CA at `authorities/root.pem`, the signers at `principals/management-plane/<name>.pem` and `principals/control-plane/<name>.pem`, and `scope.json` naming the trust domain and no node — the same store a node keeps, differently populated ([Identity](../identity#the-identity-store)). `retectl` reads the trust domain out of that record, never off the directory it found the tree in ([Identity § Decision Log](../identity#decision-log), ID-C0-29). The repository holds YAML source and the compiled tree and no secret and no certificate. The root key stays there in C0 — no command takes a path to it — and the hardening that would justify one is an intermediate; see [Enrollment § Genesis](../enrollment#genesis).
+- **Operator-held material lives in `retectl`'s own tree**, `~/.retectl` (overridden whole by `RETECTL_HOME`), never in the repository: one identity store per rete at `retes/<scope>/identity/`, holding the root CA at `authorities/root.pem`, the mgmt signer at `principals/management-plane/<name>.pem`, and `scope.json` naming the trust domain and no node — the same store a node keeps, differently populated ([Identity](../identity#the-identity-store)). `retectl` reads the trust domain out of that record, never off the directory it found the tree in ([Identity § Decision Log](../identity#decision-log), ID-C0-29). The repository holds YAML source and the compiled tree and no secret and no certificate. The root key stays there in C0 — no command takes a path to it — and the hardening that would justify one is an intermediate; see [Enrollment § Genesis](../enrollment#genesis).
 - **A command group is named for its subject, never its actor.** `id issue` produces an identity; a bare verb like `compile` or `publish` acts on the rete implicitly. There is no `ca` group in C0: `retectl init` is the only thing that creates a root CA, and a group for CA rotation arrives with rotation. Throughout these pages a **root CA** is an issuing authority and a **trust anchor** is what a verifier validates against; a bare "CA" is never used, because the two stop coinciding as soon as intermediates exist.
 - `retectl issue-bundle` computes which principals live on a node (from `users.yaml` + `services.yaml`), issues each of their certs, and packages them with the trust anchors and the node's artifact set as the committed tree holds it. One bundle per node, not per principal — a node hosting five services would otherwise mean five deliveries and five bearer files. The bundle carries no coordinator URL and no expected coordinator identity: `agent.json`'s `sync` block already names the coordinator, and a projected value transcribed into a second place is a divergence waiting to happen.
-- `--kind` selects the SPIFFE path namespace and, through it, the X.509 extension policy ([ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities)). Seven kinds make up the identity model: a TLS kind's certificate gets `keyUsage: digitalSignature, keyEncipherment` and `extKeyUsage: clientAuth`, with `serverAuth` as well for a targetable kind; a signing kind's gets `keyUsage: digitalSignature` only; and `workload`, having no policy yet, is refused ([Identity](../identity#decision-log), ID-C0-04). What C0 exposes on the CLI is narrower: `id issue` accepts the signing kinds, and TLS-principal certs are issued as part of `issue-bundle` rather than one at a time.
+- `--kind` selects the SPIFFE path namespace and, through it, the X.509 extension policy ([ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities)). Seven kinds make up the identity model: a TLS kind's certificate gets `keyUsage: digitalSignature, keyEncipherment` and `extKeyUsage: clientAuth`, with `serverAuth` as well for a targetable kind; a signing kind's gets `keyUsage: digitalSignature` only; and `workload`, having no policy yet, is refused ([Identity](../identity#decision-log), ID-C0-04). What C0 exposes on the CLI is narrower: `id issue` accepts `management-plane` alone, C0 having no ctrl plane, and TLS-principal certs are issued as part of `issue-bundle` rather than one at a time.
 - **A CSR-consuming sign command belongs to Flow B and is not part of C0** ([Enrollment](../enrollment)). Nothing in C0 reaches it — `id issue` and `issue-bundle` each mint and sign inside one process — so `retectl id keygen` and `retectl id sign` are named here as the shape Flow B will take, and are not implemented surface.
 - **`retectl` warns on the certificates it touches** — the mgmt signer's at every `compile`, the root CA's at every `issue-bundle` — when either enters the last 20% of its validity, or 14 days, whichever is longer. It is the only component whose warning reaches the person who can replace them ([Identity § Decision Log](../identity#decision-log), ID-C0-23).
 - `retectl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (`agent.json` and one `<vertex>.json` per vertex, per node, flat; plus `coordinator.json` on the management node). Artifacts contain **no filesystem references** — identity is referenced by SPIFFE ID and materialized by each node's identity store (see [Agent § Artifact handling](../agent#artifact-handling)). No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the coordinator (see [Coordinator](../coordinator)).
@@ -91,27 +92,7 @@ The decisions behind this section — what `retectl` is told, what it derives, a
 ### flor (node, daemon + user CLI)
 
 ```
-flor enroll <bundle> [--multi-node]         # bootstrap a scope: take the scope lock,
-                                            # verify, write the identity plane, deposit
-                                            # the artifact set. Activates nothing —
-                                            # prints the flor agent enable that does.
-                                            # Refuses while the scope is live, naming
-                                            # the holder and the flor agent disable
-                                            # that clears it. No check has a flag: each
-                                            # is mechanical and runs the same attended or
-                                            # not. Needs no network. Prints the trust
-                                            # domain and the anchors' fingerprints
-                                            # before writing anything — a display, not
-                                            # a check. Refuses a delivered cert that
-                                            # does not chain to those anchors.
-                                            # Deletes the bundle on success.
-                                            # Re-enrolling validates the manifest's
-                                            # signer cert against the anchors the node
-                                            # already holds, then the signature, then
-                                            # refuses any bundle differing from what
-                                            # the scope is pinned to — trust domain,
-                                            # anchors or node. The scope is <node>.<rete>,
-                                            # from the manifest's two claims; a fresh
+flor enroll <bundle> [--multi-node]         # bootstrap a scope (see Enrollment)
                                             # enrollment beside another node of the same
                                             # rete is refused unless --multi-node
 flor install [--system|--user]              # install or upgrade this host: place executables

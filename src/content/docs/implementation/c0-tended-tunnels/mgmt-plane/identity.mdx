@@ -66,13 +66,14 @@ This page is C0's identity model: what names every entity in a rete, what proves
 ```log
   issuance    a TLS principal is minted per node, for the rete-wide validity,
               clamped to the root's own expiry with a warning
-              a signer is minted on the operator's hardware and stays there
+              mgmt signer is minted on the operator's hardware and stays there
 
   import      a writer hands the store a batch: the anchors, the scope's
               trust domain and node, and each principal's material labelled
               with its SPIFFE path
               the store checks the whole batch, then writes it in one
-              order: the anchors, scope.json, each principal the batch names
+              order: the anchors and scope.json when the batch establishes
+              the store, then each principal the batch names
                 ├─ no scope.json → the store is established by the batch
                 └─ scope.json    → the anchors and scope must match
               refused: a label or a key that disagrees with its certificate,
@@ -84,9 +85,13 @@ This page is C0's identity model: what names every entity in a rete, what proves
   use         the store checks each principal it is asked for — the
               certified ID against the one requested, the key against the
               certificate, and a warning inside the last 20% of its validity
-              or 14 days, whichever is longer
-              a verifier checks a signer's certificate the same way, then its
-              anchors, its kind against the plane, and the signature
+              or 14 days, whichever is longer; it never refuses on the clock
+              the anchors and an authority are warned on in the same window
+              a peer refuses an expired certificate at the handshake
+              a verifier admitting a signed document refuses a signer
+              certificate outside its validity and warns inside the same
+              window, then checks its anchors, its kind against the plane,
+              and the signature
 
   rotation    a node's principals are re-minted together, never the anchors
               or the trust domain
@@ -139,6 +144,7 @@ This page is C0's identity model: what names every entity in a rete, what proves
                   deadline, not healing
 
   custody         the root key is a plain file
+                  a store's directories are 0700 and its files 0600
                   a signer's name is a slot, kept across rotation
 
   hosts           a host joins a rete as one or more nodes; each is a node
@@ -289,11 +295,11 @@ The root CA, the signers and the operator's own principal are three things and a
 - a **signer** is a signing principal — `mgmt-signer` for mgmt, `ctrl-signer` for ctrl — whose key stays on the operator's machine;
 - the operator's principal is an ordinary user, delivered and revocable like anyone's, so that a person leaving never breaks the rete's signing.
 
-The ctrl signer is a kind of its own, apart from `node` and from the coordinator's services, because it is compromised and rotated independently of both.
+The ctrl signer is a kind of its own, apart from `node` and from the coordinator's services, because it is compromised and rotated independently of both. C0 has no ctrl plane and issues no ctrl signer.
 
 A signer's name is a **slot**. Rotating it mints a fresh certificate from the root for the same name and replaces the operator's pair; nothing on a node remembers a signer by name.
 
-A signed document carries its signer's certificate. A verifier checks it as the store checks what it loads, validates it against the anchors it holds, checks that its kind matches the plane — `management-plane` for mgmt artifacts and bundle manifests, `control-plane` for ctrl — and only then checks the signature. No node keeps a signer list, so a node accepts a successor on its anchors' word, including a node that was switched off while the rotation happened. The kind check carries real weight: a TLS certificate also has `digitalSignature`, and without the check any leaf the root ever signed would pass as a signer ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
+A signed document carries its signer's certificate. A verifier refuses it outside its validity, validates it against the anchors it holds, checks that its kind matches the plane — `management-plane` for mgmt artifacts and bundle manifests, `control-plane` for ctrl — and only then checks the signature. No node keeps a signer list, so a node accepts a successor on its anchors' word, including a node that was switched off while the rotation happened. The kind check carries real weight: a TLS certificate also has `digitalSignature`, and without the check any leaf the root ever signed would pass as a signer ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 
 ## The life of a credential
 
@@ -305,7 +311,9 @@ No certificate outlives the root that issued it. Every command that mints clamps
 
 ### Checks on use
 
-A certificate is checked where it is read. The store checks each principal a consumer asks for — the certified ID against the one requested, and the key against the certificate — and warns inside the last 20% of the certificate's validity or 14 days, whichever is longer: 18 days on a 90-day leaf, about ten weeks on a 365-day signer. A certificate carried inside a signature is checked the same way by its verifier. Neither number is configurable.
+A certificate is checked where it is read. The store checks each principal a consumer asks for — the certified ID against the one requested, and the key against the certificate — and warns inside the last 20% of the certificate's validity or 14 days, whichever is longer: 18 days on a 90-day leaf, about ten weeks on a 365-day signer. The anchors and an authority are warned on in the same window when read. Neither number is configurable. The store warns on the clock and never refuses on it.
+
+Expiry is refused where a certificate is presented for a decision. A peer refuses an expired certificate at the handshake, so a principal whose leaf has expired loses its connections until it is re-keyed. A verifier admitting a signed document refuses a signer certificate outside its validity, measured against the node's own clock and never against a time the document states, and warns on one inside the store's window. A document already admitted is not re-checked against the clock ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 
 The store checks only what it is asked for and never scans itself, so material nothing uses stays silent. A principal it does not have is reported absent, and the consumer decides what that means — a vertex opens no listener for it and warns once ([ENRL-C0-36](../enrollment#decision-log)).
 
@@ -313,7 +321,7 @@ The store checks only what it is asked for and never scans itself, so material n
 
 Rotation is per node: all of a node's principals are re-minted together, and never the anchors or the trust domain. A signer is re-minted under its own name.
 
-A compromised credential is useful for a bounded time because credentials expire. That is a deadline, not healing, and rotation defends against copies, never against an attacker still present on the node.
+A compromised credential is useful for a bounded time because credentials expire, and an expired one is refused wherever it is presented. That is a deadline, not healing, and rotation defends against copies, never against an attacker still present on the node.
 
 ### Revocation
 
@@ -325,7 +333,7 @@ Git is the record: declaring a principal and removing it are commits, carrying t
 
 ### One module, two parts
 
-Everything reaches identity material through one module. Its **authoring** part is import, and nothing else writes; enroll and `retectl` use it. Its **reading** part serves every consumer, vertices and verifiers included. Consumers ask for material by SPIFFE ID; none derives a path from a name, and a path handed to a workload arrives resolved.
+Everything reaches identity material through one module. Its **authoring** part is import, and nothing else writes; enroll and `retectl` use it. Its **reading** part serves every consumer, vertices and verifiers included. Consumers ask for a principal by its SPIFFE ID, and for the anchors, the scope's record or an authority by what it is; none derives a path from a name, and a path handed to a workload arrives resolved.
 
 Each store is one `identity/` subtree — a node's in its scope root, `<state-dir>/retes/<scope>/identity/`, and the operator's in `retectl`'s tree, one per rete:
 
@@ -347,7 +355,7 @@ The categories are the identity model's own — anchors, authorities, principals
 
 ### Keying and files
 
-A principal lives at its SPIFFE path below the trust domain — `principals/service/alpha/ssh.pem`, `principals/user/alice.pem` — so a node can keep `service/ssh` and `service/alpha/ssh` side by side and no name needs to be unique across kinds. A `.pem` holds the principal's certificate chain and its key: in clear, encrypted, or absent.
+A principal lives at its SPIFFE path below the trust domain — `principals/service/alpha/ssh.pem`, `principals/user/alice.pem` — so a node can keep `service/ssh` and `service/alpha/ssh` side by side and no name needs to be unique across kinds. A `.pem` holds the principal's certificate chain and its key (a key may be absent).
 
 ### Import
 
@@ -361,14 +369,14 @@ The store validates the whole batch and writes it in a second step, so a writer 
 - a kind this side's store does not keep — only TLS kinds on a node, only the root and signers on the operator's side;
 - key usages other than the kind's policy;
 - a name that breaks the syntax rules;
-- a certificate that does not chain to the anchors;
+- a certificate that does not chain to the anchors, its validity aside;
 - anchors, a trust domain or a node that differ from the pinned ones.
 
 A certificate outside its validity is warned about and never refused, since a wrong clock would otherwise turn the store against good material. The batch is held in memory, so no key reaches a disk before it is valid.
 
 ### Integrity and retention
 
-`scope.json`, `anchors.pem` and each principal are one file each, written whole by one rename. Every import writes in one order — the anchors, then `scope.json`, then each principal — so a store is established exactly when `scope.json` exists, an interruption before it establishes nothing, and an interruption after it leaves an established store missing some principals, as an interrupted later import would. A batch written in part is a fact about the writer's run, which the writer records — for enroll, its receipt — and since the same batch writes the same files, the writer's re-run completes it.
+`scope.json`, `anchors.pem` and each principal are one file each, written whole by one rename. The import that establishes a store writes in one order — the anchors, then `scope.json`, then each principal — and every later import, having compared the pinned files, writes its principals alone. So a store is established exactly when `scope.json` exists, an interruption before it establishes nothing, and an interruption after it leaves an established store missing some principals, as an interrupted later import would. A batch written in part is a fact about the writer's run, which the writer records — for enroll, its receipt — and since the same batch writes the same files, the writer's re-run completes it.
 
 An import replaces the principals its batch names and leaves every other principal untouched: which principals live on a node is its artifact set's statement, not a delivery's. Nothing is pruned. Material of a principal removed from the rete stays until the scope root is removed, and opens nothing, every access check having dropped it.
 
@@ -376,7 +384,7 @@ An import replaces the principals its batch names and leaves every other princip
 
 Artifacts name identity by SPIFFE ID and never by path, and carry no secret; the identity plane is the store, and its keys never transit the coordinator. The **config plane** is compile output — signed, safe to relay and commit — and the **identity plane** is enrollment and rotation, delivered by its own channel. Replacing a credential therefore never recompiles an artifact.
 
-Every file under a scope root is `0600` to the scope's account, and that is the whole of the store's access control. Any process running as that account can read every principal's key; a vertex uses only the principals its artifact attaches to it, and nothing enforces that.
+Every store keeps its directories `0700` and its files `0600`, owned by the scope's account on a node and by the operator's account on the operator's side, each created with its final mode rather than changed afterwards. That is the whole of the store's access control. Any process running as that account can read every principal's key; a vertex uses only the principals its artifact attaches to it, and nothing enforces that.
 
 ## Evolution sketches
 
@@ -389,7 +397,7 @@ Recorded so nothing above forecloses them. None is designed and none is a commit
 - **An intermediate, so the root can genuinely stay offline.** *([ID-C0-21](#decision-log))* Moving the root out is undercut by the root being read on every `issue-bundle`. The answer PKI has always used is a root that signs an **intermediate**, an intermediate that does day-to-day issuance, and a root touched only to rotate that intermediate. It is not C0's: every verifier would have to build and validate a path rather than check a signature, and the signer check would follow. A root whose key goes cold keeps its certificate in `authorities/root.pem`, with no key block.
 - **A custodian behind the store.** *([ID-C0-28](#decision-log))* Any process running as a scope's account can read every principal's key today. A custodian — the agent, or a Workload API — standing behind the store's reading part can grant each terminator only the principals its artifact attaches to it; the split between the authoring and the reading part is the seam it plugs into, and no consumer changes.
 - **Pruning by reference.** *([ID-C0-33](#decision-log))* Material of a removed principal stays until its scope root goes. A pruning design deletes what no current artifact names — never by expiry, which a wrong clock turns against good material, and never the node's own principal — and has to say what a partial bundle or a lagging set may delete.
-- **An issuance ledger.** *([ID-C0-25](#decision-log))* An operator-side record of what has been issued, committed to the repository, would answer what expires soon without asking any node, and let the operator compare what a published set declares against what has ever been cut — turning expiry warnings into a list.
+- **An issuance ledger.** *([ID-C0-25](#decision-log))* An operator-side record of what has been issued, committed to the repository — `enrollment.log`, which [C1](/docs/implementation/c1-manual-mesh/scope) introduces — would answer what expires soon without asking any node, and let the operator compare what a published set declares against what has ever been cut — turning expiry warnings into a list.
 
 ## Decision Log
 
@@ -400,7 +408,7 @@ Entries are grouped by what a future change would be touching.
 **ID-C0-01. Own the identity model, the life of a credential, and the identity store here.**
 This page decides what names things in a rete, what proves a name, the policy and life of that proof — issuance, lifetime, rotation, revocation — who owns it and who may use it, and the store that keeps it. Enrollment decides the act of joining: the bundle, its container checks and signature, the channel, and the operator's tooling. The wire form of a name belongs to the transport ([ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing)), and how names are authored belongs to [Source Layout](../source-layout).
 *Because* an entry sits with the design it decides, and each justification lives in one place: revocation, rotation and lifetime are the life of a credential, of which enrollment is one step, and the store's keying cannot be argued anywhere the names it is keyed by are not.
-*Accepting* that decisions settled on the Enrollment page before this split now live here under these IDs, their Enrollment IDs retired and every citation re-pointed.
+*Accepting* that decisions settled on the Enrollment page before this split now live here under these IDs, each Enrollment ID kept as a pointer to its entry here and every citation re-pointed.
 *Rejected* leaving credential life on a page about joining; restating the moved decisions here while keeping the originals, which keeps each justification twice; a page of its own for the store, which separates it from the names it is keyed by.
 
 ### Principals
@@ -490,7 +498,7 @@ A vertex's name is the operator's choice, given in YAML for every vertex; nothin
 *Rejected* hostnames for other targetable kinds, a form nobody dials; parsing a hostname without context, which forbids dotted trust domains; `.rete.test` and a URI-only form, on ergonomics.
 
 **ID-C0-15. Make a connect target a principal of a targetable kind, apart from any hostname.**
-A connection's target is a principal of a kind that can be a target, carrying no hostname. Service and vertex are targetable; user and the signing kinds never are; node and workload are reserved, bound by the name rules already ([ID-C0-12](#decision-log)) and issued no certificate until they are. The legacy path resolves a service hostname to a target; a native caller names one by its identity; one connect serves both. The wire label is derived from the target, and the transport owns its form ([ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing)). The capability is *targetable*, the role *target*; *dialable* is not a term.
+A connection's target is a principal of a kind that can be a target, carrying no hostname. Service and vertex are targetable; user and the signing kinds never are; node and workload are reserved, bound by the name rules already ([ID-C0-12](#decision-log)) and admitted as no target until they are — a node's certificate carries no `serverAuth`, and a workload is issued nothing. The legacy path resolves a service hostname to a target; a native caller names one by its identity; one connect serves both. The wire label is derived from the target, and the transport owns its form ([ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing)). The capability is *targetable*, the role *target*; *dialable* is not a term.
 *Because* what can be a target and what has a hostname change for different reasons — the first with native connections and new target kinds, the second only with how legacy applications name services — and a hostname unrelated to the wire label needs no remark that the two coincide.
 *Because* a capability and a role are different facts: a service that initiates is still targetable and is not the target of that flow.
 *Rejected* one notion carrying both meanings, which defers native connections into a second interface; checking targetability per call rather than when a target is formed; two connect entry points, which put the hostname codec inside the endpoint; admitting every TLS kind, which makes a user a target; naming the capability after the role, which is false wherever a value is held for anything but a flow's target; *dialable*, a second word for the same concept.
@@ -512,25 +520,25 @@ Never a bare "CA". The root CA issues certificates, and its key is what an opera
 *Because* an anchor change is the one delivery that hands a store a new root of trust, and C0 cannot authorise it more strongly than an ordinary artifact: an unpinned anchor would let whoever holds the mgmt signer's key replace a node's root for good. Refusing the change closes that with no mechanism, and forecloses nothing, since C0 has no rotation to break.
 *Because* planned, lost and compromised roots share no mechanism — cross-signing needs the old key, a lost key cannot cross-sign, and a compromised one must be removed through a channel the anchor being removed authenticates — so designing one of them early would look like a rotation story while covering neither failure that motivates one.
 *Because* the pin compares values the store owns, so a pin kept, or switched, by its writer would reach inside the store — and a pin a writer can skip is one a confused writer will.
-*Accepting* that a wrong first anchor is wrong for the life of the scope, and so is a store established by an enrollment that then failed before its own commit point — a retry with a different bundle is refused, and the remedy for both is removing the scope root by hand; that the recursion stops at the root CA, whose compromise already mints any principal; and that a graceful rotation, when it comes, brings back an overlap window whose floor is the longest a node may be unreachable.
+*Accepting* that a wrong first anchor is wrong for the life of the scope, and so is a store established by an enrollment that then failed before its own commit point — a retry with a bundle whose anchors differ, from an independent rete of the same name, is refused, and the remedy for both is removing the scope root by hand; that the recursion stops at the root CA, whose compromise already mints any principal; and that a graceful rotation, when it comes, brings back an overlap window whose floor is the longest a node may be unreachable.
 *Revisit* the anchors when a rotation is wanted, or an intermediate makes most rotations unnecessary. The successor owes an add path, a remove path, and an authorisation for an anchor change strictly stronger than a mgmt signature. The trust domain and the node have no successor ([ID-C0-29](#decision-log)).
 *Rejected* a spare anchor seeded at genesis, which retires nothing without a remove path and doubles a key's custody for the one case a backup answers better (ENRL-C0-34); a first anchor delivered over the mgmt plane, the circularity that plane is rooted on; one file per anchor, which a partial write leaves a store trusting a subset of; a new anchor set accepted from an authenticated re-enrollment, which is the escalation above.
 
 **ID-C0-19. Keep the root CA, the signers and the operator's principal apart, and make a signer's name a slot.**
-The root CA issues certificates and signs nothing else. A signer is a signing principal whose key stays on its producer's machine and is loaded by no vertex; the ctrl signer is a kind of its own, apart from `node` and from the coordinator's services. The operator's principal is an ordinary TLS principal, delivered and revocable like anyone's. A signer's name is a slot — `mgmt-signer` and `ctrl-signer` by convention — and rotation mints a fresh certificate under the same name.
+The root CA issues certificates and signs nothing else. A signer is a signing principal whose key stays on its producer's machine and is loaded by no vertex; the ctrl signer is a kind of its own, apart from `node` and from the coordinator's services, and C0, having no ctrl plane, issues none. The operator's principal is an ordinary TLS principal, delivered and revocable like anyone's. A signer's name is a slot — `mgmt-signer` and `ctrl-signer` by convention — and rotation mints a fresh certificate under the same name.
 *Because* a signing identity must not be revocable by a staffing change, which it would be merged with the operator's entry; signing envelopes with the root key would put it in the path of every compile; and each signing authority is compromised and rotated on its own.
 *Because* nodes accept a signer by its certificate, never by a remembered name ([ID-C0-20](#decision-log)), so a successor needs no new name and no second list entry.
 
 **ID-C0-20. Carry a signer's certificate with what it signed, and validate it against the anchors.**
-Every signed document carries its signer's certificate. A verifier extracts it, checks it as the store checks what it loads ([ID-C0-23](#decision-log)), validates it against the anchors it holds, checks that its kind matches the plane — `management-plane` for mgmt artifacts and bundle manifests, `control-plane` for ctrl — and then checks the signature, in that order. No node holds a signer list, and the kind is the whole of C0's constraint on mgmt signers. [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) is the record; the envelope's fields are [Validate & Compile](../validate-and-compile)'s.
+Every signed document carries its signer's certificate. A verifier extracts it, refuses it outside its validity against the node's own clock, validates it against the anchors it holds, checks that its kind matches the plane — `management-plane` for mgmt artifacts and bundle manifests, `control-plane` for ctrl — and then checks the signature, in that order; it warns on the certificate as [ID-C0-23](#decision-log) says. No node holds a signer list, and the kind is the whole of C0's constraint on mgmt signers. [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) is the record; the envelope's fields are [Validate & Compile](../validate-and-compile)'s.
 *Because* a node absent across a signer rotation must accept the successor on its anchors' word, and a signed document must be verifiable alone.
 *Because* the kind is load-bearing: a TLS leaf also carries `digitalSignature`, so without the kind check every leaf the root signed would be a signer.
-*Accepting* that C0 cannot block a leaked signer — there is no list to edit, and the pin keeps the anchors vouching for it — while a lost signer is recovered from the root with no node touched.
+*Accepting* that C0 cannot block a leaked signer — there is no list to edit, and the pin keeps the anchors vouching for it until its certificate expires — while a lost signer is recovered from the root with no node touched.
 *Revisit* when the root key and a signer key stop sharing a location, which is when a signer-only compromise becomes real.
 *Rejected* pinned signer keys, which lock out a node absent across a rotation; a signer list, which a plane cannot keep over itself; a root-signed signer-authorisation artifact, which moves the deadlock rather than removing it and puts the root key in every authorisation change.
 
 **ID-C0-21. Keep the root key a plain file in the operator's store.**
-The root's material is the operator's `authorities/root.pem`, protected by the store's file modes and nothing else, and no command takes a path to it. Where the operator's tree lives is Enrollment's ([ENRL-C0-06](../enrollment#decision-log)).
+The root's material is the operator's `authorities/root.pem`, protected by the store's file modes ([ID-C0-28](#decision-log)) and nothing else, and no command takes a path to it. Where the operator's tree lives is Enrollment's ([ENRL-C0-06](../enrollment#decision-log)).
 *Because* moving the root offline is practical only with an intermediate doing day-to-day issuance, and an offline root read on every bundle is a recommendation nobody would follow; stated rather than hedged.
 *Accepting* a root key at a predictable path under the operator's home.
 *Revisit* with an intermediate or a CA service, when the root stops being read at every issuance; a root whose key goes cold keeps its certificate in the same file with no key block.
@@ -545,16 +553,17 @@ One `tls_principals.validity_days` covers every TLS principal, and rotation is p
 *Rejected* per-class and per-principal cadence ahead of a mechanism; refusing the mint, which stops issuance exactly when an operator most needs to re-key; a warning with no clamp, which defers the failure to the fleet; `compile` re-checking the nesting, which it cannot do without the root and which only re-derives what the mint fixed.
 
 **ID-C0-23. Check a certificate where it is read: by the store when asked, by a verifier when carried.**
-The store checks each principal it is asked for — the certified ID against the one requested, the key against the certificate — and warns inside the last 20% of the certificate's validity or 14 days, whichever is longer; it reports an absent principal as absent, and never scans itself. A certificate carried inside a signature is checked the same way by its verifier. The consumer decides what absence means. Neither number is configurable.
+The store checks each principal it is asked for — the certified ID against the one requested, the key against the certificate — and warns inside the last 20% of the certificate's validity or 14 days, whichever is longer; it warns on the anchors and on an authority it serves in the same window, reports an absent principal as absent, and never scans itself. The store warns on the clock and never refuses on it. Expiry is refused where a certificate is presented for a decision: by a peer at the handshake, and by a verifier admitting a signed document, which warns on the carried signer certificate by the same thresholds ([ID-C0-20](#decision-log)). The consumer decides what absence means. Neither number is configurable.
 *Because* the store is the one way to material ([ID-C0-28](#decision-log)), so its check covers every reader — a vertex on a node, `retectl` over the operator's store — and the warning lands where the material is used and where the operator stands.
 *Because* checking on request only keeps unused material silent: nothing asks for a principal no artifact names ([ID-C0-33](#decision-log)).
+*Because* the store only hands material to whoever will present it, and a refusal belongs to the party deciding on the certificate: expiry then binds a credential wherever it is used, while a wrong clock on the holder's side withholds nothing.
 *Because* one constant is right for a leaf and absurd for a root: the fraction carries the scale, and the floor carries the slowest remedy — notice, cut a bundle, deliver it, enroll.
 *Accepting* that a warning binds nothing, and that one expiry may be reported by several processes.
 *Revisit* with the issuance ledger of [ID-C0-25](#decision-log), which replaces warnings with a list.
 *Rejected* each consumer checking for itself, the same check in every caller; the store checking identity while consumers warn, one read split across two places; scanning the store, which warns on material nothing uses; a configurable threshold, or one per category.
 
 **ID-C0-24. Target bounded exposure, and be precise about what healing is available.**
-A compromised credential is useful for a bounded time because credentials expire; that is a deadline, not healing. Healing after a leak, against an adversary who does not interfere afterwards, is reachable only opportunistically and only against a peer with history ([ID-C0-27](#decision-log)). An attacker with continuing presence on a node is outside this design: rotation defends against copies, never against presence.
+A compromised credential is useful for a bounded time because credentials expire and an expired one is refused wherever it is presented; that is a deadline, not healing. Healing after a leak, against an adversary who does not interfere afterwards, is reachable only opportunistically and only against a peer with history ([ID-C0-27](#decision-log)). An attacker with continuing presence on a node is outside this design: rotation defends against copies, never against presence.
 *Because* forward secrecy is often mistaken for this and runs the other way, and an unqualified claim in either direction is worse than none.
 *Accepting* that C0 has neither property: re-enrolled material is only as fresh as the operator's generator, and an attacker watching the courier channel is not excluded.
 
@@ -580,9 +589,10 @@ When issuance is automated, the shape is a hierarchy: the cold authority issues 
 ### The identity store
 
 **ID-C0-28. Reach the store through one module, whose shape is one `identity/` subtree.**
-The module has two parts: an authoring part — import ([ID-C0-31](#decision-log)), and nothing else writes — used by enroll and `retectl`, and a read-only part used by every consumer, vertices and verifiers included. Consumers ask for material by SPIFFE ID; no consumer derives a path from a name, and a path handed to a workload arrives resolved. The file backend keeps one subtree per store — a node in its scope root, the operator for each rete — holding `scope.json`, `anchors.pem`, `authorities/` and `principals/`, each side populating what it has; it maps names to storage and could later encode them reversibly, relaxing [ID-C0-12](#decision-log)'s charset. A backend need not be files.
+The module has two parts: an authoring part — import ([ID-C0-31](#decision-log)), and nothing else writes — used by enroll and `retectl`, and a read-only part used by every consumer, vertices and verifiers included. Consumers ask for a principal by SPIFFE ID, and for the anchors, the scope record or an authority by what it is; no consumer derives a path from a name, and a path handed to a workload arrives resolved. The file backend keeps one subtree per store — a node in its scope root, the operator for each rete — holding `scope.json`, `anchors.pem`, `authorities/` and `principals/`, each side populating what it has; it maps names to storage and could later encode them reversibly, relaxing [ID-C0-12](#decision-log)'s charset. A backend need not be files. The file backend's directories are `0700` and its files `0600`, owned by the scope's account on a node and the operator's on the operator's side, each created with its final mode.
 *Because* the store's contract should outlive its backend, and a workload API or hardware then stands behind the same calls.
 *Because* the subtree's categories are the identity model's own — a store keeps anchors, authorities and principals — so one module serves both sides of the rete, and a rule about identity material stays a quantifier where an enumeration of names would rot.
+*Because* a key must not be readable by another account even between two system calls, and one mode for secret and public files alike is one rule to get right, where the parent directory already gates the lot.
 *Because* the store is passive — a directory with no process behind it — so its interface is the one boundary C0 can draw: a consumer is handed no call that writes.
 *Accepting* the strict name rules until that encoding exists; and that the boundary between consumers is not enforced — any process running as the scope's account can read every principal's key, each taking only what its artifact names.
 *Revisit* with a custodian behind the same interface, which can grant a terminator only what its artifact authorizes.
@@ -598,15 +608,15 @@ The record carries the trust domain always and the node where there is one. What
 *Rejected* `rete.json`, which meets the conventional mesh vertex's artifact name in the same scope root; `identity.json`, which repeats its directory; a separate `node.json`; the node in the receipt; the node derived from `principals/`, which cannot say which principal is the node; the trust domain read off a directory name.
 
 **ID-C0-30. Key material by its SPIFFE path, one `.pem` per principal or authority.**
-A principal lives at `principals/<kind>/[<node>/]<name>.pem`, an authority at `authorities/<name>.pem`. A `.pem` holds the certificate chain, and the key where the store keeps it — in clear, encrypted, or absent; a pending request holds the key beside its certificate request. Bundle entries use the same form.
+A principal lives at `principals/<kind>/[<node>/]<name>.pem`, an authority at `authorities/<name>.pem`. A `.pem` holds the certificate chain, and the key where the store keeps it. Bundle entries use the same form.
 *Because* the SPIFFE path is injective with nothing assumed about the store's side — a node may hold `service/ssh` and `service/alpha/ssh`, `user/backup` beside `service/backup` — so [ID-C0-11](#decision-log) owes the store no boundary.
 *Because* one file per principal is written whole ([ID-C0-32](#decision-log)), and the form is the file backend's encoding rather than the store's contract: a backend that is not a file tree has no PEM, and a key held by hardware is a handle beside its certificate.
-*Accepting* that a certificate cannot carry looser file permissions than its key; every file in a scope root is `0600` already.
+*Accepting* that a certificate cannot carry looser file permissions than its key; every file in a store is `0600` already.
 *Revisit* when a reader that must not see keys needs certificates.
 *Rejected* keying by the last path segment, or by kind and segment, which need cross-kind boundaries; dropping the node segment on a node, which relies on a store holding one node's principals; one opaque encoding of the whole ID now, unreadable for a gain the encoding brings later; separate certificate and key files, which an interrupted write can leave mismatched.
 
 **ID-C0-31. Let the store own import, validating a whole batch before writing any of it.**
-A writer hands the store a batch — the anchors, the scope's trust domain and node, any authority the store keeps, and each principal's material labelled with its SPIFFE path. The store establishes itself on the batch when it has no `scope.json`, and compares against it when it has one. There is no separate call that creates a store: a first import establishes one, so a command that mints a rete's own authority and signer produces them in memory and persists them through the same call. The store validates the batch, then writes it in a second step, so a writer can record its own phase between the two. It refuses a certificate whose SAN is not one SPIFFE ID in the scope's trust domain, a label or a key disagreeing with its certificate, another node's principal, a kind this side's store may not keep, key usages other than the kind's policy, a name breaking [ID-C0-12](#decision-log), a certificate not chaining to the anchors, and a pin mismatch ([ID-C0-18](#decision-log)). It warns on a certificate outside its validity and never refuses on the clock. The batch is in memory, and key material is wiped when it is dropped. The operator's side imports through the same call.
+A writer hands the store a batch — the anchors, the scope's trust domain and node, any authority the store keeps, and each principal's material labelled with its SPIFFE path. The store establishes itself on the batch when it has no `scope.json`, and compares against it when it has one. There is no separate call that creates a store: a first import establishes one, so a command that mints a rete's own authority and signer produces them in memory and persists them through the same call. The store validates the batch, then writes it in a second step, so a writer can record its own phase between the two. It refuses a certificate whose SAN is not one SPIFFE ID in the scope's trust domain, a label or a key disagreeing with its certificate, another node's principal, a kind this side's store may not keep, key usages other than the kind's policy, a name breaking [ID-C0-12](#decision-log), a certificate not chaining to the anchors, its validity aside, and a pin mismatch ([ID-C0-18](#decision-log)). It warns on a certificate outside its validity and never refuses on the clock. The batch is in memory, and key material is wiped when it is dropped. The operator's side imports through the same call.
 *Because* an issuer's mistake passes every container check, and only the owner of the material knows its rules; import and load then check the same material at its two edges, refusing on the way in and warning on the way out.
 *Because* the chain check answers whether the material will work, never whether to trust it — availability, not authority — which is what lets it run on a first import against anchors the same batch delivers.
 *Because* the store should see content and never a container, and keys should not touch a disk before they are valid.
@@ -614,9 +624,9 @@ A writer hands the store a batch — the anchors, the scope's trust domain and n
 *Rejected* the writer validating and writing material; the pin kept, or chosen per call, by the writer; a create call beside import, which would write a store nothing has yet validated; refusing on the clock, which a wrong clock turns against good material; a container stream, which ties the store to a format; an unpacked directory, which puts unvalidated keys on disk; values the writer has parsed, which puts the writer back inside the material; unlabelled blobs, which lose the cross-check against issuer mistakes.
 
 **ID-C0-32. Keep the store's integrity with no journal of its own.**
-`anchors.pem`, `scope.json` and each principal's file are written whole, by one rename. Every import writes in one order — the anchors, then `scope.json`, then each principal — and a store is established once `scope.json` exists. A batch written in part is a fact about the writer's run, which the writer records ([ENRL-C0-39](../enrollment#decision-log)); import is idempotent, so the writer's re-run completes it.
+`anchors.pem`, `scope.json` and each principal's file are written whole, by one rename. The import that establishes a store writes in one order — the anchors, then `scope.json`, then each principal — and a store is established once `scope.json` exists; every later import compares the pinned files and writes its principals alone. A batch written in part is a fact about the writer's run, which the writer records ([ENRL-C0-39](../enrollment#decision-log)); import is idempotent, so the writer's re-run completes it.
 *Because* what an interruption can then leave is anchors without `scope.json`, a store not yet established that the next import establishes afresh, or an established store missing some principals, which is what any interrupted import leaves and a tolerated state already; a principal half-replaced is unwritable, and a record half-written is unwritable too, which a reader without a lock relies on ([ID-C0-29](#decision-log)).
-*Because* one order serves a first import and every later one, so the store has a single write path.
+*Because* a later import writes the tail of the same order, the pinned files being in place, so the store has a single write path.
 *Accepting* that an interrupted first import can leave a store pinned before any principal has landed ([ID-C0-18](#decision-log)).
 *Rejected* a journal inside the store, a second record of the writer's run; two files per principal paired on load, which detects what this makes unwritable; writing `scope.json` last on a first import only, a second write order for one case.
 
