@@ -23,7 +23,8 @@ This matches the author-vs-participant split used by `kubectl`/`kubelet`, `terra
 
 ```
 retectl init <rete-name>                    # once per rete, inside a fresh repo: scaffold
-                                            # the YAML collections, mint the root CA and
+                                            # the YAML collections, the reserved coordinator
+                                            # entries commented out, mint the root CA and
                                             # the management-plane/mgmt-signer, write
                                             # the operator tree's scope.json naming the
                                             # trust domain, and write retectl's own
@@ -68,7 +69,7 @@ Notes:
 - `--kind` selects the SPIFFE path namespace and, through it, the X.509 extension policy ([ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities)). Seven kinds make up the identity model: a TLS kind's certificate gets `keyUsage: digitalSignature, keyEncipherment` and `extKeyUsage: clientAuth`, with `serverAuth` as well for a targetable kind; a signing kind's gets `keyUsage: digitalSignature` only; and `workload`, having no policy yet, is refused ([Identity](../identity#decision-log), ID-C0-04). What C0 exposes on the CLI is narrower: `id issue` accepts the signing kinds, and TLS-principal certs are issued as part of `issue-bundle` rather than one at a time.
 - **A CSR-consuming sign command belongs to Flow B and is not part of C0** ([Enrollment](../enrollment)). Nothing in C0 reaches it — `id issue` and `issue-bundle` each mint and sign inside one process — so `retectl id keygen` and `retectl id sign` are named here as the shape Flow B will take, and are not implemented surface.
 - **`retectl` warns on the certificates it touches** — the mgmt signer's at every `compile`, the root CA's at every `issue-bundle` — when either enters the last 20% of its validity, or 14 days, whichever is longer. It is the only component whose warning reaches the person who can replace them ([Identity § Decision Log](../identity#decision-log), ID-C0-23).
-- `retectl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (`agent.json` and `flor.json` per node, flat; plus `coordinator.json` on the management node). Artifacts contain **no filesystem references** — identity is referenced by SPIFFE ID and materialized by each node's identity store (see [Agent § Artifact handling](../agent#artifact-handling)). No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the coordinator (see [Coordinator](../coordinator)).
+- `retectl compile` writes artifacts to `.flor/compiled/<node>/mgmt/` inside the repo (`agent.json` and one `<vertex>.json` per vertex, per node, flat; plus `coordinator.json` on the management node). Artifacts contain **no filesystem references** — identity is referenced by SPIFFE ID and materialized by each node's identity store (see [Agent § Artifact handling](../agent#artifact-handling)). No secrets in artifacts; committing them turns the git log into an auditable shipment history. Nodes don't pull from git; they fetch from the coordinator (see [Coordinator](../coordinator)).
 - `retectl publish` uploads the current `.flor/compiled/` tree to the rete's coordinator; nodes fetch their own artifacts on the next `flor agent sync`. Publish is separate from compile so the operator can review the diff (and the audit commit) before the change is visible to nodes: publish is the review gate. Publish is idempotent — re-running with the same tree is a no-op on the server.
 - **The operator's order is `compile` → review → commit → `publish` → `issue-bundle`, and only the commit is enforced.** `issue-bundle` refuses an uncommitted compiled tree and requires nothing else — not a successful publish, not a reachable coordinator ([Enrollment § Decision Log](../enrollment#decision-log), ENRL-C0-35). The repository is the rete's source of truth and the coordinator is a cache of it, so a bundle is cut from the source; publishing promptly is what keeps the cache from lagging, not a precondition of issuing. That independence is deliberate and load-bearing: a dead management node is repaired by re-enrolling it, which needs a bundle, so a bundle that needed a publish would need the coordinator it is meant to replace (ENRL-C0-37).
 - **`retectl publish` is the only command that needs the network, and the only one that needs the local agent.** It reaches `coordinator-publisher` through the operator's SOCKS5 listener, discovered over `agent.sock`; everything else — `init`, `id issue`, `issue-bundle`, `validate`, `compile` — is fully offline. See [retectl local wiring](#retectl-local-wiring) below.
@@ -90,14 +91,14 @@ The decisions behind this section — what `retectl` is told, what it derives, a
 ### flor (node, daemon + user CLI)
 
 ```
-flor enroll <bundle>                        # bootstrap a scope: take the scope lock,
+flor enroll <bundle> [--multi-node]         # bootstrap a scope: take the scope lock,
                                             # verify, write the identity plane, deposit
                                             # the artifact set. Activates nothing —
                                             # prints the flor agent enable that does.
                                             # Refuses while the scope is live, naming
                                             # the holder and the flor agent disable
-                                            # that clears it. No flags: every check is
-                                            # mechanical and runs the same attended or
+                                            # that clears it. No check has a flag: each
+                                            # is mechanical and runs the same attended or
                                             # not. Needs no network. Prints the trust
                                             # domain and the anchors' fingerprints
                                             # before writing anything — a display, not
@@ -109,9 +110,10 @@ flor enroll <bundle>                        # bootstrap a scope: take the scope 
                                             # already holds, then the signature, then
                                             # refuses any bundle differing from what
                                             # the scope is pinned to — trust domain,
-                                            # anchors or node. The scope is the rete name
-                                            # verbatim; a collision between two
-                                            # independent retes of one name is a refusal
+                                            # anchors or node. The scope is <node>.<rete>,
+                                            # from the manifest's two claims; a fresh
+                                            # enrollment beside another node of the same
+                                            # rete is refused unless --multi-node
 flor install [--system|--user]              # install or upgrade this host: place executables
                                             # + per-OS service wrappers, write the install
                                             # receipt; run by install.sh; idempotent.
@@ -120,28 +122,28 @@ flor install [--system|--user]              # install or upgrade this host: plac
                                             # never changes which scopes are active.
                                             # Migrations are not its business (see Installer)
 flor uninstall [--purge]                    # stop agents, remove what it placed: binaries,
-                                            # wrappers, runtime roots, receipt and lock.
+                                            # wrappers, runtime roots and receipt.
                                             # Scope roots, config.toml and the flor user
                                             # survive unless --purge (see Installer)
 flor version                                # release version, install mode, every resolved
                                             # directory, and the release this one replaced
 
-flor agent run    [--rete <scope>]          # the supervisor daemon (run by the OS service
+flor agent run    [--scope <scope>]         # the supervisor daemon (run by the OS service
                                             # wrapper); reads agent.json from the active
                                             # artifact set; auto-detects the scope if only
-                                            # one rete is enrolled; supervises one
+                                            # one is enrolled; supervises one
                                             # `flor-vertex` in C0 (+ coordinator on mgmt01).
-                                            # One agent per scope, enforced by a per-scope
-                                            # lock in the runtime root
-flor agent sync   [--rete <scope>]          # fetch + verify + install latest artifacts,
+                                            # One agent per scope, enforced by the scope
+                                            # lock
+flor agent sync   [--scope <scope>]         # fetch + verify + install latest artifacts,
                   [--dry-run]               # then restart the vertex. Scope auto-detected
-                                            # if only one rete enrolled. --dry-run shows
+                                            # if only one is enrolled. --dry-run shows
                                             # which version would install, no restart.
                                             # (commit-timeout/--confirm land in C1)
-flor agent status [--rete <scope>]          # local agent state + active artifact version
-flor agent enable  [--rete <scope>]         # activate this scope's service wrapper and
-flor agent disable [--rete <scope>]         # start it; disable stops and deregisters it.
-                                            # Scope auto-detected if only one rete is enrolled,
+flor agent status [--scope <scope>]         # local agent state + active artifact version
+flor agent enable  [--scope <scope>]        # activate this scope's service wrapper and
+flor agent disable [--scope <scope>]        # start it; disable stops and deregisters it.
+                                            # Scope auto-detected if only one is enrolled,
                                             # as elsewhere. Needed to resume a scope that
                                             # survived an uninstall, and to leave one rete
                                             # without touching others (see Installer)
@@ -151,7 +153,7 @@ flor agent disable [--rete <scope>]         # start it; disable stops and deregi
 ### flor-vertex (agent-spawned, data plane)
 
 ```
-flor-vertex       [--rete <scope>]          # the data-plane daemon. In production the agent
+flor-vertex       [--scope <scope>]         # the data-plane daemon. In production the agent
                   [--name <name>]           # spawns it with full FLORWL_* context — no flags.
                   [--set <version>]         # Flags exist for debugging only, as explicit
                                             # overrides of the same variables
@@ -167,14 +169,13 @@ flor-coordinator                            # the store-and-serve management-nod
 
 Notes:
 
-- **State directory.** Two deployment modes, chosen by the installer (see [Installer § Modes](../../installer#modes) and [Directories](../../installer#directories)): **user mode** (`$XDG_STATE_HOME/flor`, macOS included — personal devices, user-level service, and the only macOS mode in C0) and **system mode** (`/var/lib/flor`; servers, dedicated `flor` service user). Node-local commands resolve it as: explicit `FLOR_STATE_HOME` (one of the per-directory development/CI overrides), else the column of the [directory table](../../installer#directories) selected by the mode the invoked binary infers from its own prefix — so which install a command acts on is which binary you typed, and `flor version` prints the answer. The directory holds `retes/<scope>/` per enrolled rete, created by `flor enroll`, plus two files belonging to `flor install` alone — its receipt and its lock, which no other install channel writes. Enrolled retes live at `<state-dir>/retes/<scope>/`; config, sockets, and executables have directories of their own.
 - **Flow B has no command in C0.** The security-purist path — a principal generating its own keypair and sending only a CSR — is deferred (an open question for C1, see [C1 Scope](/docs/implementation/c1-manual-mesh/scope)), and its commands are `retectl id keygen` and `retectl id sign` when it lands: identity work is `retectl`'s, and a principal running `retectl` on its own machine is running a tool the installer already put there.
-- **`flor enroll <bundle>` takes the scope before it reads the bundle.** It creates `retes/` and the scope root if either is absent, takes the **scope lock**, and refuses when someone already holds it — naming the holder, and the `flor agent disable` that clears the ordinary one; it never stops a running agent itself ([Enrollment](../enrollment#decision-log), ENRL-C0-39). Under that lock it reads `receipt.json`, gating the scope root's `schema_version` and taking the phase as its answer to fresh-or-re-enrollment. Only then does it verify the bundle: on a re-enrollment, the manifest's signer certificate against the anchors the node already holds, its `management-plane` kind, and then the signature; always, every entry against the manifest's digests; and it hands the credentials to the identity store, whose import checks every certificate against the anchor set it is about to pin and refuses one that does not chain ([Identity](../identity#decision-log), ID-C0-31); then it prints the trust domain and the anchors' fingerprints, as a display rather than a check — there is no flag turning it into one. **The identity store's first import pins the trust domain, the anchor set and the node**, and a later bundle differing in any of the three is refused rather than applied, so re-enrollment reaches principal material and the artifact set alone ([ID-C0-18](../identity#decision-log)). It then writes `receipt.json` with phase `enrolling`, has the identity store write the anchors, `scope.json` from the manifest's claims, and each principal the bundle names, leaving every other principal's alone, and **deposits** the bundle's artifact files in `incoming/`, which carries no set structure and no pointer — staging is a step inside the agent's intake, and enroll performs none of it. It finishes by replacing the receipt with phase `enrolled` — the **commit point**, before which the scope counts as not enrolled — deleting the bundle, printing the `flor agent enable` for this scope, and exiting, which releases the lock. **`flor agent enable` is what activates**, and the same command resumes a scope that survived an uninstall with no bundle at all. The agent then takes the scope lock, refuses a receipt that is absent, mid-run or unreadable, and otherwise admits `incoming/` **before its first dial** and syncs; enroll's success means the material is written and the files deposited, not that the set is running, so a rejected intake is logged at WARN once. A run interrupted anywhere **converges**: any bundle for this scope's rete and node completes it. None of this needs the network. The scope is the rete's name verbatim; two independent retes of one name cannot both be enrolled on a host, and that is a refusal. The bundle is deleted on success.
-- `flor agent sync` is a **thin client of the running agent's socket** — the daemon executes the sync (it also syncs once at startup and on a poll timer — interval set by `poll_interval` in `agent.json`'s `sync` block). The daemon polls the coordinator with the held set version (a no-op while unchanged — the cheap poll), fetches and verifies the complete new set when it moved (acting as the `node/<node>` principal via the local vertex's SOCKS5), stages it, activates it via the `mgmt/current` pointer, and restarts the workloads whose payloads changed — restarting itself through the service wrapper when its own payload changed. Fetch → verify → stage → restart; see [Agent § Sync](../agent#sync). No compilation on the node — artifacts were pre-compiled by the operator and published to the coordinator.
+- `flor enroll <bundle>` behaviour is specified in [Enrollment](../enrollment).
+- `flor agent run` is the long-running supervisor process per node. See [Agent](../agent).
+- `flor agent sync` is a **thin client of the running agent's socket** — the daemon executes the sync, see [Agent § Sync](../agent#sync).
 - **No commit-timeout / auto-rollback in C0.** A sync activates the new artifacts and restarts the vertex; there is no confirm-or-roll-back guard. The Cisco-IOS-style `commit confirmed` safety net lands in [C1](/docs/implementation/c1-manual-mesh/scope). In C0 a bad sync is bounded by keeping an out-of-band emergency-access path (see [Distribution & Reload · Safety Net](../distribution-and-reload#safety-net-server-nodes)), which suffices for limited pilots that never rely on Florete as the single access path.
-- `flor agent run` is the long-running supervisor process per node. It reads `agent.json` from the active artifact set and forks a child per entry in its `workloads` inventory, in list order — each entry's `run` argv spawned with the uniform `FLORWL_*` environment (see [Agent § Supervision contract](../agent#supervision-contract)). In C0 that's one child (plus the coordinator on the management node); C1 adds a second vertex for the mesh-flor layer. Launch mechanics are pinned in [Agent § Supervision mechanics](../agent#supervision-mechanics): the OS service manager keeps the agent alive; the agent forks and supervises its workloads directly (restart backoff, exit-code vocabulary, liveness window); per-workload launch runtimes (system units, containers, remote WRI) are a reserved evolution.
 - `flor-vertex` is the data-plane daemon. In production the agent spawns it with the uniform `FLORWL_*` environment (see [Agent § Supervision contract](../agent#supervision-contract)): it reads the config `FLORWL_MGMT_ARTIFACT` points at (plus `FLORWL_CTRL_ARTIFACT` for a mesh vertex), resolves identity material against the scope root, and runs the workloads/io/transport-endpoint/connection-manager described there. The CLI flags are **debug-only overrides of the same variables**, all explicit: no auto-detection, and the vertex never reads the `mgmt/current` pointer — one uniform resolution path whatever the source. It does **not** re-verify signatures (the agent is the sole verifier); it is unaware of the agent, the coordinator, and the rest of the rete.
-- `flor agent status` reads from a **per-rete Unix socket** (`agent.sock`, under the scope's runtime root — `/run/flor/<scope>/` or the user-mode equivalent) exposed by that rete's agent. The socket speaks a structured protocol; `status` renders it for humans, and tools read fields directly — `retectl` uses the endpoint-discovery map this way. `--rete <scope>` selects which socket to use; auto-detected when only one rete is enrolled. A future tray-icon GUI (B1+) will be another client of the same socket — CLI and GUI share the same daemon API.
+- `flor agent status` reads from a **per-rete Unix socket** (`agent.sock`, under the scope's runtime root — `/run/flor/<scope>/` or the user-mode equivalent) exposed by that rete's agent. The socket speaks a structured protocol; `status` renders it for humans, and tools read fields directly — `retectl` uses the endpoint-discovery map this way. `--scope <scope>` selects which socket to use; auto-detected when only one scope is enrolled. A future tray-icon GUI (B1+) will be another client of the same socket — CLI and GUI share the same daemon API.
 
 **Explicitly deferred from C0**:
 

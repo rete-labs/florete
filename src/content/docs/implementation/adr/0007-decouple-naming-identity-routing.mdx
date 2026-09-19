@@ -42,8 +42,6 @@ With context, the node-vs-rete shape is unambiguous *even for dotted trust domai
 
 ### `Targetable` and `ServiceHostname`
 
-Two types carry what one used to, because the two meanings change for different reasons:
-
 - **`Targetable`** is a validated identity newtype admitting exactly the kinds that can be a connection's target — `Service` and `Vertex` today, `Node` and `Workload` reserved ([Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log), ID-C0-15). It carries no hostname. The kind restriction is enforced where the value is born, not by a type zoo; `publish` builds one from each SVID it registers, and the Endpoint API `connect(caller: &X509Svid, target: &Targetable)` accepts any.
 - **`ServiceHostname`** is the `.rete` codec, for services alone. `resolve(host, ctx_td) -> Result<ServiceHostname>` strips `.rete`, strips the context trust domain, and lets the residual labels decide the scope; a non-matching trust-domain suffix is a foreign rete, unsupported in C0. `render()` is infallible concatenation, `<service>[.<node>].<trust-domain>.rete`. A `ServiceHostname` converts into a `Targetable`, a service always being one.
 
@@ -60,7 +58,7 @@ The transport derives SNI from the target alone, through `sni_for(&Targetable)`,
 ```
 svc.rete.<service>.<td>.rete           svc.rete.api.flor.demo.rete
 svc.node.<service>.<node>.<td>.rete    svc.node.ssh.alpha.flor.demo.rete
-vtx.node.<vertex>.<node>.<td>.rete     vtx.node.public.alpha.flor.demo.rete
+vtx.node.<vertex>.<node>.<td>.rete     vtx.node.hop.alpha.flor.demo.rete
 ```
 
 A kind that becomes targetable takes a kind marker of its own. The markers come first and fix how many labels precede the trust domain, so two identities one endpoint publishes never share a label — even across trust domains, where a marker at the end would let a node label pass for the start of a dotted trust domain — and no name has to be reserved to keep it so. The server keys its published-cert registry by `sni_for(...)` and looks the incoming SNI up **directly**; it never parses an identity back out of SNI. Each registry entry carries the canonical `SpiffeId` (kind intact), so resolution is kind-preserving and needs no context on the server. SNI needs no inverse and no uniqueness beyond one endpoint: what it must do is let the server choose a certificate from the ClientHello alone, before it has seen the client's. The label reads back from a packet capture; because resolution is by lookup, it is free to become opaque or hashed so service names do not travel in clear, with no change visible to the identity layer. SNI is cleartext on the wire and visible to DPI; keeping sensitive routing data out of it, or adopting TLS Encrypted Client Hello (ECH), is a future option this decoupling preserves. SNI was never trusted (ADR-0006: SAN is authoritative); this formalizes it as a pure routing hint.

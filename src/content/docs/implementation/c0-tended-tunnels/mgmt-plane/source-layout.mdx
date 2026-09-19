@@ -19,16 +19,16 @@ my-rete/
         ├── mgmt01/              # management node — bootstrap-applied manually (see Coordinator)
         │   └── mgmt/
         │       ├── agent.json
-        │       ├── flor.json
+        │       ├── hop.json
         │       └── coordinator.json
         ├── alpha/
         │   └── mgmt/
         │       ├── agent.json
-        │       └── flor.json
+        │       └── hop.json
         ├── beta/
         │   └── mgmt/
         │       ├── agent.json
-        │       └── flor.json
+        │       └── hop.json
         └── ...
 ```
 
@@ -71,7 +71,7 @@ Two parallel namespaces, two conventions:
 
 The cross-mapping at compile time is a trivial `s/-?s$//`. Singletons (`agent.json`, `anchors.pem`) sit at the root of their containing directory — no collection wrapper needed when there's exactly one and there will only ever be one.
 
-Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and a `flor.json` (read by the single `flor-vertex` instance the agent supervises in C0), flat beside each other. C1 adds a second vertex artifact; the agent.json shape is stable across both.
+Each node's compiled directory holds an `agent.json` (read by `flor agent run`) and one artifact per declared vertex, named after it — `hop.json` for a node's one link vertex, by convention, read by the `flor-vertex` instance the agent supervises — flat beside each other. C1 adds a second vertex artifact; the agent.json shape is stable across both.
 
 The per-node `mgmt/` subdirectory looks redundant in C0 (no sibling), but it keeps `retectl compile`'s output shape uniform with what `flor` agents see at runtime, and matches C1+ where a sibling `ctrl/` subtree appears alongside (gitignored — ctrl artifacts have a different lifecycle, see [C1's ctrl-plane doc](../../../c1-manual-mesh/ctrl-plane/) for details). The path overhead is one segment; the consistency win is that no later milestone reshapes the layout.
 
@@ -132,28 +132,28 @@ nodes:
   # management node — hosts the coordinator
   mgmt01:
     vertices:
-      - { name: public, kind: link, type: quic, address: 9.10.11.12:4433 }
+      - { name: hop, kind: link, type: quic, address: 9.10.11.12:4433 }
 
   # server nodes — Internet-facing, host services
   alpha:
     vertices:
-      - { name: public, kind: link, type: quic, address: 1.2.3.4:4433 }
+      - { name: hop, kind: link, type: quic, address: 1.2.3.4:4433 }
   beta:
     vertices:
-      - { name: public, kind: link, type: quic, address: 5.6.7.8:4433 }
+      - { name: hop, kind: link, type: quic, address: 5.6.7.8:4433 }
 
   # user nodes — dynamic IPs, behind NAT, initiate connections only
   alice-laptop:
     vertices:
-      - { name: quic, kind: link, type: quic }   # no address — initiator-only
+      - { name: hop, kind: link, type: quic }   # no address — initiator-only
   bob-workstation:
     vertices:
-      - { name: quic, kind: link, type: quic }
+      - { name: hop, kind: link, type: quic }
 ```
 
 Each vertex entry has:
 
-- `name` — local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields). Defaults to `type` when there's exactly one vertex of that type on the node. For mesh-vertices in C1 the name carries semantic meaning — `rete` is the conventional name for the rete-wide mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
+- `name` — local handle for cross-references (other vertices' `uses:` in C1, `links.yaml` `via:` in C1, workload `via:` fields), and the name of the vertex's workload and of its artifact, `<name>.json` ([Identity](../identity#decision-log), ID-C0-09). Required: nothing defaults it. A node's only link vertex is named `hop` by convention, in the examples here and in the rete `retectl init` scaffolds. For mesh-vertices in C1 the name carries semantic meaning — `rete` is the conventional name for the rete-wide mesh-vertex; `interrete` by convention for the B1+ interrete-vertex.
 - `kind` — `link` or `mesh` (see above). C0 uses only `link`.
 - `type` — the interface this vertex exposes upwards (`quic` in C0; `udp`, in-kernel `wg`, third-party `vless`, … become available in C1+). The mesh-vertex can consume any supported link interface (via Connection Manager adapter), currently it exposes only `quic` interface (via FlorIO). The recursion property: an upper-layer mesh-vertex of `type: quic` consumes a lower mesh-vertex of `type: quic` indistinguishably from a wire-terminating link-vertex of `type: quic`.
 - `address` — listen `host:port` for link vertices that bind a socket. Omit for initiator-only nodes (user laptops, phones); they connect outbound from whatever ephemeral port they get.
@@ -179,7 +179,7 @@ services:
   # Workload services
   api:
     at: alpha
-    # via: public                     # omittable in C0: mgmt01 has one vertex
+    # via: hop                        # omittable in C0: alpha has one vertex
     addr: 127.0.0.1:8000             # flor forwards here; service binds localhost
     socks5_proxy: 127.0.0.1:18000    # SOCKS5 port flor exposes to this service
     groups: [api]                        # what group api belongs to (ingress ACL side)

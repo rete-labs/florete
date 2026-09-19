@@ -120,10 +120,13 @@ This page is C0's identity model: what names every entity in a rete, what proves
 
   scope           a store's reader takes its trust domain and node from
                   scope.json, never from a path
-                  the anchors and scope.json are written once; a store is
-                  established when scope.json exists
+                  a scope's trust domain and node never change, in any
+                  milestone, so its record can be read without the scope's lock
+                  the anchors and scope.json are written once in C0; a store
+                  is established when scope.json exists
 
-  integrity       each principal is one file, written whole by one rename
+  integrity       anchors.pem, scope.json and each principal are one file each, written
+                  whole by one rename
                   the store keeps no record of a writer's run
 
   planes          artifacts name identity by SPIFFE ID and never by path
@@ -138,8 +141,8 @@ This page is C0's identity model: what names every entity in a rete, what proves
   custody         the root key is a plain file
                   a signer's name is a slot, kept across rotation
 
-  hosts           a host joins each rete as that rete's node principal,
-                  under that rete's name for it, with its own agent
+  hosts           a host joins a rete as one or more nodes; each is a node
+                  principal, named by that rete, with its own agent
 
   audit           git records a principal's declaration and removal,
                   not its issuance
@@ -221,9 +224,9 @@ In the rete `flor.demo`:
 - `spiffe://flor.demo/service/api` — a service reachable across the rete.
 - `spiffe://flor.demo/service/alpha/ssh` — SSH on node `alpha`.
 - `spiffe://flor.demo/node/alpha` — node `alpha` as a member of the rete.
-- `spiffe://flor.demo/vertex/alpha/public` — `alpha`'s vertex named `public`.
+- `spiffe://flor.demo/vertex/alpha/hop` — `alpha`'s vertex named `hop`.
 - `spiffe://flor.demo/workload/alpha/agent` — `alpha`'s supervisor.
-- `spiffe://flor.demo/workload/alpha/public` — the process running `alpha`'s `public` vertex, which takes the vertex's name.
+- `spiffe://flor.demo/workload/alpha/hop` — the process running `alpha`'s `hop` vertex, which takes the vertex's name.
 - `spiffe://flor.demo/management-plane/mgmt-signer` — the rete's mgmt signer.
 - `spiffe://flor.demo/control-plane/ctrl-signer` — the rete's ctrl signer.
 
@@ -237,7 +240,7 @@ Entities and workloads stay distinct. A node, a vertex or a service may be backe
 
 ### Uniqueness
 
-A name is unique within its kind and its scope — per rete for a rete-scoped kind, per node for a node-scoped one — which is its SPIFFE ID being unique, and nothing else is required. Names of different kinds may coincide: `workload/alpha/coordinator` beside `service/coordinator`, `workload/alpha/public` beside `vertex/alpha/public`, `user/backup` beside `service/backup`. Wherever a person reads a name — an access rule, an artifact, a log line — it is the full ID, where such pairs do not look alike. No kind word is reserved as a name, since a SPIFFE path is read by position.
+A name is unique within its kind and its scope — per rete for a rete-scoped kind, per node for a node-scoped one — which is its SPIFFE ID being unique, and nothing else is required. Names of different kinds may coincide: `workload/alpha/coordinator` beside `service/coordinator`, `workload/alpha/hop` beside `vertex/alpha/hop`, `user/backup` beside `service/backup`. Wherever a person reads a name — an access rule, an artifact, a log line — it is the full ID, where such pairs do not look alike. No kind word is reserved as a name, since a SPIFFE path is read by position.
 
 ### Syntax
 
@@ -249,7 +252,7 @@ A name is unique within its kind and its scope — per rete for a rete-scoped ki
 
 The DNS rules exist because the names reach DNS-shaped forms — the service hostname, which a legacy application's resolver and TLS stack must accept, and the transport's wire label. Holding the reserved kinds to them now means their names never change when those kinds gain a certificate. A node name being one label is also what lets `<node>.<td>` split at its first dot.
 
-Vertex names are the operator's choice; conventional names are conventions, and no rule fixes one.
+Vertex names are the operator's choice; conventional names are conventions, and no rule fixes one. Every vertex is named in YAML, and nothing defaults its name; a node's only link vertex is named `hop` by convention.
 
 ### Service hostnames
 
@@ -274,7 +277,7 @@ Each rete has one **root CA**, created by `retectl init`, and it issues every ce
 
 A **trust anchor** is what a verifier validates against, and is not a synonym for the root CA: the two coincide in C0 and stop coinciding once an intermediate exists. A store keeps its anchors in `anchors.pem`, one file holding one or more certificates, so that old and new can be trusted side by side.
 
-**The anchors and the trust domain are pinned.** The store's first import writes them, and every later import that differs — in the anchor set, the trust domain or the node — is refused. C0 has no path to change either: a rete whose root must change is replaced, with a new rete, every scope root removed by hand and every node enrolled afresh.
+**The anchors and the trust domain are pinned.** The store's first import writes them, and every later import that differs — in the anchor set, the trust domain or the node — is refused. C0 has no path to change the anchors, and no milestone will have one for the trust domain or the node, which are what the scope is ([ID-C0-29](#decision-log)): a rete whose root must change is replaced, with a new rete, every scope root removed by hand and every node enrolled afresh.
 
 The root's material is `authorities/root.pem` in the operator's store, protected by the store's file modes and nothing else; no command takes a path to it, and it never enters the rete repository. Where the operator's tree lives is [Enrollment](../enrollment)'s.
 
@@ -340,6 +343,8 @@ The categories are the identity model's own — anchors, authorities, principals
 
 `scope.json` says what the store belongs to: the trust domain always, and the node on a node's side. Whatever reads a store takes its trust domain and node from it — never from a directory name, and never by sampling IDs out of artifacts, whose IDs are checked against it instead. A tree restored from backup therefore announces its rete.
 
+**A scope's trust domain and node are immutable, in every milestone.** A different trust domain or a different node is a different scope, enrolled afresh, never an existing one changed — so the record is written once, whole, and a reader needs no lock to trust what it reads. The store's reading part serves it from a scope root without taking that scope's lock.
+
 ### Keying and files
 
 A principal lives at its SPIFFE path below the trust domain — `principals/service/alpha/ssh.pem`, `principals/user/alice.pem` — so a node can keep `service/ssh` and `service/alpha/ssh` side by side and no name needs to be unique across kinds. A `.pem` holds the principal's certificate chain and its key: in clear, encrypted, or absent.
@@ -363,7 +368,7 @@ A certificate outside its validity is warned about and never refused, since a wr
 
 ### Integrity and retention
 
-Each principal is one file, written whole by one rename. Every import writes in one order — the anchors, then `scope.json`, then each principal — so a store is established exactly when `scope.json` exists, an interruption before it establishes nothing, and an interruption after it leaves an established store missing some principals, as an interrupted later import would. A batch written in part is a fact about the writer's run, which the writer records — for enroll, its receipt — and since the same batch writes the same files, the writer's re-run completes it.
+`scope.json`, `anchors.pem` and each principal are one file each, written whole by one rename. Every import writes in one order — the anchors, then `scope.json`, then each principal — so a store is established exactly when `scope.json` exists, an interruption before it establishes nothing, and an interruption after it leaves an established store missing some principals, as an interrupted later import would. A batch written in part is a fact about the writer's run, which the writer records — for enroll, its receipt — and since the same batch writes the same files, the writer's re-run completes it.
 
 An import replaces the principals its batch names and leaves every other principal untouched: which principals live on a node is its artifact set's statement, not a delivery's. Nothing is pruned. Material of a principal removed from the rete stays until the scope root is removed, and opens nothing, every access check having dropped it.
 
@@ -380,7 +385,7 @@ Recorded so nothing above forecloses them. None is designed and none is a commit
 - **Replacing a credential over the mgmt channel.** *([ID-C0-26](#decision-log))* Re-enrollment is the **least secure delivery path this design has** and is currently the only rotation path: the mgmt channel is mutually authenticated and ours, while the courier channel is a chat app and a stick in a pocket. What differs between the successors is who *produced* the material, not how it travels. The property owed — a principal's material replaceable **on its own**, without touching the artifact set or any other principal's — is what the store's per-principal import already gives ([ID-C0-31](#decision-log), [ID-C0-33](#decision-log)).
 - **A credential spent at first use.** *([ID-C0-26](#decision-log))* The operator mints two credentials offline; the bundle carries only the first, and the second — **sealed to the node's current public key** — is relayed by the coordinator as opaque bytes and deleted on fetch, so a second attempt fails visibly. This needs no online signing authority, gives an attacker-first race a *detectable* outcome, and replaces the unbounded bearer window with consumption. It states a rule this design was missing: an artifact needs integrity and authenticity, which a signature gives it; a credential needs **confidentiality** as well, because the coordinator sits in the path and is not a party — and what is sealed is the whole payload, only what a carrier must route left in clear.
 - **Bounding a hot issuer by chaining credentials.** *([ID-C0-27](#decision-log))* When issuance is automated, a new credential's public key is signed by its **predecessor's private key**, which the node's store keeps and a ladder-bound issuer never holds — so a hijacked issuer can mint a certificate carrying no continuity proof, and peers that have met that principal reject it. The issuer stops being something that must be *trusted* and becomes something that must merely be *available*. Continuity is opportunistic: a peer with no history falls back to the anchors, so coverage grows with the age of the rete.
-- **Rotating what C0 pins.** *([ID-C0-18](#decision-log))* The anchors and the trust domain are fixed by the store's first import, so a rete that must change either is replaced. A successor would need three things C0 does not build: an **add** path, which a cross-signed successor riding the mgmt plane could give; a **remove** path, which nothing can carry over a channel the retiring anchor authenticates, so it is out of band or it is nowhere; and an **authorisation** for an anchor change strictly stronger than a mgmt signature, since a signer that can rewrite the anchors is a signer that can take a node. The plural `anchors.pem` is the one piece already in place, and it is shape rather than mechanism. A **spare anchor seeded at genesis** looks like the cheap half of the same answer and owes none of the three, yet is [rejected](#decision-log) rather than deferred — the reasons all turn on the missing remove path, and it becomes a real option only once one exists. Changing the trust domain is a different question again and probably has no answer: it is the rete's name, and every principal's SPIFFE ID is scoped by it.
+- **Rotating what C0 pins.** *([ID-C0-18](#decision-log))* The anchors and the trust domain are fixed by the store's first import, so a rete that must change either is replaced. A successor would need three things C0 does not build: an **add** path, which a cross-signed successor riding the mgmt plane could give; a **remove** path, which nothing can carry over a channel the retiring anchor authenticates, so it is out of band or it is nowhere; and an **authorisation** for an anchor change strictly stronger than a mgmt signature, since a signer that can rewrite the anchors is a signer that can take a node. The plural `anchors.pem` is the one piece already in place, and it is shape rather than mechanism. A **spare anchor seeded at genesis** looks like the cheap half of the same answer and owes none of the three, yet is [rejected](#decision-log) rather than deferred — the reasons all turn on the missing remove path, and it becomes a real option only once one exists. Changing the trust domain has no answer by design: it is the rete's name, every principal's SPIFFE ID is scoped by it, and a scope's trust domain and node are immutable ([ID-C0-29](#decision-log)).
 - **An intermediate, so the root can genuinely stay offline.** *([ID-C0-21](#decision-log))* Moving the root out is undercut by the root being read on every `issue-bundle`. The answer PKI has always used is a root that signs an **intermediate**, an intermediate that does day-to-day issuance, and a root touched only to rotate that intermediate. It is not C0's: every verifier would have to build and validate a path rather than check a signature, and the signer check would follow. A root whose key goes cold keeps its certificate in `authorities/root.pem`, with no key block.
 - **A custodian behind the store.** *([ID-C0-28](#decision-log))* Any process running as a scope's account can read every principal's key today. A custodian — the agent, or a Workload API — standing behind the store's reading part can grant each terminator only the principals its artifact attaches to it; the split between the authoring and the reading part is the seam it plugs into, and no consumer changes.
 - **Pruning by reference.** *([ID-C0-33](#decision-log))* Material of a removed principal stays until its scope root goes. A pruning design deletes what no current artifact names — never by expiry, which a wrong clock turns against good material, and never the node's own principal — and has to say what a partial bundle or a lagging set may delete.
@@ -471,9 +476,12 @@ Every name is lowercase. The name of a targetable kind — service, vertex, node
 *Revisit* the SPIFFE-charset part when the store's name encoding ([ID-C0-28](#decision-log)) lands.
 *Rejected* the rule only for kinds targetable today, which defers a rename; one rule for every kind, which constrains users and signers for no projection; encoding names into the wire label, which cannot hold for the hostname; case-insensitive uniqueness, two comparisons and names that look distinct yet cannot coexist.
 
-**ID-C0-13. Leave vertex names to the operator.**
-A vertex's name is the operator's choice; conventional names are conventions, and no validator rule fixes one.
+**ID-C0-13. Leave vertex names to the operator, require one for every vertex, and name a lone link vertex `hop` by convention.**
+A vertex's name is the operator's choice, given in YAML for every vertex; nothing defaults it, and no validator rule fixes it. A node's only link vertex is named `hop` in examples and in the rete `retectl init` scaffolds.
 *Because* a rule would fix what the operator should name.
+*Because* the name reaches the vertex's identity, its workload, its artifact and every log line it writes, so it must not appear by accident.
+*Because* a vertex is named for the scope of its layer — `rete` and `interrete` for the mesh layers — and a link vertex's scope is one hop between nodes, on any medium and at any reachability; `hop` is short in a log identifier, `flor-hop`.
+*Rejected* defaulting the name to the type, which renames a vertex when its transport changes, or to the kind, which mesh's two layers leave ambiguous; `link`, the kind; `public`, a reachability a laptop behind NAT does not have; `link-vertex`, which repeats the kind every rendering carries; `underlay`, longer; `wire`, odd over radio.
 
 **ID-C0-14. Give services, and only services, a `.rete` hostname, resolved with context.**
 `<service>.<rete>.rete` or `<service>.<node>.<rete>.rete`, on a type of its own; `.rete` is not in public DNS. Resolution strips `.rete` and the caller's trust domain, and the residual label count gives the scope ([ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing)).
@@ -505,7 +513,7 @@ Never a bare "CA". The root CA issues certificates, and its key is what an opera
 *Because* planned, lost and compromised roots share no mechanism — cross-signing needs the old key, a lost key cannot cross-sign, and a compromised one must be removed through a channel the anchor being removed authenticates — so designing one of them early would look like a rotation story while covering neither failure that motivates one.
 *Because* the pin compares values the store owns, so a pin kept, or switched, by its writer would reach inside the store — and a pin a writer can skip is one a confused writer will.
 *Accepting* that a wrong first anchor is wrong for the life of the scope, and so is a store established by an enrollment that then failed before its own commit point — a retry with a different bundle is refused, and the remedy for both is removing the scope root by hand; that the recursion stops at the root CA, whose compromise already mints any principal; and that a graceful rotation, when it comes, brings back an overlap window whose floor is the longest a node may be unreachable.
-*Revisit* when a rotation is wanted, or an intermediate makes most rotations unnecessary. The successor owes an add path, a remove path, and an authorisation for an anchor change strictly stronger than a mgmt signature.
+*Revisit* the anchors when a rotation is wanted, or an intermediate makes most rotations unnecessary. The successor owes an add path, a remove path, and an authorisation for an anchor change strictly stronger than a mgmt signature. The trust domain and the node have no successor ([ID-C0-29](#decision-log)).
 *Rejected* a spare anchor seeded at genesis, which retires nothing without a remove path and doubles a key's custody for the one case a backup answers better (ENRL-C0-34); a first anchor delivered over the mgmt plane, the circularity that plane is rooted on; one file per anchor, which a partial write leaves a store trusting a subset of; a new anchor set accepted from an authenticated re-enrollment, which is the escalation above.
 
 **ID-C0-19. Keep the root CA, the signers and the operator's principal apart, and make a signer's name a slot.**
@@ -580,11 +588,13 @@ The module has two parts: an authoring part — import ([ID-C0-31](#decision-log
 *Revisit* with a custodian behind the same interface, which can grant a terminator only what its artifact authorizes.
 *Rejected* a different shape for the operator's side, which forks the module; one interface for writers and readers alike; a subtree per terminator, which copies a principal's material into every vertex that uses it.
 
-**ID-C0-29. Say what a store belongs to in `identity/scope.json`.**
-The record carries the trust domain always and the node where there is one. Whatever reads a store takes its trust domain and node from it; nothing derives either from a path or samples it from configs, and artifact IDs are checked against it. It says what the scope is; Enrollment's receipt says what the last enrollment did.
+**ID-C0-29. Say what a store belongs to in `identity/scope.json`, and never change it.**
+The record carries the trust domain always and the node where there is one. Whatever reads a store takes its trust domain and node from it; nothing derives either from a path or samples it from configs, and artifact IDs are checked against it. It says what the scope is. **A scope's trust domain and node are immutable, in every milestone**: the record is written once, by the store's first import, and a different trust domain or node is a different scope. The store's reading part serves the record from a scope root without taking that scope's lock.
 *Because* a pin needs something to be compared against, and a path is a worse source than a record once names are encoded.
 *Because* a store should say what it is, so a tree restored from backup announces its rete.
-*Accepting* an optional `node`, which a reader must handle.
+*Because* the pair is what a scope is — its handle and every stored identity derive from it — so changing it would be replacing the scope under its own name, where anchors, credentials and artifacts can change without the scope becoming another.
+*Because* a record that never changes is safe to read without a lock, so a reader outside the scope needs no lock that a running scope holds exclusively.
+*Accepting* an optional `node`, which a reader must handle; and that a renamed node or a renamed rete is a new scope, enrolled afresh.
 *Rejected* `rete.json`, which meets the conventional mesh vertex's artifact name in the same scope root; `identity.json`, which repeats its directory; a separate `node.json`; the node in the receipt; the node derived from `principals/`, which cannot say which principal is the node; the trust domain read off a directory name.
 
 **ID-C0-30. Key material by its SPIFFE path, one `.pem` per principal or authority.**
@@ -603,9 +613,9 @@ A writer hands the store a batch — the anchors, the scope's trust domain and n
 *Accepting* that the API is designed with the code, and that a reset call is left until something needs one.
 *Rejected* the writer validating and writing material; the pin kept, or chosen per call, by the writer; a create call beside import, which would write a store nothing has yet validated; refusing on the clock, which a wrong clock turns against good material; a container stream, which ties the store to a format; an unpacked directory, which puts unvalidated keys on disk; values the writer has parsed, which puts the writer back inside the material; unlabelled blobs, which lose the cross-check against issuer mistakes.
 
-**ID-C0-32. Keep the store's integrity per principal, with no journal of its own.**
-Each principal's file is written whole, by one rename. Every import writes in one order — the anchors, then `scope.json`, then each principal — and a store is established once `scope.json` exists. A batch written in part is a fact about the writer's run, which the writer records ([ENRL-C0-39](../enrollment#decision-log)); import is idempotent, so the writer's re-run completes it.
-*Because* what an interruption can then leave is anchors without `scope.json`, a store not yet established that the next import establishes afresh, or an established store missing some principals, which is what any interrupted import leaves and a tolerated state already; a principal half-replaced is unwritable.
+**ID-C0-32. Keep the store's integrity with no journal of its own.**
+`anchors.pem`, `scope.json` and each principal's file are written whole, by one rename. Every import writes in one order — the anchors, then `scope.json`, then each principal — and a store is established once `scope.json` exists. A batch written in part is a fact about the writer's run, which the writer records ([ENRL-C0-39](../enrollment#decision-log)); import is idempotent, so the writer's re-run completes it.
+*Because* what an interruption can then leave is anchors without `scope.json`, a store not yet established that the next import establishes afresh, or an established store missing some principals, which is what any interrupted import leaves and a tolerated state already; a principal half-replaced is unwritable, and a record half-written is unwritable too, which a reader without a lock relies on ([ID-C0-29](#decision-log)).
 *Because* one order serves a first import and every later one, so the store has a single write path.
 *Accepting* that an interrupted first import can leave a store pinned before any principal has landed ([ID-C0-18](#decision-log)).
 *Rejected* a journal inside the store, a second record of the writer's run; two files per principal paired on load, which detects what this makes unwritable; writing `scope.json` last on a first import only, a second write order for one case.

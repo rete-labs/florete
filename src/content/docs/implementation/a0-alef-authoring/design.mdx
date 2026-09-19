@@ -39,7 +39,6 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
               receipt.json  same as C0
               scope.lock    the scope's exclusive lock, held by flor-vertex for
                             its life and by flor enroll for its run
-                            (in C0 held by flor agent instead of flor-vertex)
               identity/     same as C0
               artifacts/    mgmt/<vertex>.json, written in place by enroll
               no other files and dirs of C0
@@ -91,9 +90,8 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
   narrowing     A0 removes mechanisms, never rules
 
   verification  same as C0 except envelope signatures: they're not checked at node
-                (will be checked by flor agent in C0)
 
-  channels      one mgmt channel (enroll), C0 adds another via agent and coordinator
+  channels      one mgmt channel, the couriered bundle, applied by enroll
 
   freshness     no high-water-mark and no monotonicity check: enroll applies the
                 set it was handed
@@ -101,22 +99,20 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
                 compiler against the committed tree
                 the commit is the gate on issue-bundle
 
-  partiality    material without an artifact is inert; an artifact without
-                material is degraded; in A0 neither is a normal state, one
-                bundle carrying both planes, and the vertex's warning is where
-                a gap surfaces
+  partiality    material without an artifact is inert, and every revocation
+                leaves some behind
+                an artifact without material is degraded, and in A0 a defect
+                rather than a state, one bundle carrying both planes; the
+                vertex's warning is where it surfaces
 
   ownership     install owns the host, the vertex owns the scope while it runs,
                 and enroll is the one act that crosses between them
                 enroll refuses a live scope rather than quieting it, naming the
-                systemctl stop that clears it
+                holder and the systemctl stop that clears the vertex's one
 
-  locking       two locks, taken host before scope
-                the state root's lock is exclusive to install, upgrade and
-                uninstall, and shared to enroll and to whatever serves a scope
-                each scope's lock is exclusive, held by flor-vertex for its life
-                and by flor enroll for its run
-                (in C0 flor agent instead of flor-vertex, otherwise the same)
+  locking       same as C0, with flor-vertex in the agent's place: it holds
+                its scope's lock for its life, and exits 69 when it finds the
+                lock held
 
   activation    enroll activates nothing, and A0 doesn't abstract activation:
                 the operator instantiates the unit through the systemd
@@ -125,10 +121,9 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
 
   paths         artifacts carry no filesystem references
                 the vertex derives its paths from the scope alone, and its own
-                name from the artifact it finds there (will change in C0)
+                name from the artifact it finds there
 
-  logging       every process opens its own log sink from configuration, as C0's
-                agent does for itself; provisioning is dormant until C0
+  logging       every process opens its own log sink from configuration
                 the class is what a process opened, and nothing may say otherwise
                 a destination absent, unreachable or of the wrong socket type
                 stops the process rather than degrading it
@@ -147,7 +142,7 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
 
 An A0 node runs one long-lived process, `flor-vertex`, and nothing supervises it but systemd. The installer places a single template unit, `flor@.service`, among the user's units, and the operator starts a scope with `systemctl --user enable --now flor@<node>.<rete>` and takes it down with `stop` or `disable`. `flor` has no command for this: activation in A0 is the service manager's, and the user guide teaches its commands ([DSGN-A0-08](#decision-log)). systemd restarts the vertex when it fails, except on exit `78`, which says the scope cannot be served as it stands.
 
-The unit tells the vertex one thing, its scope — `flor-vertex --scope %i` — and the vertex works out the rest ([DSGN-A0-09](#decision-log), [DSGN-A0-10](#decision-log)). It takes the state root's lock shared and its scope's lock exclusively, and holds both while it runs. It reads `receipt.json` and refuses a scope that was never enrolled, is mid-enrollment, or was written by a release it cannot read. It opens the one artifact under `artifacts/mgmt/`, refusing a scope root that holds more than one, takes its own name from that artifact's envelope, and derives every path it needs from the scope. No `FLORWL_*` variable is set or read. These are jobs C0 gives the agent, and in A0 they are the vertex's until a supervisor holds the scope.
+The unit tells the vertex one thing, its scope — `flor-vertex --scope %i` — and the vertex works out the rest ([DSGN-A0-09](#decision-log), [DSGN-A0-10](#decision-log)). It takes its scope's lock exclusively and holds it while it runs, exiting `69` when another process holds it. It reads `receipt.json` and refuses a scope that was never enrolled, is mid-enrollment, or was written by a release it cannot read. It opens the one artifact under `artifacts/mgmt/`, refusing a scope root that holds more than one, takes its own name from that artifact's envelope, and derives every path it needs from the scope. No `FLORWL_*` variable is set or read. These are jobs C0 gives the agent, and in A0 they are the vertex's.
 
 What a node holds follows from the same absence. The scope root is C0's without what the agent owns, the artifact sitting directly at `artifacts/mgmt/<vertex>.json` ([DSGN-A0-11](#decision-log)). The compiler emits no `agent.json`, the bundle carries no node principal, and nothing is created in the runtime directory ([DSGN-A0-02](#decision-log)). A node's identity is its name as the manifest states it, pinned in `identity/scope.json`.
 
@@ -157,7 +152,7 @@ The vertex serves every principal it holds material for, as in C0. In A0 a princ
 
 A0 installs, upgrades and uninstalls as [C0's installer](/docs/implementation/c0-tended-tunnels/installer) does, in one mode on one platform: user mode, on x86_64 Linux with systemd ([DSGN-A0-07](#decision-log)). What exists only for another mode or another platform is not part of A0.
 
-The installer and every process in a scope meet at one lock on the state root ([DSGN-A0-12](#decision-log)). `flor install` — which both installs and upgrades — and `flor uninstall` take it exclusively; `flor enroll` and every running vertex take it shared, and then their own scope's lock. An upgrade therefore never swaps files under a running vertex, and a vertex never starts during a swap. The installer asks for the lock, stops the active units if they hold it, and asks again; if it still cannot have it, it restarts what it stopped and gives up, naming the holder.
+An upgrade stops the active units before it swaps files and starts them after, as C0's does. Nothing keeps a vertex from being started, or an enroll from being run, while the swap is under way; that is the operator's to avoid, as under any package manager ([INST-C0-03](/docs/implementation/c0-tended-tunnels/installer#decision-log)).
 
 A plain uninstall leaves each scope root in place, enrolled but inactive. After a reinstall, enabling the unit is all a scope needs — no bundle, no re-issue.
 
@@ -165,7 +160,7 @@ A plain uninstall leaves each scope root in place, enrolled but inactive. After 
 
 A rete begins as it does in C0 — a repository, `retectl init`, the collections, a compile and a commit — with nothing that has to exist first: there is no management node to bootstrap and nothing to publish to. Every node then joins by an ordinary enrollment.
 
-Enrollment follows [C0's](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment), and the differences are few. Enroll derives the scope's handle from the manifest's node and trust-domain claims. On a fresh enrollment it refuses when another scope on the host holds a different node of the same rete, unless `--multi-node` says the second node is meant ([DSGN-A0-14](#decision-log)). It verifies the bundle as C0 does, and checks no artifact's signature — nothing on an A0 node does ([DSGN-A0-03](#decision-log)). It writes the artifact straight to its place instead of leaving it for an intake. And it activates nothing: its last line is the `systemctl` command that starts the scope, and on a live scope it refuses, naming the `systemctl` command that stops it.
+Enrollment follows [C0's](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment), and the differences are few. It verifies the bundle as C0 does, and checks no artifact's signature — nothing on an A0 node does ([DSGN-A0-03](#decision-log)). It writes the artifact straight to its place instead of leaving it for an intake. And it activates nothing: its last line is the `systemctl` command that starts the scope, and on a live scope it refuses, naming the holder and the `systemctl` command that stops it (in case it is a vertex).
 
 Artifacts are signed when compiled and carry the node's set version, and `retectl issue-bundle` refuses an uncommitted tree ([DSGN-A0-04](#decision-log)). No A0 node compares versions: enroll applies the set it is handed.
 
@@ -173,15 +168,13 @@ A0 changes a node in one way, by re-enrolling it ([DSGN-A0-06](#decision-log)). 
 
 ## Several nodes on one host
 
-Every scope is named by its node and its rete: `retes/<node>.<rete>/` on disk and `flor@<node>.<rete>` as a unit ([DSGN-A0-14](#decision-log)). The handle finds a scope; what the scope is lives in `identity/scope.json`. A node name is a single DNS label, so a handle always splits back into its two parts. The operator's own tree belongs to a rete rather than to a node, and is keyed by the rete alone.
-
-A host can therefore hold several nodes of one rete, each its own scope under its own unit. Enrolling the second one takes `--multi-node`; without it, enroll refuses before writing anything and names the scope that is already there.
+A host can hold several nodes of one rete, as in C0: each is its own scope, `retes/<node>.<rete>/`, and enrolling the second takes `--multi-node` ([ENRL-C0-41](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)). In A0 each also runs under its own unit, `flor@<node>.<rete>`.
 
 The development environment is that arrangement run by hand ([DSGN-A0-15](#decision-log)). Its processes start from scripts, terminals or a process manager, with no service manager involved — on Linux, and on macOS once C0 targets it. Its nodes are told apart by the loopback addresses their YAML declares, and each logs to its own stderr. `FLOR_STATE_HOME` is a convenience there, never the way nodes are kept apart. Where a development node needs more than its YAML can say, that is the node-local override [ENRL-C0-04](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) reserves.
 
 ## Validating a rete without a coordinator
 
-A rete has a management node when it declares both reserved coordinator services, and only then do the rules requiring a management node and a user holding `operator` apply ([DSGN-A0-13](#decision-log)). An A0 rete declares neither; declaring exactly one is an error naming the other. The reserved names — the two services, their groups, and the `node` and `operator` roles — are reserved in every rete whether it uses them or not, and `retectl init` writes them into a new rete commented out. `agent` and `coordinator` are not vertex names. Otherwise A0 validates as [C0](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) does, with node names held to a single DNS label.
+A rete has a management node when it declares both reserved coordinator services, and only then do the rules requiring a management node and a user holding `operator` apply ([DSGN-A0-13](#decision-log)). An A0 rete declares neither; declaring exactly one is an error naming the other. The reserved names — the two services, their groups, and the `node` and `operator` roles — are reserved in every rete whether it uses them or not, and `retectl init` writes them into a new rete commented out. Otherwise A0 validates as [C0](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) does.
 
 ## Logging
 
@@ -255,7 +248,7 @@ A0 follows [C0's installer](/docs/implementation/c0-tended-tunnels/installer) �
 *Rejected* a receipt without its phase and previous release, which loses the active scopes across a crash and the way back; unpacking over the top, which loses both; a `--system` that refuses, a flag promising what A0 does not ship.
 
 **DSGN-A0-08. Supervise the vertex with an installer-authored systemd template, and give `flor` no activation command.**
-The installer places `flor@.service` in the user manager's unit directory — one template, named for the scope rather than for what runs under it — and nothing renders a unit per scope. The operator activates a scope with `systemctl --user enable --now flor@<node>.<rete>`; enroll prints that line, and its refusal of a live scope names the matching `stop`.
+The installer places `flor@.service` in the user manager's unit directory — one template, named for the scope rather than for what runs under it — and nothing renders a unit per scope. The operator activates a scope with `systemctl --user enable --now flor@<node>.<rete>`; enroll prints that line, and its refusal of a live scope names the holder and the matching `stop`.
 *Because* only the installer can refresh every scope's supervision when a release changes the unit, and a unit named for its process would need renaming once a supervisor runs under it instead.
 *Because* an activation command would abstract one service manager on one platform, named before C0 settles what it activates.
 *Accepting* that A0's documentation names systemd, A0 having no activation abstraction to keep neutral; and that its user guide teaches commands a later activation command replaces.
@@ -265,13 +258,14 @@ The installer places `flor@.service` in the user manager's unit directory — on
 The unit runs `flor-vertex --scope %i`. The vertex opens its set's one artifact, takes its own name from that envelope, and derives every path from the scope; the unit sets no `Environment=`, and the vertex reads no `FLORWL_*`. `--name` is an optional override. Wherever a command takes a scope, the flag is `--scope`.
 *Because* a systemd template has one instance parameter, spent on the scope, and neither the installer, which knows the layout but not the vertex's name, nor enroll, which knows the name but would render a unit per scope, can supply more.
 *Because* the `FLORWL_*` variables describe a supervised workload, and A0 supervises nothing.
-*Because* the value is a scope handle rather than a rete name (DSGN-A0-14).
+*Because* the value is a scope handle rather than a rete name ([ENRL-C0-41](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)).
 *Accepting* that the vertex's own lookup lasts only until a supervisor hands it its context; that the vertex refuses a scope root holding more than one artifact; and that path derivation stays in one module per holder, so a store that is not a file tree replaces one place.
 *Rejected* an artifact path baked by the installer, which cannot know the vertex's name; paths built from systemd's own state-directory specifier, resolved against systemd's notion of the directory rather than flor's; a validator rule fixing the vertex's name, a YAML constraint made of a systemd limit; honouring `FLORWL_*`, a consumer with no producer; `--rete`, the wrong one of the two names.
 
 **DSGN-A0-10. Keep the receipt and the scope lock, with the vertex in the agent's place.**
-`receipt.json` is C0's ([ENRL-C0-39](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)). The scope lock is held by `flor-vertex` for its life and by `flor enroll` for its run, and enroll refuses a live scope rather than stopping it. Before serving, the vertex refuses a scope whose receipt is absent, reads `enrolling`, or carries a schema version it cannot read, exiting `78`.
+`receipt.json` is C0's ([ENRL-C0-39](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)). The scope lock is held by `flor-vertex` for its life and by `flor enroll` for its run, and enroll refuses a live scope rather than stopping it, naming the holder. A vertex that finds the lock held exits `69`. Before serving, the vertex refuses a scope whose receipt is absent, reads `enrolling`, or carries a schema version it cannot read, exiting `78`.
 *Because* what the two guard — an interrupted enrollment, and a process reading the identity plane while enroll rewrites it — does not depend on the agent, and in A0 the vertex is that process.
+*Because* a held lock is held by an enroll or another vertex, which ends, so the vertex refuses it as a condition that may resolve rather than as a scope it cannot serve.
 *Accepting* that the lock and the receipt check live in the vertex only until a supervisor holds the scope, and move to it unchanged.
 *Rejected* deciding freshness from `identity/scope.json`, which is written before the commit point; a lock only enroll takes, which excludes no live reader; asking systemd whether the unit is active, a read outside any lock; checking the receipt at an activation step, which a reboot bypasses.
 
@@ -280,13 +274,6 @@ Enroll writes each artifact to `artifacts/mgmt/<vertex>.json`, its destination r
 *Because* `incoming/` serves an intake that is the agent's, and the pointer replaces a set under a running consumer; A0 has neither, and enroll never writes under a live vertex (DSGN-A0-10).
 *Accepting* that no previous set is kept on the node, rollback being a reverted, recompiled and re-enrolled one; and that enroll writes through the library an intake would use, so adding one changes the caller rather than the code.
 *Rejected* an `incoming/` admitted by the vertex, which makes the network proxy a verifier; the versioned tree and its pointer, atomicity nothing needs, taught to a vertex with no use for it.
-
-**DSGN-A0-12. Take two locks, host before scope, sharing the state root's among readers.**
-The state root's lock is exclusive to `flor install`, for an install or an upgrade, and to `flor uninstall`, and shared by `flor enroll` and by every process serving a scope, each of which then takes its own scope's lock exclusively. The installer attempts the exclusive lock, stops the active units, attempts it again, and on a second failure restores the activation it recorded and aborts, naming the holder.
-*Because* a running process reads the installed files and the installer writes them, so an exclusive lock alone never stops a scope starting into a half-swapped installation.
-*Because* the installer owns the host and never enters a scope, so the two locks stay two.
-*Accepting* that a failed second attempt stops and restarts units to no effect; and that read-only commands take no lock.
-*Rejected* two unrelated locks, which leave a starting vertex free to run a half-swapped binary; the installer taking each scope's lock, which it must release before starting the unit; one lock for the host, one lock with two owners.
 
 ### Validation
 
@@ -299,16 +286,8 @@ Where `coordinator` and `coordinator-publisher` are both declared, the rules req
 
 ### Scopes and hosts
 
-**DSGN-A0-14. Handle a scope as `<node>.<rete>`, and require `--multi-node` for a second node of one rete.**
-Every scope root is `retes/<node>.<rete>/` and every unit instance `flor@<node>.<rete>`. Enroll derives the handle from the manifest's node and trust-domain claims. A fresh enrollment refuses when a sibling scope holds another node of the same rete unless `--multi-node` is passed, and the refusal names the sibling, the flag, and removing that scope by hand where the new bundle replaces it. A node name is a single DNS label. Several nodes of one rete on one host are a supported arrangement.
-*Because* `identity/scope.json` already records a scope as its node and trust domain, so a handle rendering both is a lookup key equal to the identity: the same node enrolled twice is a re-enrollment, and two nodes of one rete cannot collide.
-*Because* the rendering is unambiguous only where a node name holds no dot, and a dotted handle passes through systemd's instance escaping unchanged.
-*Because* a refusal before anything is written leaves the bundle on disk, where a warning after a completed enroll finds it already deleted.
-*Accepting* that a renamed node or a misdelivered bundle would otherwise land as a second scope, which is what `--multi-node` guards; and that sibling records are read without their locks.
-*Rejected* the rete name with an `--as` alias, whose default and alias are asymmetric; a state-directory override per node, which cannot separate two systemd instances of one handle; the node name alone, which collides across retes on one host more easily; a nested `<rete>/<node>`, whose separator systemd escapes; a warning in place of the refusal; forbidding a second node in A0; DNS labels only for nodes with node-scoped services, which changes a node's legal names when one is added.
-
 **DSGN-A0-15. Run the development environment without a service manager.**
-Development processes are started directly — by scripts, terminals or a process manager — on Linux, and on macOS once C0 targets it. Several nodes of one rete on one host are several scopes (DSGN-A0-14), told apart by the loopback addresses their YAML declares, and each hand-run process logs to its own stderr. `FLOR_STATE_HOME` is a convenience, never the mechanism.
+Development processes are started directly — by scripts, terminals or a process manager — on Linux, and on macOS once C0 targets it. Several nodes of one rete on one host are several scopes ([ENRL-C0-41](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)), told apart by the loopback addresses their YAML declares, and each hand-run process logs to its own stderr. `FLOR_STATE_HOME` is a convenience, never the mechanism.
 *Because* the test environment — one node per host, over the Internet — runs the unit, the installer and enrollment as they ship, and a development environment tied to systemd could not be the same one on a Mac.
 *Accepting* that no development machine exercises the unit file; and that the development environment will need node-local overrides beyond what its YAML says, which are for the override [ENRL-C0-04](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) reserves to provide.
 *Rejected* development on the shipped unit, which ties it to one platform's service manager; both, selectable, two environments for one team; designing node-local overrides here.
