@@ -505,29 +505,29 @@ Label allocation, forwarding tables, and the per-allow label bindings are ctrl-p
 
 ## Identity model additions
 
-C1 adds two new principal kinds on top of C0's users, services, and nodes:
+C1 issues two kinds that C0 names and issues nothing under:
 
-| Kind | In C0 | In C1 | SPIFFE ID | Used for |
-|---|---|---|---|---|
-| Mesh-vertex | No | **Yes** | `spiffe://<rete>/vertex/<node>/rete` | Hop-by-hop link-layer mTLS (one per node per rete, named `rete` by convention) |
-| Control plane | Reserved | **Yes** | `spiffe://<rete>/control-plane/<name>` | Signing authority for ctrl artifacts (one or more per rete; in C1 a single operator-held key) |
-
-Link-vertices are principals in the same `vertex/<node>/<name>` namespace (`vertex/alpha/hop-public`) and are issued no SVID — a principal proves its name with an SVID only where one has been issued ([C0 Identity](../../c0-tended-tunnels/mgmt-plane/identity#principals)). Their canonical names become load-bearing in B2, as the derivation source for medium attachment-point labels; a link-vertex would gain an SVID only if it acted as a principal (e.g. a non-DAG vertex graph where a link-vertex `uses` the mesh for its return channel).
-
-A useful "owned-by / held-by" view across all four principal kinds:
-
-| Kind | Principal (identity owner) | Cert+key held by (the vertex on its behalf) |
+| Kind | SPIFFE ID | Used for |
 |---|---|---|
-| node | the node (the host as rete member) | mesh-flor (via the `node/<node>` attachment there) |
-| mesh-vertex | mesh-flor (qua principal in the link layer) | link-flor |
-| user | the human (their workload) | mesh-flor |
-| service | the service workload | mesh-flor (or link-flor in mixed-topology setups) |
+| Mesh vertex | `spiffe://<rete>/vertex/<node>/rete` | Hop-by-hop link-layer mTLS (one per node per rete, named `rete` by convention) |
+| Control plane | `spiffe://<rete>/control-plane/<name>` | Signing authority for ctrl artifacts (one or more per rete; in C1 a single operator-held key) |
 
-A vertex always *holds* identity material on someone else's behalf — that's the recursive pattern from the [HLD](../../../overview/high-level-design#vertex). Mesh-flor does the mesh-layer mTLS for its workloads; link-flor does the link-layer mTLS for mesh-flor (its sole standard-topology workload). No vertex is a principal at its own layer; every vertex is a principal at the layer below.
+Link vertices stay principals issued no SVID, named in the same `vertex/<node>/<name>` namespace (`vertex/alpha/hop-public`). Their canonical names become load-bearing in B2, as the derivation source for medium attachment-point labels; a link vertex would gain an SVID only if a vertex below it had to terminate TLS for it (e.g. a non-DAG vertex graph where a link vertex `uses` the mesh for its return channel).
 
-The `node/<name>` principal is the node's identity *within a specific rete's trust domain* — the rete's logical view of this computing host. **flor-agent is not the principal; it is the workload that acts on the node's behalf**, just as alice's process acts on alice's behalf. Mesh-flor terminates mTLS for `node/<name>`, exactly as it does for user and service principals, and the material rests in the scope's identity store. The agent's job is to wield that identity: fetch configs, supervise vertices, and reach coordinator through mesh-flor's SOCKS5 listener.
+Every principal's material rests in the scope's identity store, and a vertex terminates TLS with it on the principal's behalf ([C0 Identity](../../c0-tended-tunnels/mgmt-plane/identity#decision-log)). Across the four issued kinds:
 
-Node-identity vs. mesh-vertex-identity aren't merged because they serve different layers and are held by different vertices — `node/<name>` is for control-plane traffic (agent ↔ coordinator), `vertex/<node>/rete` is for hop-by-hop mesh transit mTLS. A node joining multiple Florete retes has one `node/<name>` principal per rete (in each rete's own trust domain) and one flor-agent process per rete acting on its behalf.
+| Principal | Owner (the process acting as it) | Terminator (the vertex using its material) |
+|---|---|---|
+| `node/<node>` | the agent | mesh-flor, via the `node/<node>` attachment there |
+| `vertex/<node>/rete` | mesh-flor | link-flor |
+| `user/<name>` | the applications the person runs | mesh-flor |
+| `service/<name>` | the processes serving it | mesh-flor (or link-flor in mixed-topology setups) |
+
+That is the recursive pattern from the [HLD](../../../overview/high-level-design#vertex): mesh-flor terminates mesh-layer mTLS for its attachments, and link-flor terminates link-layer mTLS for mesh-flor, its sole standard-topology attachment. A vertex's own TLS is terminated by the vertex below it, never by itself.
+
+The `node/<name>` principal is the node's identity *within a specific rete's trust domain* — the rete's logical view of this computing host. **The agent is not the principal; it is the process that acts as it**, just as alice's applications act as alice. Mesh-flor terminates mTLS for `node/<name>`, exactly as it does for user and service principals. The agent's job is to act as that identity: fetch configs, supervise vertices, and reach coordinator through mesh-flor's SOCKS5 listener.
+
+Node identity and mesh-vertex identity aren't merged because they serve different layers and are terminated by different vertices — `node/<name>` is for mgmt traffic (agent ↔ coordinator), `vertex/<node>/rete` for hop-by-hop mesh transit mTLS. A node joining multiple Florete retes has one `node/<name>` principal per rete (in each rete's own trust domain) and one agent per rete owning it.
 
 Enrollment flow is unchanged: `retectl issue-bundle --node alpha` packages alpha's node identity *and* alpha's mesh-vertex identity in the same per-node bundle, alongside every user/service principal hosted at alpha. The compiler knows to add a `vertex/<node>/rete` principal for every node in C1 (derived from the rete mesh-vertex's name and its host node); operators don't declare it anywhere. SPIFFE IDs are derived from the vertex name, the host node, and the rete trust domain.
 

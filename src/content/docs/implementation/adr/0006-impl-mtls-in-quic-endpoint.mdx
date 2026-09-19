@@ -34,7 +34,7 @@ This is the same role SNI plays in service-mesh sidecars (Istio, Linkerd-with-SP
 
 ### SNI carries the Florete convenience DNS name
 
-> **Amended by [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing).** SNI is now an internal routing hint the server resolves by **registry lookup** (keyed by a kind-and-scope-marked label derived from the target, unrelated to the hostname), never by `dns::parse` — so the kind a vertex name would otherwise lose is preserved, and the wire label may later become opaque. The convenience-name *shape* below still holds for services as `ServiceHostname`'s `render` output, but it is only the *user-facing* name (resolved with context), and never the wire SNI; the trust domain may be dotted. The `dns::format` / `dns::parse` helpers named below are replaced by `render` / `resolve` over a `Dialable` type.
+> **Amended by [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing).** SNI is now an internal routing hint the server resolves by **registry lookup** (keyed by a kind-and-scope-marked label derived from the target, unrelated to the hostname), never by `dns::parse` — so the kind a vertex name would otherwise lose is preserved, and the wire label may later become opaque. The convenience-name *shape* below still holds for services as `ServiceHostname`'s `render` output, but it is only the *user-facing* name (resolved with context), and never the wire SNI; the trust domain may be dotted. The `dns::format` / `dns::parse` helpers named below are replaced by `render` / `resolve` on `ServiceHostname`, and `connect` takes a `Targetable`.
 
 The SNI string is the **`.rete` convenience DNS name** derived from the target's SPIFFE ID:
 

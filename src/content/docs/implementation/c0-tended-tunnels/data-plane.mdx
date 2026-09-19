@@ -58,3 +58,5 @@ The markers fix how many labels come before the trust domain, so two identities 
 Each inbound is bound to exactly one principal, so the vertex knows who is calling from where the call arrived ([ID-C0-07](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)). In C0 an inbound is a SOCKS5 listener on a dedicated local port per principal — a service's is its `socks5_proxy` in `services.yaml` — and an application reaches the rete with `ALL_PROXY=socks5://127.0.0.1:<port>`. Most HTTP clients, gRPC clients and database drivers honour that variable; an application that does not needs a transparent redirect or a library shim, which C0 does not build.
 
 The other direction needs no attribution: the vertex delivers an accepted connection to the service's local address, the target having been authenticated by its SAN.
+
+Nothing authenticates a local caller. Any process on a host can connect to any SOCKS5 inbound there and act as that inbound's principal: the binding tells callers apart by where they arrive, and nothing stops one from arriving at another's inbound.

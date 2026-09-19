@@ -164,7 +164,7 @@ The reversal is deliberate. An earlier draft of this ADR endorsed the enum on fo
 
 - the cost of an unused variant is nil,
 - post-hoc additions force `kind_of` and CLI `--kind` parsers to grow, and `match` arms in `Ca::sign_csr` to gain a new branch — touching every call site,
-- Issuing a `control-plane` kind should be expressible in C0 even though no envelope signing happens yet, because the kind vocabulary is the user-visible contract and adding a value later is more disruptive than starting wide. *(Amended with C0 enrollment: the kinds remain part of the identity model, but C0's CLI exposes a narrower slice — `retectl id issue` takes the signing kinds, and TLS-principal certs are issued inside `retectl issue-bundle` rather than one at a time. A CSR-consuming sign command belongs to the deferred Flow B.)*
+- The `control-plane` kind should be recognised in C0 even though C0 has no ctrl plane and issues no ctrl signer, because the kind vocabulary is the user-visible contract and adding a value later is more disruptive than starting wide. *(Amended with C0 enrollment: the kinds remain part of the identity model, but C0's CLI exposes a narrower slice — `retectl id issue` takes `management-plane` alone, and TLS-principal certs are issued inside `retectl issue-bundle` rather than one at a time. A CSR-consuming sign command belongs to the deferred Flow B.)*
 
 ### Why singular everywhere
 
