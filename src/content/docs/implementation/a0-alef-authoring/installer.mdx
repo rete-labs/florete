@@ -34,15 +34,13 @@ flor activate gw.flor.demo      # enable and start flor@gw.flor.demo, now and at
 flor deactivate gw.flor.demo    # stop and disable it
 ```
 
-`flor activate` refuses a scope with no scope root, which enrollment creates. It says whether it changed the unit. On a host where the user's processes stop at logout, it prints the `loginctl enable-linger` line that keeps the scope running, which a server needs. Everything else about a running scope is systemd's: `systemctl --user status`, `stop`, `start` and `restart` on `flor@<scope>`, and `journalctl --user-unit flor@<scope>` for its logs.
+`flor activate` refuses a scope with no scope root. It says whether it changed the unit, and whether a running scope needs a restart to take the change. On a host where the user's processes stop at logout, it prints the `loginctl enable-linger` line that keeps the scope running, which a server needs. Everything else about a running scope is systemd's: `systemctl --user status`, `stop`, `start` and `restart` on `flor@<scope>`, and `journalctl --user-unit flor@<scope>` for its logs.
 
-**After an upgrade, the operator restarts what runs.** A running scope keeps the binary it started from until it is restarted:
+**After an upgrade, the operator restarts what runs.** A running scope keeps the binary it started from until it is restarted. When a release's notes say the unit changed, re-run `flor activate` for at least one scope first, so the restart picks up the new unit, then restart all of them:
 
 ```bash
 systemctl --user try-restart 'flor@*'
 ```
-
-When a release's notes say the unit changed, re-run `flor activate` for each scope.
 
 **Removing flor is three deliberate steps.** Deactivate each scope, delete the three executables, and delete the state directory, whose path `flor deactivate` prints. The last step deletes every scope's identity material. A scope that is only deactivated stays enrolled, and `flor activate` resumes it with no bundle.
 
@@ -86,7 +84,8 @@ When a release's notes say the unit changed, re-run `flor activate` for each sco
 
   directories bin       the operator's, chosen when the archive is unpacked;
                         ~/.local/bin is the script's default
-              state     $XDG_STATE_HOME/flor/, FLOR_STATE_HOME overrides
+              state     $XDG_STATE_HOME/flor/; FLOR_STATE_HOME overrides it
+                        for development, which runs without systemd
               none      no configuration file, no runtime root, no lib directory
 
   knowledge   the unit's text and its directory belong to a reviewed crate; the
@@ -107,20 +106,22 @@ When a release's notes say the unit changed, re-run `flor activate` for each sco
                  4  verify, and stop before writing anything where it fails
                  5  unpack into the bin directory, replacing each file
                  6  report the directory, a PATH gap, and what to run next
-              *  7  the operator restarts the active scopes
-              *  8  and re-activates each scope, where the release notes say the
-                    unit changed
+              *  7  the operator re-activates one scope, when the release
+                    notes say the unit changed
+              *  8  and restarts the active scopes
 
   activate    flor activate <scope>
                  1  refuse a scope with no scope root
                  2  write or refresh the unit, and reload
                  3  enable and start flor@<scope>
-                 4  report whether the unit changed, and the loginctl line where
-                    lingering is off
+                 4  report whether the unit changed, a running scope that needs a
+                    restart to take it, and the loginctl line where lingering
+                    is off
 
   deactivate  flor deactivate <scope>
                  1  stop and disable the instance
-                 2  remove a flor-written unit no scope uses, and reload
+                 2  remove the unit once no scope is enabled or running, and
+                    reload
                  3  report the state directory and the binaries left behind
 
   manual      download the archive and SHA256SUMS from the release page, verify
@@ -150,8 +151,6 @@ When a release's notes say the unit changed, re-run `flor activate` for each sco
 
   integrity     the piped line rests on TLS to the origin; authenticity is the
                 manual path's, through the attestation over each asset
-
-  wrapper       one template per install, named for the scope
 
   resolution    the vertex is the file beside flor, resolved when a scope is
                 activated and written into the unit
@@ -205,9 +204,9 @@ A failed check writes nothing, and because the script's body is one function cal
 1. Refuse a scope with no scope root.
 2. Write or refresh the unit, and reload the user manager.
 3. Run `systemctl --user enable --now flor@<scope>`.
-4. Report whether the unit changed.
+4. Report whether the unit changed, and name each running scope that needs a restart to take the change.
 
-`deactivate` disables and stops the instance, removes the unit once no scope uses it, and reloads. It then reports what it left: the state directory, holding every enrolled scope, and the executables, which it did not place and does not delete.
+`deactivate` disables and stops the instance and, once no scope's instance is enabled or running, removes the unit and reloads. It then reports what it left: the state directory, holding every enrolled scope, and the executables, which it did not place and does not delete.
 
 **The unit is one template, in the directory systemd keeps for units installed into a home** ([INST-A0-09](#decision-log)). `flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`, below the user's own `~/.config/systemd/user/` in systemd's search path. An operator's drop-in, written by `systemctl --user edit flor@`, therefore overrides it and survives every refresh. The unit's `ExecStart` names `flor-vertex` by an absolute path: the one in the directory of the `flor` that ran `activate`. Its policy is `Restart=on-failure`, with exit `78` exempt. Its text is a file owned by a reviewed crate in `flor`, which the product reaches through that crate's API, with the vertex's path as its one substitution ([INST-A0-14](#decision-log)).
 
@@ -217,7 +216,7 @@ A failed check writes nothing, and because the script's body is one function cal
 
 **An upgrade replaces files under running scopes, and nothing is stopped around it** ([INST-A0-10](#decision-log)). GNU tar replaces a file by writing a new one, so a running vertex keeps the binary it started from, and it moves to the new release when it next starts: at the operator's `try-restart`, at a reboot, or at systemd's restart after a failure. In A0, one process serves each scope and no two flor processes talk to each other, so the old and new releases never have to agree while both are on the host.
 
-A unit is refreshed only when `flor activate` runs. On this channel that is a manual step after an upgrade, and the release notes say when it is needed.
+A unit is refreshed only when `flor activate` runs. On this channel that is a manual step after an upgrade, taken before the restart so the restart runs the new unit, and the release notes say when it is needed.
 
 ## Mode and directories
 
@@ -281,7 +280,7 @@ The archive is `flor-v<version>-<os>-<arch>.tar.gz` — `linux-x86_64` in A0 —
 ### Wiring a scope
 
 **INST-A0-08. `flor activate <scope>` and `flor deactivate <scope>` are the only host commands.**
-`activate` refuses a scope with no scope root, writes or refreshes the unit, reloads the user manager, and enables and starts `flor@<scope>`; it reports whether the unit changed. `deactivate` stops and disables the instance, removes the unit once no scope uses it, and reports the state directory and binaries it left. Starting, stopping, restarting, status and logs stay with `systemctl` and `journalctl`. There is no uninstall command: removal is deactivating each scope, deleting the binaries, and deleting the state directory. A deactivated scope is enrolled but inactive, and `activate` resumes it with no bundle.
+`activate` refuses a scope with no scope root, writes or refreshes the unit, reloads the user manager, and enables and starts `flor@<scope>`; it reports whether the unit changed, and each running scope that needs a restart to take the change. `deactivate` stops and disables the instance, removes the unit once no scope's instance is enabled or running, and reports the state directory and binaries it left. Starting, stopping, restarting, status and logs stay with `systemctl` and `journalctl`. There is no uninstall command: removal is deactivating each scope, deleting the binaries, and deleting the state directory. A deactivated scope is enrolled but inactive, and `activate` resumes it with no bundle.
 *Because* activating a scope is the one step every service manager has per scope, so the command is the same wherever a manager has no template to install once per host. It wraps only the verbs that produce a file of ours; the others need no file, and the operator uses the native tools for logs anyway. Deleting identity material stays a deliberate command of the operator's.
 *Because* systemd's `enable` does not start a unit, and Florete calls enabling and starting *activation*.
 *Accepting* that `activate` also persists across reboots, where systemd calls a merely running unit "active".
@@ -290,13 +289,14 @@ The archive is `flor-v<version>-<os>-<arch>.tar.gz` — `linux-x86_64` in A0 —
 **INST-A0-09. The unit is one template in the home's package directory, naming the vertex beside `flor`.**
 `flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`. Its `ExecStart` is the `flor-vertex` in the directory of the `flor` that ran `activate`, written as an absolute path, with `--scope %i`; its policy is `Restart=on-failure` and `RestartPreventExitStatus=78`. Its text is the one file a reviewed crate owns, with the path as its only substitution.
 *Because* that directory is systemd's place for units installed into a home, below the user's own configuration, so the operator's drop-ins survive every refresh. systemd resolves a bare `ExecStart` name only against a fixed system path, so the unit names an absolute one; resolving it beside `flor` is a rule that grows a lib directory and an override later without being replaced.
-*Accepting* that moving the binaries, or an upgrade that changes the unit, needs a re-activation.
+*Accepting* that moving the binaries, or an upgrade that changes the unit, needs a re-activation; and that a host should use one bin directory, since one unit serves every scope and each activation points it at its own `flor`'s directory.
 *Revisit* when a channel places `flor` through a link into a versioned directory: the resolved path then names that version.
 *Rejected* `flor-vertex@.service` — a unit named for its process, which a supervisor arriving under the same scope would have to replace instance by instance; `~/.config/systemd/user/` — the user's own configuration, where a refresh destroys an edit; a lookup on `PATH` — the vertex leaves `PATH` once a lib directory exists; a lib-directory rule in A0 — nothing for it to match; a `flor` subcommand that finds and execs the vertex at every start — it spares a re-activation that this channel needs anyway; a fixed `%h/.local/bin` path — wrong for any other directory.
 
 **INST-A0-10. An upgrade replaces files under running scopes, and the operator restarts them.**
-Nothing is stopped around the swap. The operator restarts the active scopes with `systemctl --user try-restart 'flor@*'`, which the script prints, and re-activates each scope when the release notes say the unit changed.
+Nothing is stopped around the swap. When the release notes say the unit changed, the operator first re-activates one scope; then the operator restarts the active scopes with `systemctl --user try-restart 'flor@*'`, which the script prints.
 *Because* a running vertex keeps the binary it started from, one process serves a scope and no two flor processes talk to each other, so the window between swap and restart holds nothing to reconcile. A restart drops tunnels, so it is the operator's act.
+*Because* `activate` changes the unit but restarts nothing, so a restart taken before it runs the old unit until the next one.
 *Accepting* that a forgotten restart leaves the old release running until the next failure or reboot.
 *Rejected* the script restarting — a feature beyond the manual path; `activate` restarting — a refresh would drop tunnels.
 
@@ -315,7 +315,7 @@ The mode chooses the service manager, the unit's directory and the state directo
 *Rejected* a mode inferred from where the executable sits — two channels would treat one scope differently; systemd's convention of a bare command meaning system mode — a flag on every command for a mode A0 does not have; a `--system` that refuses — a flag promising what A0 does not ship.
 
 **INST-A0-13. There is no configuration file, and only the state directory has an override.**
-The state directory is `$XDG_STATE_HOME/flor/`, and `FLOR_STATE_HOME` moves it. The bin directory is the operator's. There is no runtime root and no lib directory. A log destination is `--log-stderr`, else `FLOR_LOG_DESTINATION`, else `unix:/dev/log`.
+The state directory is `$XDG_STATE_HOME/flor/`, and `FLOR_STATE_HOME` moves it for development only, which runs by hand without systemd. The bin directory is the operator's. There is no runtime root and no lib directory. A log destination is `--log-stderr`, else `FLOR_LOG_DESTINATION`, else `unix:/dev/log`.
 *Because* the one host setting has a default that is right on every A0 host and an override that covers the one case A0 has, so a file would add a lookup, a format and a surface for nothing. `FLOR_STATE_HOME` keeps a development tree apart from a production node on the same machine, and nothing else has a consumer.
 *Accepting* that a host needing another log socket sets `FLOR_LOG_DESTINATION`, in a unit drop-in or in the shell.
 *Revisit* when a host setting has no correct default.
