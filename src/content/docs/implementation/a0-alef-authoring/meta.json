@@ -1,7 +1,8 @@
 {
     "pages": [
         "scope",
-        "design"
+        "design",
+        "installer"
     ],
     "defaultOpen": true
 }

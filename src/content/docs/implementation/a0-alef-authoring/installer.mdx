@@ -1,0 +1,328 @@
+---
+title: Installer
+description: How flor's executables reach an A0 host, and how a scope becomes supervised
+---
+
+An A0 node comes to be in three steps, each with its own owner. A **channel** puts flor's executables on the host. **`flor activate`** makes one scope run under the host's service manager. **Enrollment** writes the rete material that scope serves ([Design](/docs/implementation/a0-alef-authoring/design)). This page designs the first two: the release a channel fetches, the script that fetches it, and the commands that wire a scope to systemd.
+
+The commands, and what each one does on a host, come first. That section is for the operator and whoever writes the user guide. If you are implementing the script, the release workflow or the wiring commands, start at the [Shape](#shape) and read the sections after it. If you are changing the design, start at the Shape and the [Decision Log](#decision-log). The step-by-step procedure for installing a node belongs to the user guide.
+
+## Installing and activating
+
+**Installing is one line, and re-running it upgrades.** The script installs the release it was published with, into `~/.local/bin`:
+
+```bash
+curl -fsSL https://github.com/rete-labs/flor-dist/releases/latest/download/install.sh | sh
+```
+
+`latest` is the current release. `…/releases/download/v1.0.0/install.sh` installs that release and no other, and it is also how to go back to one. The script checks what it downloaded before writing anything, and it ends by printing what to run next. The copy to read before running it is the raw file at the tag, `https://raw.githubusercontent.com/rete-labs/flor-dist/v<version>/install.sh`.
+
+**Installing by hand needs no script, and it is the only way to check where the archive came from.** Download the archive from the release page, verify its attestation, then unpack it:
+
+```bash
+curl -fsSLO https://github.com/rete-labs/flor-dist/releases/download/v1.0.0/flor-v1.0.0-linux-x86_64.tar.gz
+gh attestation verify flor-v1.0.0-linux-x86_64.tar.gz --repo rete-labs/flor-dist
+tar -xzf flor-v1.0.0-linux-x86_64.tar.gz -C ~/.local/bin
+```
+
+Without `gh`, `sha256sum -c` against the release's `SHA256SUMS` checks integrity, but not origin. The archive holds `flor`, `flor-vertex` and `retectl` at its root, so any bin directory will do.
+
+**A scope runs once it is activated.** Activation writes the systemd unit if needed, then enables and starts the scope's instance:
+
+```bash
+flor activate gw.flor.demo      # enable and start flor@gw.flor.demo, now and at every boot
+flor deactivate gw.flor.demo    # stop and disable it
+```
+
+`flor activate` refuses a scope with no scope root, which enrollment creates. It says whether it changed the unit. On a host where the user's processes stop at logout, it prints the `loginctl enable-linger` line that keeps the scope running, which a server needs. Everything else about a running scope is systemd's: `systemctl --user status`, `stop`, `start` and `restart` on `flor@<scope>`, and `journalctl --user-unit flor@<scope>` for its logs.
+
+**After an upgrade, the operator restarts what runs.** A running scope keeps the binary it started from until it is restarted:
+
+```bash
+systemctl --user try-restart 'flor@*'
+```
+
+When a release's notes say the unit changed, re-run `flor activate` for each scope.
+
+**Removing flor is three deliberate steps.** Deactivate each scope, delete the three executables, and delete the state directory, whose path `flor deactivate` prints. The last step deletes every scope's identity material. A scope that is only deactivated stays enrolled, and `flor activate` resumes it with no bundle.
+
+## Shape
+
+**STRUCTURE**
+
+```log
+  subject     how flor's executables reach an A0 host, and how a scope becomes
+              supervised
+
+  boundary    the channel places binaries; flor wires and activates a scope;
+              enroll writes rete material and installs nothing
+
+  executables flor, flor-vertex, retectl — one release version over all of them,
+              built and released together, flat in one bin directory
+
+  channel     one: github releases of flor-dist
+                  install.sh                       hard-codes the version it
+                                                   installs; the latest
+                                                   release's copy, or a pinned
+                                                   release's
+                  flor-v<ver>-linux-x86_64.tar.gz  musl-static, the executables
+                                                   at its root and nothing else
+                  SHA256SUMS                       every asset of that release
+                  attestation                      every asset
+
+  script      install.sh, a human-owned path in flor-dist, one function called
+              on the last line
+              does     map the host, fetch into a private temporary directory,
+                       verify, unpack into the bin directory, report
+
+  commands    flor activate <scope>     write the unit, enable and start it
+              flor deactivate <scope>   stop and disable it, drop an unused unit
+              flor version              the release installed
+
+  unit        flor@.service, one template over scopes, in
+              $XDG_DATA_HOME/systemd/user/
+              exec     <dir of flor>/flor-vertex --scope %i
+              policy   Restart=on-failure, RestartPreventExitStatus=78
+
+  directories bin       the operator's, chosen when the archive is unpacked;
+                        ~/.local/bin is the script's default
+              state     $XDG_STATE_HOME/flor/, FLOR_STATE_HOME overrides
+              none      no configuration file, no runtime root, no lib directory
+
+  knowledge   the unit's text and its directory belong to a reviewed crate; the
+              archive's name, the host map and the default bin directory belong
+              to the script
+```
+
+**FLOW**
+
+```log
+  install     one line, and the same line upgrades
+  & upgrade   * marks a step only an upgrade needs
+                 1  fetch install.sh — the latest release's copy or a pinned
+                    release's — and run it
+                 2  map uname to a target, or refuse and name what is supported
+                 3  download that release's archive and SHA256SUMS into a
+                    private temporary directory
+                 4  verify, and stop before writing anything where it fails
+                 5  unpack into the bin directory, replacing each file
+                 6  report the directory, a PATH gap, and what to run next
+              *  7  the operator restarts the active scopes
+              *  8  and re-activates each scope, where the release notes say the
+                    unit changed
+
+  activate    flor activate <scope>
+                 1  refuse a scope with no scope root
+                 2  write or refresh the unit, and reload
+                 3  enable and start flor@<scope>
+                 4  report whether the unit changed, and the loginctl line where
+                    lingering is off
+
+  deactivate  flor deactivate <scope>
+                 1  stop and disable the instance
+                 2  remove a flor-written unit no scope uses, and reload
+                 3  report the state directory and the binaries left behind
+
+  manual      download the archive and SHA256SUMS from the release page, verify
+  install     the archive's attestation, unpack it into a bin directory
+
+  removal     deactivate every scope, delete the binaries, delete the state
+              directory
+              a scope surviving a deactivation is enrolled but inactive, and
+              resumes with no bundle
+```
+
+**RULES**
+
+```log
+  ownership     the channel owns the binaries, flor owns the unit, the vertex
+                owns its scope while it runs
+
+  channel       a channel owes only the executables — what a plain tar or
+                cargo install gives; everything else a node needs is a flor
+                command, and A0's own channel does nothing more
+
+  script        the script is a convenience over the manual path — map, fetch,
+                verify, unpack, report
+
+  version       one release version identifies every executable; a script
+                installs the release it was published with, and its URL is the pin
+
+  integrity     the piped line rests on TLS to the origin; authenticity is the
+                manual path's, through the attestation over each asset
+
+  wrapper       one template per install, named for the scope
+
+  resolution    the vertex is the file beside flor, resolved when a scope is
+                activated and written into the unit
+
+  activation    activate is enable and start, deactivate is stop and disable
+
+  configuration there is no configuration file: a log destination is a flag, an
+                environment variable, or the default
+
+  mode          one mode, the systemd user manager, and a bare command means it;
+                the mode chooses the service manager, the unit's directory and
+                the state directory, and where the binaries are chooses nothing
+
+  platforms     Linux with systemd on x86_64; every other host is refused in a
+                sentence
+```
+
+## The channel
+
+**A0 has one channel, and it delivers executables and nothing else** ([INST-A0-01](#decision-log), [INST-A0-02](#decision-log)). Every release of `flor-dist` publishes:
+- one archive per platform, `flor-v<version>-linux-x86_64.tar.gz` in A0: musl-static, the executables at its root;
+- `SHA256SUMS`, listing every asset of the release;
+- an attestation for every asset, made by the release workflow;
+- `install.sh` itself.
+
+A channel owes no more than the files. Where it puts them is its own concern, and so is any automation it adds beyond them. A0's own channel adds none: it writes no unit, restarts nothing, and keeps no record of what it placed.
+
+**The script is a convenience over the manual path, and stays one** ([INST-A0-03](#decision-log)). It performs these steps, in order:
+1. Map `uname` to a target, or refuse and name the supported one.
+2. Fetch that release's archive and `SHA256SUMS` into a private temporary directory, and verify the archive against them.
+3. Unpack into the bin directory, creating it if needed.
+4. Report the directory, whether it is on `PATH`, and the commands to run next.
+
+A failed check writes nothing, and because the script's body is one function called on its last line, a truncated download runs nothing. Anything that would go further — restarting, activating, choosing a version — is a `flor` command or the operator's act, never the script's.
+
+**The script's version cannot drift from the release it belongs to** ([INST-A0-04](#decision-log)). It lives at the root of `flor-dist`, on a human-owned path, beside the workflow that builds the archives, and it hard-codes the version it installs. The release commit sets that constant together with the workspace version, and CI refuses a release where they differ. The asset each release publishes is byte-identical to the file at its tag, so the tag is the audit copy ([INST-A0-07](#decision-log)). The script takes no version argument: a pinned install is the pinned release's own script.
+
+**The archive's name is ours, and the script maps the host onto it** ([INST-A0-05](#decision-log)). The OS is spelled as its users say it, and the architecture as that platform spells it. The map lives in the script, and it is also where an unsupported host is refused.
+
+## Verification
+
+**The piped line proves integrity, not origin** ([INST-A0-06](#decision-log)). `curl … | sh` rests on TLS to GitHub. The script's check against `SHA256SUMS` catches a corrupted or truncated archive, but the digest list comes from the same release page as the archive, so it proves integrity and never origin.
+
+**Origin is the manual path's.** `gh attestation verify` checks a signed statement that binds the archive's digest to the workflow, commit and repository that built it. That check runs on the very bytes that are then unpacked, and no code of ours takes part in it. A release is rebuilt at its own version, so its digests and attestations belong to that build, and nothing carries over from a candidate.
+
+## Wiring a scope
+
+**`flor activate` and `flor deactivate` are the only host commands** ([INST-A0-08](#decision-log)). They wrap the one systemd step that needs a file of ours — enabling a scope's instance of the unit — and nothing else.
+
+`activate` works through these steps:
+1. Refuse a scope with no scope root.
+2. Write or refresh the unit, and reload the user manager.
+3. Run `systemctl --user enable --now flor@<scope>`.
+4. Report whether the unit changed.
+
+`deactivate` disables and stops the instance, removes the unit once no scope uses it, and reloads. It then reports what it left: the state directory, holding every enrolled scope, and the executables, which it did not place and does not delete.
+
+**The unit is one template, in the directory systemd keeps for units installed into a home** ([INST-A0-09](#decision-log)). `flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`, below the user's own `~/.config/systemd/user/` in systemd's search path. An operator's drop-in, written by `systemctl --user edit flor@`, therefore overrides it and survives every refresh. The unit's `ExecStart` names `flor-vertex` by an absolute path: the one in the directory of the `flor` that ran `activate`. Its policy is `Restart=on-failure`, with exit `78` exempt. Its text is a file owned by a reviewed crate in `flor`, which the product reaches through that crate's API, with the vertex's path as its one substitution ([INST-A0-14](#decision-log)).
+
+**Lingering is pointed out, never changed** ([INST-A0-11](#decision-log)). A user-mode scope stops when its user's last session ends, and does not start at boot, unless lingering is enabled. `activate` reads the user's state and, where lingering is off, prints the `loginctl enable-linger` line and what it changes.
+
+## Upgrading
+
+**An upgrade replaces files under running scopes, and nothing is stopped around it** ([INST-A0-10](#decision-log)). GNU tar replaces a file by writing a new one, so a running vertex keeps the binary it started from, and it moves to the new release when it next starts: at the operator's `try-restart`, at a reboot, or at systemd's restart after a failure. In A0, one process serves each scope and no two flor processes talk to each other, so the old and new releases never have to agree while both are on the host.
+
+A unit is refreshed only when `flor activate` runs. On this channel that is a manual step after an upgrade, and the release notes say when it is needed.
+
+## Mode and directories
+
+**A0 has one mode, the systemd user manager, and a bare command means it** ([INST-A0-12](#decision-log)). The mode chooses three things: the service manager `flor activate` talks to, the directory the unit goes in, and the state directory. Where the binaries sit chooses nothing. Neither `flor` nor the vertex takes a mode flag.
+
+**Only the state directory is configurable, and there is no configuration file** ([INST-A0-13](#decision-log)). Scope roots live under `$XDG_STATE_HOME/flor/`. `FLOR_STATE_HOME` moves them, which is how a development tree stays apart from a production node on the same machine. The bin directory is wherever the executables were unpacked. There is no runtime root and no lib directory.
+
+Every process's log destination is `--log-stderr`, else `FLOR_LOG_DESTINATION`, else `unix:/dev/log`. A host that needs another socket sets the variable, in a unit drop-in for the vertex and in the shell for a command.
+
+## Decision Log
+
+Entries are grouped by what a change would touch.
+
+### The channel
+
+**INST-A0-01. A channel owes only the executables, and A0's own channel gives no more.**
+What any channel must provide is the executables — what a plain tar or `cargo install` gives — placed wherever that channel places them; A0's archive keeps them together, and nothing requires another channel to. Everything else a node needs is a `flor` command, the same whichever channel placed the files, and it finds the executables by a rule that follows the channels A0 supports (INST-A0-09). A richer channel may automate beyond that — refresh a unit or restart scopes after an upgrade — so long as nothing in flor depends on it doing so. A0's channel stays at the floor: it writes no unit, starts or restarts nothing, and keeps no record.
+*Because* a floor every channel can meet keeps anything in the design from resting on a guarantee some channel cannot give, and puts the wiring once, in reviewed code.
+*Because* automating an upgrade needs state — what was placed, which scopes were running — and a mechanism that survives an interrupted run, which is a package manager's logic re-implemented; A0's channel leaves that to the channels that already have it.
+*Accepting* that on A0's channel every install is followed by `flor activate`, and every upgrade by a restart that is the operator's (INST-A0-10).
+*Rejected* requiring every channel to wire a scope — a plain tar or `cargo install` could not meet it; A0's channel placing and wiring — the receipt, lock and record of active scopes that re-implement a package manager; binaries plus a unit file left beside them — someone still has to copy and enable it, so the wiring step is only split in two; requiring the executables to share a directory — a package that keeps daemons apart from what people type could not meet it.
+
+**INST-A0-02. One channel: `flor-dist`'s GitHub releases, fetched with `curl` or `wget`.**
+Nothing is installed on a node before flor, and the executables it receives are the ones `flor-dist`'s release workflow built.
+*Because* `curl` and `wget` are on every host A0 supports, and a prebuilt binary needs no toolchain and no build on the node.
+*Accepting* a release workflow in `flor-dist` that builds, archives, digests, attests and uploads on a tag.
+*Revisit* when a node's owner needs a channel their own tooling manages.
+*Rejected* `cargo install --git` from `flor-dist` — a toolchain and a minutes-long build on every node, and a binary built by the operator's compiler rather than the one CI tested; `cargo binstall --git` over the same archives — a third-party tool on every node, installed by its own `curl | bash`, for nothing but cargo's install record; `cargo binstall` through a crates.io shim — stub binaries that a plain `cargo install` would install, and a registry publication that [ADR-0016](/docs/implementation/adr/0016-restructure-for-two-line-development) declines. Publishing the product itself is out of reach: a published crate cannot keep a git dependency, so every unit would have to be published, and a unit's reviewed and generated implementations share one name.
+
+**INST-A0-03. A tiny `install.sh` fronts the archive, and never does what the manual path cannot.**
+The script maps the host to a target, fetches the archive and `SHA256SUMS` into a private temporary directory, verifies, unpacks into the bin directory (`~/.local/bin` by default, created if absent), and reports the directory, a `PATH` gap and the next command. Its body is one function called on the last line. Any feature beyond that is a `flor` command.
+*Because* the script is where the version and the platform live, so the archive keeps a versioned name and the guide's line carries neither. Verifying before unpacking makes a failed transfer change nothing, and a truncated script runs nothing.
+*Accepting* `curl | sh` as what the guide teaches, with the manual path printed beside it (INST-A0-06).
+*Rejected* a bare `curl | tar` line — the version and the platform move into the file name and the line, and a name `latest` can serve has to carry no version, so the file an operator keeps would not name its release; a self-extracting script — generated per release and per platform, with a payload nobody can read; features in the script — every other channel would lack them.
+
+**INST-A0-04. `install.sh` lives in `flor-dist`, installs only its own release, and its URL is the pin.**
+It sits at the root of `flor-dist`, on a human-owned path guarded as the CI configuration is ([ADR-0016](/docs/implementation/adr/0016-restructure-for-two-line-development)), and is never regenerated. It hard-codes the version it installs; the release commit bumps that constant with the workspace version, and CI checks that they agree. Each release publishes it as an asset byte-identical to the file at the release tag. It takes no version argument: another release is that release's script URL.
+*Because* the script, the archives and the tag then sit in one repository, so the version moves in one commit and the asset can be compared against its tag. The root is where the audit URL the guide prints finds it, and where the repository's landing page shows it. A script that installs only its own release cannot describe anything but what it installed.
+*Accepting* that the script's protection is exactly that of the CI configuration, and no stronger.
+*Rejected* the script in `flor` — a release in `flor-dist` blocked on a `flor` commit, and a tag and an asset in different trust domains; a subdirectory — a longer audit URL, and a file users are told to read sitting among build plumbing; a version-free script resolving the latest release at run time — its URL would no longer pin anything, and a kept copy would not say what it installed; a version argument or variable — a second way to the same release, and a constant that stops describing what runs.
+
+**INST-A0-05. A release publishes one archive per platform, `SHA256SUMS` and attestations.**
+The archive is `flor-v<version>-<os>-<arch>.tar.gz` — `linux-x86_64` in A0 — musl-static, holding `flor`, `flor-vertex` and `retectl` at its root and nothing else. `SHA256SUMS` lists every asset of the release, and every asset carries an attestation from the release workflow. The script maps `uname` to these names.
+*Because* an archive that holds only executables unpacks straight into a bin directory. The OS is spelled as its users say it and the arch as that platform spells it, and a map is needed whatever the names are, since `uname` misreports under emulation and differs between systems for one architecture.
+*Accepting* that the release carries no licence asset: the project's licence, MIT or Apache-2.0, is stated by the repository, and the licences of bundled dependencies are not reproduced beside the binaries.
+*Revisit* when flor is distributed beyond its own pilots.
+*Rejected* `uname`'s spelling verbatim — it ties names people read to a probe that misleads; a licence-notice asset — a release artifact the pilots do not need; target triples — nobody types them; a second, version-free name per archive for `latest` — the copy people keep would be that one; a top-level directory with documents — they cannot share a bin directory.
+
+**INST-A0-06. The piped line rests on TLS; the manual path authenticates the archive it installs.**
+`curl … | sh` proves integrity within one release page and never authenticity. The manual path downloads the archive and `SHA256SUMS` from the release page, runs `gh attestation verify` on the archive (or `sha256sum -c` without `gh`, for integrity only), and unpacks it with `tar`. A release's digests and attestations are its own build's; nothing carries over from a candidate.
+*Because* a script cannot authenticate itself, and a digest list from the same page proves only that the page is consistent. Only a check on the bytes that reach the bin directory, run without our code, says where they came from.
+*Accepting* that authenticity needs `gh` and network access to Sigstore.
+*Rejected* digests alone and attestation alone — integrity without authenticity, or no check without `gh` and nothing for a later signature to cover; verifying the script and then running it — the archive it fetches is checked only against the page; an option that makes the script keep the archive — a script feature that still leaves trust in the script.
+
+**INST-A0-07. The guide installs from `flor-dist`'s release URLs, and gives the tagged file as the audit copy.**
+`https://github.com/rete-labs/flor-dist/releases/latest/download/install.sh` installs and upgrades; `…/releases/download/v<version>/install.sh` pins a release or returns to one. The guide gives the raw file at the tag `v<version>` as the copy to read, in that general form.
+*Because* the bytes are built, attested and published in one repository, so every URL and the attestation name the same one. `latest` skips candidates published as prereleases. A raw URL is the audit copy and the wrong install URL, since it has no `latest`.
+*Accepting* that a tag can be moved, where a commit cannot; the asset's byte-identity with the file at its tag (INST-A0-04) is what the comparison rests on.
+*Rejected* publishing into `flor`'s releases — a write path from the generated line into the reviewed repository; a redirect on the docs site — it moves the hostname, not the origin; pinned URLs only — upgrading is the common act; the audit copy repeated in every release's notes — a second place for what the guide says once.
+
+### Wiring a scope
+
+**INST-A0-08. `flor activate <scope>` and `flor deactivate <scope>` are the only host commands.**
+`activate` refuses a scope with no scope root, writes or refreshes the unit, reloads the user manager, and enables and starts `flor@<scope>`; it reports whether the unit changed. `deactivate` stops and disables the instance, removes the unit once no scope uses it, and reports the state directory and binaries it left. Starting, stopping, restarting, status and logs stay with `systemctl` and `journalctl`. There is no uninstall command: removal is deactivating each scope, deleting the binaries, and deleting the state directory. A deactivated scope is enrolled but inactive, and `activate` resumes it with no bundle.
+*Because* activating a scope is the one step every service manager has per scope, so the command is the same wherever a manager has no template to install once per host. It wraps only the verbs that produce a file of ours; the others need no file, and the operator uses the native tools for logs anyway. Deleting identity material stays a deliberate command of the operator's.
+*Because* systemd's `enable` does not start a unit, and Florete calls enabling and starting *activation*.
+*Accepting* that `activate` also persists across reboots, where systemd calls a merely running unit "active".
+*Rejected* a host-level `flor install` that writes the template — it has nothing to write where a service manager has no templates, and is redundant where a package places the unit; a facade over start, stop, restart and status — code and a contract for what `systemctl` does; no command, the operator authoring the unit — a second author on every node; printing the unit for the operator to place — the same; enroll writing it — host material from a command that writes only rete material, and stale after any upgrade without an enroll; leaving activation to `systemctl --user enable --now` with no command of flor's — the unit still needs an author, and nothing extends to a service manager without templates; `flor service …` — *service* is a published rete service; `flor unit …` — systemd's word; `flor vertex activate` and names like it — they name the process, which changes while the scope's unit does not; `--purge` — an irreversible deletion inside a routine command; deleting its own binaries — it did not place them.
+
+**INST-A0-09. The unit is one template in the home's package directory, naming the vertex beside `flor`.**
+`flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`. Its `ExecStart` is the `flor-vertex` in the directory of the `flor` that ran `activate`, written as an absolute path, with `--scope %i`; its policy is `Restart=on-failure` and `RestartPreventExitStatus=78`. Its text is the one file a reviewed crate owns, with the path as its only substitution.
+*Because* that directory is systemd's place for units installed into a home, below the user's own configuration, so the operator's drop-ins survive every refresh. systemd resolves a bare `ExecStart` name only against a fixed system path, so the unit names an absolute one; resolving it beside `flor` is a rule that grows a lib directory and an override later without being replaced.
+*Accepting* that moving the binaries, or an upgrade that changes the unit, needs a re-activation.
+*Revisit* when a channel places `flor` through a link into a versioned directory: the resolved path then names that version.
+*Rejected* `flor-vertex@.service` — a unit named for its process, which a supervisor arriving under the same scope would have to replace instance by instance; `~/.config/systemd/user/` — the user's own configuration, where a refresh destroys an edit; a lookup on `PATH` — the vertex leaves `PATH` once a lib directory exists; a lib-directory rule in A0 — nothing for it to match; a `flor` subcommand that finds and execs the vertex at every start — it spares a re-activation that this channel needs anyway; a fixed `%h/.local/bin` path — wrong for any other directory.
+
+**INST-A0-10. An upgrade replaces files under running scopes, and the operator restarts them.**
+Nothing is stopped around the swap. The operator restarts the active scopes with `systemctl --user try-restart 'flor@*'`, which the script prints, and re-activates each scope when the release notes say the unit changed.
+*Because* a running vertex keeps the binary it started from, one process serves a scope and no two flor processes talk to each other, so the window between swap and restart holds nothing to reconcile. A restart drops tunnels, so it is the operator's act.
+*Accepting* that a forgotten restart leaves the old release running until the next failure or reboot.
+*Rejected* the script restarting — a feature beyond the manual path; `activate` restarting — a refresh would drop tunnels.
+
+**INST-A0-11. `flor activate` points out lingering, and never enables it.**
+Where the user's lingering is off, `activate` prints the exact `loginctl enable-linger` line and what it changes.
+*Because* without it a user-mode scope stops at logout and does not start at boot, while enabling it is a login policy for every process of that user, which only the operator can weigh — and a command cannot tell a server from a laptop.
+*Rejected* enabling it — a policy change nobody asked for; a flag — one line the operator can run; the guide alone — read once, on another machine.
+
+### Mode, directories and layout
+
+**INST-A0-12. One mode, the systemd user manager, and a bare command means it.**
+The mode chooses the service manager, the unit's directory and the state directory; where the binaries are chooses nothing. A0 has no mode selector, and neither `flor` nor the vertex takes a mode flag.
+*Because* a user/system split is the service manager's own, so naming the mode after it makes those three one choice; and a bare command's meaning is part of the CLI's contract from 1.0.0 ([AIFIRST-23](/docs/contributing/workflows/ai-first-development#decision-log)).
+*Accepting* that a command run as root acts on root's own user mode.
+*Revisit* when a second mode is added: how a command selects it, and how the daemon learns it — explicitly from its unit, since a system daemon running as an unprivileged user cannot infer it from privilege.
+*Rejected* a mode inferred from where the executable sits — two channels would treat one scope differently; systemd's convention of a bare command meaning system mode — a flag on every command for a mode A0 does not have; a `--system` that refuses — a flag promising what A0 does not ship.
+
+**INST-A0-13. There is no configuration file, and only the state directory has an override.**
+The state directory is `$XDG_STATE_HOME/flor/`, and `FLOR_STATE_HOME` moves it. The bin directory is the operator's. There is no runtime root and no lib directory. A log destination is `--log-stderr`, else `FLOR_LOG_DESTINATION`, else `unix:/dev/log`.
+*Because* the one host setting has a default that is right on every A0 host and an override that covers the one case A0 has, so a file would add a lookup, a format and a surface for nothing. `FLOR_STATE_HOME` keeps a development tree apart from a production node on the same machine, and nothing else has a consumer.
+*Accepting* that a host needing another log socket sets `FLOR_LOG_DESTINATION`, in a unit drop-in or in the shell.
+*Revisit* when a host setting has no correct default.
+*Rejected* an optional `config.toml` — a documented surface for a value with a right default; one written by `activate` — a writer and an overwrite rule for the same; overrides for configuration, runtime and lib — no consumer; the XDG variables alone — they move every tool's state, not flor's.
+
+**INST-A0-14. The unit's text belongs to a reviewed crate; release facts belong to the script.**
+The template and the directory it goes in are owned by a crate in `flor` and reach the product through that crate's API, the template kept as a file in its source tree. The archive's name, the host map and the default bin directory live in `install.sh`, beside the workflow that builds the archives.
+*Because* a fact about the host belongs with the reviewed code that writes it, and nothing is built in `flor`, so an API is the only way it reaches the product ([ADR-0016](/docs/implementation/adr/0016-restructure-for-two-line-development)). A file is reviewable as the text systemd loads, and a later package generator can translate it rather than re-derive it.
+*Accepting* that what the API looks like is the decomposition's to shape.
+*Rejected* the template as a literal in code — not reviewable as the file systemd reads; in `flor-dist`'s packaging — a host fact on the generated side; a file read at run time — edits a refresh destroys.

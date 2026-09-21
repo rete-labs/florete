@@ -38,12 +38,13 @@ What A0 ships. How it works is A0's [Design](/docs/implementation/a0-alef-author
 
 ### Installer
 
-Single channel & target: GitHub Releases, `linux-x86_64`.
+Single channel & target: GitHub Releases of `flor-dist`, `linux-x86_64`.
 
 ```bash
-install.sh                # fetch, unpack, check integrity and call `flor install`
-flor install              # install in user-mode only
-flor uninstall [--purge]  # uninstall with optional purge
+install.sh                # fetch, verify and unpack the executables into
+                          # ~/.local/bin
+flor activate <scope>     # write the unit, enable and start a scope
+flor deactivate <scope>   # stop and disable it
 flor version              # print installed version
 ```
 
@@ -59,11 +60,11 @@ flor enroll <bundle>   # join node to rete or update its state
 flor-vertex --scope <node>.<rete>   # run by systemd from the flor@.service unit
 ```
 
-The installer writes the unit, and the operator starts and stops each node's proxy with systemd; A0 has no activation command of its own:
+`flor activate` writes the unit and starts a node's proxy; stopping and restarting a running one are systemd's:
 
 ```bash
-systemctl --user enable --now flor@<node>.<rete>   # start a node's proxy, and at every boot
 systemctl --user stop flor@<node>.<rete>           # stop it, e.g. before re-enrolling
+systemctl --user start flor@<node>.<rete>          # start it again
 ```
 
 ### Rete-authoring CLI
