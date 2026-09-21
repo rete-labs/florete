@@ -3,6 +3,21 @@ title: Installer
 description: How flor's binaries reach a host
 ---
 
+<Callout title="Superseded in direction" type="warn">
+This page's design is not the one Florete builds. The installer is designed on A0's [Installer](/docs/implementation/a0-alef-authoring/installer) page, and C0 extends that design. This page is reworked in [#175](https://github.com/rete-labs/florete/issues/175); until then, do not implement from it.
+</Callout>
+
+**What C0 has to decide on top of A0's installer.** Each item extends a decision on A0's page:
+
+- **A second mode.** How a command selects system mode: an explicit `--system`, or inferred from privilege. What a command run as root, which A0 treats as user mode, then means. How the daemon learns its mode: explicitly from its unit, since a system daemon running as an unprivileged user cannot infer it from privilege ([INST-A0-12](/docs/implementation/a0-alef-authoring/installer#decision-log)).
+- **Service managers without template units.** A wrapper rendered per scope at `flor activate`, and re-rendered when a release changes it ([INST-A0-08](/docs/implementation/a0-alef-authoring/installer#decision-log), [INST-A0-09](/docs/implementation/a0-alef-authoring/installer#decision-log)).
+- **Units a package places.** `flor activate` finding a unit a channel has placed, rather than writing its own ([INST-A0-01](/docs/implementation/a0-alef-authoring/installer#decision-log), [INST-A0-08](/docs/implementation/a0-alef-authoring/installer#decision-log)).
+- **Executables apart from `flor`.** A lib directory and an override in the rule that finds the vertex, and the path written into a unit when `flor` is reached through a link into a versioned directory ([INST-A0-09](/docs/implementation/a0-alef-authoring/installer#decision-log)).
+- **A configuration file.** Its arrival with a host setting that has no correct default — a syslog socket found by probing. Its starting rule is one file per mode, no search and no merging, with every command reporting which file it read ([INST-A0-13](/docs/implementation/a0-alef-authoring/installer#decision-log)).
+- **Channels beyond A0's.** Packages, and `cargo binstall` over the same archives. Which automation each adds beyond the executables, such as refreshing units or restarting scopes after an upgrade ([INST-A0-01](/docs/implementation/a0-alef-authoring/installer#decision-log), [INST-A0-02](/docs/implementation/a0-alef-authoring/installer#decision-log)).
+
+---
+
 Installing puts the **host-level machinery** on a host: flor's executables and the per-OS service wrappers — everything that sits *below every rete*, on the same boundary the [agent's no-node-global-state invariant](../mgmt-plane/agent#role) draws. Everything per-rete — identity material, artifact sets, runtime state, a running agent — arrives later, per scope, with [enrollment](../mgmt-plane/enrollment). The contract between the two steps is one sentence: **install leaves a host ready to enroll; enroll never installs.**
 
 This page is the design, written for whoever implements or changes the installer. [Shape](#shape) is the map — structure, flow, and the rules that hold across both. The [Decision Log](#decision-log) at the foot records what was settled and what was rejected, and is where to start before changing any of it. Everything between the two is the reasoning that connects them.
