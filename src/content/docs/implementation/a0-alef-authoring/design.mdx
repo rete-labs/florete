@@ -3,7 +3,7 @@ title: Design
 description: What A0 does where the C0 design assumes an agent or a coordinator
 ---
 
-A0 is the first Florete release: a rete run by one operator, with no agent and no coordinator on any node. This page is its design, written as a delta on [C0](/docs/implementation/c0-tended-tunnels) — where A0 behaves as C0 does, it says so and links there, and it describes only what differs ([DSGN-A0-01](#decision-log)). How flor reaches a host and how a scope comes to run under systemd is the [Installer](/docs/implementation/a0-alef-authoring/installer). What A0 is for, and what it leaves out, is its [Scope](/docs/implementation/a0-alef-authoring/scope).
+A0 is the first Florete release: a rete run by one operator, with no agent and no coordinator on any node. This page is its design, written as a delta on [C0](/docs/implementation/c0-tended-tunnels) — where A0 behaves as C0 does, it says so and links there, and it describes only what differs ([DSGN-A0-01](#decision-log)). How flor reaches a host and how a scope comes to run under systemd is the [Installer](/docs/implementation/a0-alef-authoring/installer); where compiled artifacts rest, and what a write must satisfy before one is kept, is the [Artifact Store](/docs/implementation/a0-alef-authoring/artifact-store). What A0 is for, and what it leaves out, is its [Scope](/docs/implementation/a0-alef-authoring/scope).
 
 If you are implementing A0, the sections after the [Shape](#shape) follow a node through its life — running, installed, enrolled, changed — and then cover what holds across it: hosts with several nodes, validation, logging and names. If you are changing A0's design, start at the Shape and the [Decision Log](#decision-log). If you are operating an A0 rete, the commands and their order belong to the operator playbook and the user guide rather than to this page.
 
@@ -38,10 +38,11 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
               scope.lock    the scope's exclusive lock, held by flor-vertex for
                             its life and by flor enroll for its run
               identity/     same as C0
-              artifacts/    mgmt/<vertex>.json, written in place by enroll
+              artifacts/    the node's artifact store
               no other files and dirs of C0
 
-  bundle      same as C0
+  bundle      same as C0, with enroll in the intake's place: it checks each
+              artifact entry's name against the envelope it carries
 
   operator    same `~/.retectl` as C0, except no config.toml
 
@@ -66,7 +67,7 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
   enroll      follows C0 process with changes
                  no publish
                  activation by flor activate
-                 artifacts go straight to artifacts/
+                 artifacts are handed to the artifact store; no intake
 
   rollout     a change to any node's state is that node's re-enrollment, and
               there is no other channel
@@ -87,13 +88,14 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
 ```log
   narrowing     A0 removes mechanisms, never rules
 
-  verification  same as C0 except envelope signatures: they're not checked at node
+  verification  same as C0, and every envelope is verified where it is
+                admitted, by the artifact store
 
   channels      one mgmt channel, the couriered bundle, applied by enroll
 
-  freshness     no high-water-mark and no monotonicity check: enroll applies the
-                set it was handed
-                artifacts still carry the node's set version, stamped by the
+  freshness     a stale bundle cannot roll a node back: the artifact store
+                refuses it
+                artifacts carry the node's set version, stamped by the
                 compiler against the committed tree
                 the commit is the gate on issue-bundle
 
@@ -116,8 +118,11 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
   activation    enroll activates nothing; flor activate is the only activation
 
   paths         artifacts carry no filesystem references
-                the vertex derives its paths from the scope alone, and its own
-                name from the artifact it finds there
+                the vertex derives its paths from the scope alone, and reaches
+                its artifact through the artifact store, by its own name
+
+  vertex name   a node declares exactly one vertex, named hop, which the
+                validator requires and the vertex defaults to
 
   logging       every process opens its own log sink, from its flag, its
                 environment or the default
@@ -139,9 +144,9 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
 
 An A0 node runs one long-lived process, `flor-vertex` which is supervised by systemd. `flor activate <node>.<rete>` writes a single template unit, `flor@.service`, and enables and starts the scope's instance; `flor deactivate` stops and disables it, and stopping or restarting a running scope is systemd's ([Installer](/docs/implementation/a0-alef-authoring/installer)). systemd restarts the vertex when it fails, except on exit `78`, which says the scope cannot be served as it stands.
 
-The unit tells the vertex one thing, its scope — `flor-vertex --scope %i`, by the absolute path `flor activate` wrote — and the vertex works out the rest ([DSGN-A0-09](#decision-log), [DSGN-A0-10](#decision-log)). It takes its scope's lock exclusively and holds it while it runs, exiting `69` when another process holds it. It reads `receipt.json` and refuses a scope that was never enrolled, is mid-enrollment, or was written by a release it cannot read. It opens the one artifact under `artifacts/mgmt/`, refusing a scope root that holds more than one, takes its own name from that artifact's envelope, and derives every path it needs from the scope. No `FLORWL_*` variable is set or read. These are jobs C0 gives the agent, and in A0 they are the vertex's.
+The unit tells the vertex one thing, its scope — `flor-vertex --scope %i`, by the absolute path `flor activate` wrote — and the vertex works out the rest ([DSGN-A0-24](#decision-log), [DSGN-A0-10](#decision-log)). It takes its scope's lock exclusively and holds it while it runs, exiting `69` when another process holds it. It reads `receipt.json` and refuses a scope that was never enrolled, is mid-enrollment, or was written by a release it cannot read. It knows its own name, `hop`, and asks the [artifact store](/docs/implementation/a0-alef-authoring/artifact-store) for the artifact addressed to it, exiting `78` when the store has none; every other path it derives from the scope. No `FLORWL_*` variable is set or read. These are jobs C0 gives the agent, and in A0 they are the vertex's.
 
-What a node holds follows from the same absence. The scope root is C0's without what the agent owns, the artifact sitting directly at `artifacts/mgmt/<vertex>.json` ([DSGN-A0-11](#decision-log)). The compiler emits no `agent.json`, the bundle carries no node principal, and nothing is created in the runtime directory ([DSGN-A0-02](#decision-log)). A node's identity is its name as the manifest states it, pinned in `identity/scope.json`.
+What a node holds follows from the same absence. The scope root is C0's without what the agent owns, its `artifacts/` being the node's [artifact store](/docs/implementation/a0-alef-authoring/artifact-store) and nothing else ([DSGN-A0-25](#decision-log)). The compiler emits no `agent.json`, the bundle carries no node principal, and nothing is created in the runtime directory ([DSGN-A0-02](#decision-log)). A node's identity is its name as the manifest states it, pinned in `identity/scope.json`.
 
 The vertex serves every principal it holds material for, as in C0. In A0 a principal named without its material is a producer's mistake rather than a passing state, and the vertex's warning is where it shows ([DSGN-A0-05](#decision-log)).
 
@@ -153,9 +158,9 @@ A0's executables reach a host, and a scope comes to run under systemd, as the [I
 
 A rete begins as it does in C0 — a repository, `retectl init`, the collections, a compile and a commit — with nothing that has to exist first: there is no management node to bootstrap and nothing to publish to. Every node then joins by an ordinary enrollment.
 
-Enrollment follows [C0's](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment), and the differences are few. It verifies the bundle as C0 does, and checks no artifact's signature — nothing on an A0 node does ([DSGN-A0-03](#decision-log)). It writes the artifact straight to its place instead of leaving it for an intake. And it activates nothing: its last line is the `flor activate` command that starts the scope, and on a live scope it refuses, naming the holder and the `systemctl --user stop` command that stops it (in case it is a vertex).
+Enrollment follows [C0's](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment), and the differences are few. It verifies the bundle as C0 does, checks each artifact entry's name against the envelope that entry carries — the one job the absent intake leaves it — and hands the artifacts to the [artifact store](/docs/implementation/a0-alef-authoring/artifact-store), which verifies and admits them ([DSGN-A0-22](#decision-log), [DSGN-A0-25](#decision-log)). And it activates nothing: its last line is the `flor activate` command that starts the scope, and on a live scope it refuses, naming the holder and the `systemctl --user stop` command that stops it (in case it is a vertex).
 
-Artifacts are signed when compiled and carry the node's set version, and `retectl issue-bundle` refuses an uncommitted tree ([DSGN-A0-04](#decision-log)). No A0 node compares versions: enroll applies the set it is handed.
+Artifacts are signed when compiled and carry the node's set version, and `retectl issue-bundle` refuses an uncommitted tree ([DSGN-A0-23](#decision-log)). A bundle overtaken by a newer one is refused by the store, so the walk below can be interrupted and resumed but not reversed.
 
 A0 changes a node in one way, by re-enrolling it ([DSGN-A0-06](#decision-log)). A change is compiled and committed, and every node it touched receives a fresh bundle — carried out of band, the scope stopped, the bundle enrolled, the scope started — which re-mints every principal on that node. There is no `publish` and nothing syncs, so the rete converges as fast as the operator walks it. Revoking a principal is removing it from YAML and re-enrolling the nodes whose sets named it, taking effect node by node on the same walk. `retectl` is offline throughout, and has no `config.toml`.
 
@@ -167,7 +172,7 @@ The development environment is that arrangement run by hand ([DSGN-A0-15](#decis
 
 ## Validating a rete without a coordinator
 
-A rete has a management node when it declares both reserved coordinator services, and only then do the rules requiring a management node and a user holding `operator` apply ([DSGN-A0-13](#decision-log)). An A0 rete declares neither; declaring exactly one is an error naming the other. The reserved names — the two services, their groups, and the `node` and `operator` roles — are reserved in every rete whether it uses them or not, and `retectl init` writes them into a new rete commented out. Otherwise A0 validates as [C0](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) does.
+A rete has a management node when it declares both reserved coordinator services, and only then do the rules requiring a management node and a user holding `operator` apply ([DSGN-A0-13](#decision-log)). An A0 rete declares neither; declaring exactly one is an error naming the other. A0 adds one rule of its own: a node declares exactly one vertex, and its name is `hop` ([DSGN-A0-24](#decision-log)). The reserved names — the two services, their groups, and the `node` and `operator` roles — are reserved in every rete whether it uses them or not, and `retectl init` writes them into a new rete commented out. Otherwise A0 validates as [C0](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) does.
 
 ## Logging
 
@@ -179,13 +184,13 @@ The line format and its vocabulary are [C0's](/docs/implementation/c0-tended-tun
 
 ## Names
 
-A supervised workload is named `workload/<node>/<name>`, and the supervisor `workload/<node>/agent`, as [Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log) decides (ID-C0-09); a vertex's workload takes the vertex's declared name, and that is what an artifact's node and name address. A0 supervises nothing, yet its compiler names the vertex's artifact and its log frames the vertex's records by this naming.
+A supervised workload is named `workload/<node>/<name>`, and the supervisor `workload/<node>/agent`, as [Identity](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log) decides (ID-C0-09); a vertex's workload takes the vertex's declared name, and an artifact is addressed to that workload. A0 supervises nothing, yet its compiler addresses the vertex's artifact and its log frames the vertex's records by this naming.
 
 The vertex's configuration lists the TLS principals it terminates mTLS for as its `attachments`, the principals attached to the vertex from above ([DSGN-A0-20](#decision-log)).
 
 ## From A0 to C0
 
-A node moves to C0 by installing C0 and re-enrolling with a fresh bundle, and nothing is migrated ([DSGN-A0-21](#decision-log)). Every part of a C0 scope root that A0 lacks comes from C0's agent or from the bundle. A0's artifact file stays behind, inert, unless the scope root is removed first.
+A node moves to C0 by installing C0 and re-enrolling with a fresh bundle, and nothing is migrated ([DSGN-A0-21](#decision-log)). Every part of a C0 scope root that A0 lacks comes from C0's agent or from the bundle. What A0's store left under `artifacts/` stays behind, inert, unless the scope root is removed first.
 
 ## Decision Log
 
@@ -207,19 +212,24 @@ A node's mgmt set is its vertex's artifact alone; the bundle carries user and se
 *Accepting* that the set has no root document, its coherence being the bundle's; and that expiry is warned by whatever touches a certificate ([ID-C0-23](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)).
 *Rejected* a reduced or empty `agent.json`, an artifact the compiler keeps filling for no reader; a node principal minted and unused, a ninety-day bearer credential couriered for nothing and minted afresh at C0's re-enrollment (DSGN-A0-21); an empty runtime root, a mode rule and a cleanup path for a directory holding nothing.
 
-**DSGN-A0-03. Sign every artifact, and verify no envelope on the node.**
-`retectl compile` signs each envelope as C0 does, and the validator's mgmt-signer rule is C0's. `flor enroll` verifies a bundle as [ENRL-C0-17](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) does and checks no envelope's signature, and nothing else on an A0 node does. On a re-enrollment the manifest's signature covers the artifacts through the digests it carries.
-*Because* enroll is the act that makes a scope exist — it pins the anchors, the trust domain and the node, and nothing else may — while checking an envelope's signature is admission, a judgement about authority over rete state repeated at every arrival. [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) makes the agent the sole verifier, and admission lent to enroll would be a boundary drawn in the wrong place.
-*Because* the check would add nothing A0 lacks: the manifest's signature authenticates what a re-enrollment carries, a fresh enrollment verifies no signature at all, and whoever can write an artifact at rest can write the identity material beside it.
-*Because* signing costs nothing extra: the envelope contract requires a signature, and the signer, the key handling and the canonical form serve the manifest regardless.
-*Accepting* envelope signatures nobody on an A0 node consumes, so their envelope-specific part is first exercised by whatever verifies them later, the signer and the canonical form being exercised by every manifest meanwhile.
-*Rejected* verifying envelopes at enroll, a second verifier for what the manifest already establishes; unsigned artifacts, an unsigned form of a contract that requires a signature.
+**DSGN-A0-03.** *Superseded by [DSGN-A0-22](#decision-log).*
 
-**DSGN-A0-04. Stamp set versions and gate bundles on the commit, with no high-water-mark.**
-The compiler stamps each node's set version against the committed tree, and `retectl issue-bundle` refuses an uncommitted tree, as [ENRL-C0-35](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) decides. Enroll applies the set it is handed, with no monotonicity check.
-*Because* the version is part of the envelope's routing core, so dropping it would change the contract rather than narrow it; and the commit keeps the compiled tree an honest record of what each node was given.
-*Accepting* a version nothing on an A0 node reads.
-*Rejected* dropping the version, a contract change; a monotonicity check at enroll, a high-water-mark under another name; a warning in place of the commit gate, which a courier's delay separates from the harm it warns about.
+**DSGN-A0-22. Sign every artifact, and verify every envelope where it is admitted.**
+`retectl compile` signs each envelope as C0 does, and the validator's mgmt-signer rule is C0's. Every envelope is verified where it is admitted, by the [artifact store](/docs/implementation/a0-alef-authoring/artifact-store), on the operator's machine and on the node alike; nothing verifies an artifact when it is read. `flor enroll` verifies the bundle as [ENRL-C0-17](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) does and hands the artifacts over.
+*Because* admission is a judgement about authority over rete state, and the module that owns the material is where it belongs — one place every writer passes and no reader repeats, which is the boundary [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) draws.
+*Because* on a fresh enrollment the anchors arrive in the same bundle, so the check shows only that the artifacts will work, which is the test ENRL-C0-17 sets for any check added there; from the second enrollment it weighs authority against the pinned anchors.
+*Because* signing costs nothing extra: the envelope contract requires a signature, and the signer, the key handling and the canonical form serve the manifest regardless.
+*Accepting* that the check bounds delivery and not local tampering: whoever can write into a store can write the identity material beside it.
+*Rejected* verifying no envelope on an A0 node, which leaves a contract's signature unexercised and lets a mis-cut bundle's artifacts land unchecked; verification in enroll, a second verifier beside the module that owns the material; unsigned artifacts, an unsigned form of a contract that requires a signature.
+
+**DSGN-A0-04.** *Superseded by [DSGN-A0-23](#decision-log).*
+
+**DSGN-A0-23. Stamp set versions, gate bundles on the commit, and refuse a rollback in the store.**
+The compiler stamps each node's set version against the committed tree, and `retectl issue-bundle` refuses an uncommitted tree, as [ENRL-C0-35](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) decides. The [artifact store](/docs/implementation/a0-alef-authoring/artifact-store) refuses a set older than the one a node holds, and nothing overrides that refusal: the way past one is a newer bundle.
+*Because* a bundle overtaken in the courier's hands — cut before a revocation, enrolled after it — would otherwise roll its node back and re-admit the revoked principal, with nothing on either side saying so.
+*Because* the refusal costs A0 nothing: a deliberate rollback is a revert recompiled at a higher version.
+*Accepting* that a node whose compiled tree is lost for good is re-enrolled only once that tree is restored, or its scope root removed by hand.
+*Rejected* applying whatever set enroll is handed, which undoes a revocation silently; a warning in place of a refusal, which lands after the set is written; an override flag, which has no case a newer bundle does not cover; dropping the version, a contract change; a warning in place of the commit gate, which a courier's delay separates from the harm it warns about.
 
 **DSGN-A0-05. Keep C0's handling of an artifact without its material, as a defect rather than a state.**
 The vertex serves every principal it holds material for, opens no listener for one it does not, and warns once, as [ENRL-C0-36](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) decides. In A0 the state arises only from a producer's mistake.
@@ -238,13 +248,16 @@ Every change to a node's state reaches it in a fresh bundle — compile, commit,
 
 **DSGN-A0-08.** *Superseded by [INST-A0-08](/docs/implementation/a0-alef-authoring/installer#decision-log) and [INST-A0-09](/docs/implementation/a0-alef-authoring/installer#decision-log).*
 
-**DSGN-A0-09. Pass the vertex its scope, and nothing else.**
-The unit runs `flor-vertex --scope %i`, naming the vertex by the absolute path `flor activate` writes ([INST-A0-09](/docs/implementation/a0-alef-authoring/installer#decision-log)). The vertex opens its set's one artifact, takes its own name from that envelope, and derives every path from the scope; the unit sets no `Environment=`, and the vertex reads no `FLORWL_*`. `--name` is an optional override. Wherever a command takes a scope, the flag is `--scope`.
+**DSGN-A0-09.** *Superseded by [DSGN-A0-24](#decision-log).*
+
+**DSGN-A0-24. Pass the vertex its scope, and fix its name.**
+The unit runs `flor-vertex --scope %i`, naming the vertex by the absolute path `flor activate` writes ([INST-A0-09](/docs/implementation/a0-alef-authoring/installer#decision-log)). A node declares exactly one vertex, named `hop`, which the validator requires; the vertex defaults `--name` to it and reads the artifact addressed to `workload/<node>/hop` through the [artifact store](/docs/implementation/a0-alef-authoring/artifact-store). It derives every path from the scope; the unit sets no `Environment=`, and the vertex reads no `FLORWL_*`. Wherever a command takes a scope, the flag is `--scope`.
 *Because* a systemd template has one instance parameter, spent on the scope, and neither `flor activate`, which writes one template for every scope, nor enroll, which knows the vertex's name but would render a unit per scope, can supply more.
+*Because* a consumer asks the store for one artifact by its address, so the name has to reach the vertex before the read, and A0 has no supervisor to supply it. The fixed name is the one `retectl init` already scaffolds ([ID-C0-13](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)).
 *Because* the `FLORWL_*` variables describe a supervised workload, and A0 supervises nothing.
 *Because* the value is a scope handle rather than a rete name ([ENRL-C0-41](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)).
-*Accepting* that the vertex's own lookup lasts only until a supervisor hands it its context; that the vertex refuses a scope root holding more than one artifact; and that path derivation stays in one module per holder, so a store that is not a file tree replaces one place.
-*Rejected* an artifact path baked into the unit, which cannot know the vertex's name; paths built from systemd's own state-directory specifier, resolved against systemd's notion of the directory rather than flor's; a validator rule fixing the vertex's name, a YAML constraint made of a systemd limit; honouring `FLORWL_*`, a consumer with no producer; `--rete`, the wrong one of the two names.
+*Accepting* that an A0 operator does not name the vertex; that the rule is A0's, dropped by a milestone whose supervisor hands the name over, which renames no rete; and that path derivation stays in one module per holder.
+*Rejected* taking the name from the one artifact present, which needs a consumer that lists a store's contents; an artifact path baked into the unit, which cannot know the vertex's name; paths built from systemd's own state-directory specifier, resolved against systemd's notion of the directory rather than flor's; honouring `FLORWL_*`, a consumer with no producer; `--rete`, the wrong one of the two names.
 
 **DSGN-A0-10. Keep the receipt and the scope lock, with the vertex in the agent's place.**
 `receipt.json` is C0's ([ENRL-C0-39](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)). The scope lock is held by `flor-vertex` for its life and by `flor enroll` for its run, and enroll refuses a live scope rather than stopping it, naming the holder. A vertex that finds the lock held exits `69`. Before serving, the vertex refuses a scope whose receipt is absent, reads `enrolling`, or carries a schema version it cannot read, exiting `78`.
@@ -253,11 +266,15 @@ The unit runs `flor-vertex --scope %i`, naming the vertex by the absolute path `
 *Accepting* that the lock and the receipt check live in the vertex only until a supervisor holds the scope, and move to it unchanged.
 *Rejected* deciding whether an enrollment finished from the identity store, which is written before the commit point; a lock only enroll takes, which excludes no live reader; asking systemd whether the unit is active, a read outside any lock; checking the receipt at an activation step, which a reboot bypasses.
 
-**DSGN-A0-11. Write artifacts in place.**
-Enroll writes each artifact to `artifacts/mgmt/<vertex>.json`, its destination read out of its own envelope. There is no `incoming/`, no intake, no `current` pointer and no `sets/`.
-*Because* `incoming/` serves an intake that is the agent's, and the pointer replaces a set under a running consumer; A0 has neither, and enroll never writes under a live vertex (DSGN-A0-10).
-*Accepting* that no previous set is kept on the node, rollback being a reverted, recompiled and re-enrolled one; and that enroll writes through the library an intake would use, so adding one changes the caller rather than the code.
-*Rejected* an `incoming/` admitted by the vertex, which makes the network proxy a verifier; the versioned tree and its pointer, atomicity nothing needs, taught to a vertex with no use for it.
+**DSGN-A0-11.** *Superseded by [DSGN-A0-25](#decision-log).*
+
+**DSGN-A0-25. Write artifacts through the artifact store.**
+`flor enroll` hands the bundle's artifacts to the [artifact store](/docs/implementation/a0-alef-authoring/artifact-store), which admits them as the node's set. There is no `incoming/`, no intake, no `current` pointer and no `sets/`. The check [ENRL-C0-16](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log) gives to whoever reads an entry's content is enroll's: it compares each artifact entry's name with the envelope that entry carries.
+*Because* the checks an intake would carry — the envelope, the destination, the signature, the version — are the store's, so what an intake adds is a staging directory and nothing else.
+*Because* `incoming/` serves an intake that is the agent's, and a pointer replaces a set under a running consumer; A0 has neither, and enroll never writes under a live vertex (DSGN-A0-10).
+*Because* the entry-name check belongs to whoever reads the container, and with the intake gone that is enroll — the store receives artifacts and never a bundle.
+*Accepting* that no previous set is kept on the node, rollback being a reverted, recompiled and re-enrolled one.
+*Rejected* enroll writing files in place, which puts path arithmetic and the checks in the caller; an `incoming/` admitted by the vertex, which makes the network proxy a verifier; the versioned tree and its pointer, atomicity nothing needs.
 
 ### Validation
 

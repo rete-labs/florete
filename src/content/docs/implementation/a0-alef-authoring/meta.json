@@ -2,7 +2,8 @@
     "pages": [
         "scope",
         "design",
-        "installer"
+        "installer",
+        "artifact-store"
     ],
     "defaultOpen": true
 }

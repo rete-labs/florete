@@ -16,20 +16,18 @@ my-rete/
 ├── bundles/                     # gitignored: issued enrollment bundles, transient
 └── .flor/
     └── compiled/                # committed; operator runs `retectl compile` then commits
-        ├── mgmt01/              # management node — bootstrap-applied manually (see Coordinator)
-        │   └── mgmt/
-        │       ├── agent.json
-        │       ├── hop.json
-        │       └── coordinator.json
-        ├── alpha/
-        │   └── mgmt/
-        │       ├── agent.json
-        │       └── hop.json
-        ├── beta/
-        │   └── mgmt/
-        │       ├── agent.json
-        │       └── hop.json
-        └── ...
+        └── mgmt/                # one directory per plane
+            ├── mgmt01/          # management node — bootstrap-applied manually (see Coordinator)
+            │   ├── agent.json
+            │   ├── hop.json
+            │   └── coordinator.json
+            ├── alpha/
+            │   ├── agent.json
+            │   └── hop.json
+            ├── beta/
+            │   ├── agent.json
+            │   └── hop.json
+            └── ...
 ```
 
 What's **not** in the repo:
