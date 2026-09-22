@@ -67,13 +67,14 @@ Field semantics:
 ```
 my-rete/
 ├── …                            # mgmt YAMLs and compiled mgmt subtree (see mgmt-plane)
-├── .gitignore                   # contains: .flor/compiled/*/ctrl/
+├── .gitignore                   # contains: .flor/compiled/ctrl/
 └── .flor/
     └── compiled/
-        └── alpha/
-            ├── mgmt/            # signed by operator; committed
-            │   └── …
-            └── ctrl/            # signed by CP key; gitignored
+        ├── mgmt/                # signed by operator; committed
+        │   └── alpha/
+        │       └── …
+        └── ctrl/                # signed by CP key; gitignored
+            └── alpha/
                 └── rete.json
 ```
 
@@ -88,10 +89,10 @@ The same `retectl compile` invocation that produces mgmt artifacts also produces
 ```
 cd my-rete/ && retectl compile
 # emits, for each node — e.g. alpha:
-#   .flor/compiled/alpha/mgmt/agent.json
-#   .flor/compiled/alpha/mgmt/hop-public.json
-#   .flor/compiled/alpha/mgmt/rete.json
-#   .flor/compiled/alpha/ctrl/rete.json
+#   .flor/compiled/mgmt/alpha/agent.json
+#   .flor/compiled/mgmt/alpha/hop-public.json
+#   .flor/compiled/mgmt/alpha/rete.json
+#   .flor/compiled/ctrl/alpha/rete.json
 ```
 
 The mgmt artifacts are signed with the operator's mgmt signing key; the ctrl artifact is signed with the operator's CP signing key. In C0/C1 both keys live on the operator's workstation — same machine, separate principals in `retectl`'s own tree at `~/.retectl/retes/<scope>/identity/principals/` (see [C0 · Enrollment](../../c0-tended-tunnels/mgmt-plane/enrollment#decision-log), ENRL-C0-06). They are *not* the same key; conflating them would couple mgmt-signing-authority lifecycle with CP-signing-authority lifecycle, which becomes painful as soon as B1+ wants to put the CP key on a different host (managed cloud or BYO on-prem).
