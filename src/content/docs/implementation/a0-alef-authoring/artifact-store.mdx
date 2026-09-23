@@ -13,11 +13,11 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 **What the handle names is what a write is held to.** A handle bound to a node admits that node's documents and refuses any other, so a bundle cut for `beta` cannot land on `alpha`. A handle bound to none sorts each document by the node its own address carries, and what it checks is that the document parses, belongs to this rete, and joins a coherent set.
 
-**An artifact is addressed to a workload, and that address is its key.** The envelope names one node-scoped workload — `spiffe://flor.demo/workload/alpha/hop` — and one plane, and the pair is how every caller asks for it. A node's **set** is its mgmt documents at one version; in A0 that set holds one document, its vertex's.
+**An artifact is addressed to a workload, and that address is its key.** The envelope names one node-scoped workload — `spiffe://flor.demo/workload/alpha/hop` — and one plane, and the pair is how every caller asks for it. A node's **set** is its mgmt documents at one version, and the version numbers the set's content — its payloads and its membership — so a set signed again over the same content keeps its version. In A0 a set holds one document, its vertex's.
 
-**Two calls write, and each leaves exactly what it was given.** `flor enroll` replaces its scope's set. `retectl compile` replaces every set at once, so a node the source no longer names stops being shipped and an artifact no longer compiled stops being kept. A write that is admitted reports the members it wrote and the ones it removed, and a report with nothing in it means the store already held that set.
+**Two calls write, and each leaves exactly what it was given.** `flor enroll` **replaces a set**, its scope's. `retectl compile` **rebuilds the store**, every set at once, so a node the source no longer names stops being shipped and an artifact no longer compiled stops being kept. An admitted write reports the version the store held before and the version it admitted; equal versions mean the content did not change.
 
-**Three calls read.** A consumer asks for one document by its key and gets it back with its envelope parsed; the payload is handed over as the type the caller names, and nothing else parses it. `retectl issue-bundle` reads a node's whole set. `retectl compile` reads a node's mark — the highest version the store has admitted for it — which is the ladder its next version is built on.
+**Two calls read.** A consumer asks for one document by its key and gets it back with its envelope parsed; the payload is handed over as the type the caller names, which nothing else parses, or raw. The other read is a node's whole set: `retectl issue-bundle` packs it, and `retectl compile` reads each node's as the ladder its next versions are built on ([Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile)). Deciding versions and signing are `compile`'s; the store compares nothing but versions.
 
 **A write is refused whole, before anything is written.** The store refuses a document whose envelope it cannot read, one addressed to another rete or another node, one whose signature does not check out, and a set older than the mark. Any of those refuses the batch it arrived in, leaving what the store holds untouched. A consumer's read refuses almost nothing: a document that is not there is reported absent, and the caller decides what that means, while a document stamped for a newer release than the one reading it is the same upgrade error a write would raise.
 
@@ -29,15 +29,15 @@ If you write or read artifacts from a command or a workload, [Using the store](#
   subject     the artifact store: one library through which every A0 user
               writes and reads compiled artifacts, with no process behind it
 
-  users       retectl compile       writes every node's set; reads each
-                                    node's mark as its version ladder
+  users       retectl compile       reads each node's set as its version
+                                    ladder, then rebuilds the store
               retectl issue-bundle  reads one node's set
               flor enroll           replaces its scope's set
               flor-vertex           reads its own document
 
-  layers      documents  an artifact's bytes, fixed when it is created, with
+  layers      documents  an artifact's bytes, fixed when it is signed, with
                          its envelope parsed beside them; the payload is
-                         handed out as the type the caller names
+                         handed out raw, or as the type the caller names
               families   one payload model per family, shared by that
                          family's producer and consumer, outside the store
               store      sets of documents over a backend; parses envelopes,
@@ -48,6 +48,9 @@ If you write or read artifacts from a command or a workload, [Using the store](#
               is a node-scoped workload's SPIFFE ID
 
   set         one node's mgmt documents at one version, at least one member
+
+  version     numbers a set's content: its members' payloads and its
+              membership; a new signature over the same content keeps it
 
   instances   operator   the compiled tree, every node's set, committed to git
               node       the scope, its own node's set
@@ -67,11 +70,11 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 **FLOW**
 
 ```log
-  replace     two writes, one rule: afterwards the store holds exactly what
-              it was given
-                a node's set    enroll
-                every set       compile, removing nodes the source no
-                                longer names
+  write       two writes; afterwards the store holds exactly what it was
+              given
+                replace a set      one node's set — enroll
+                rebuild the store  every set — compile, removing nodes the
+                                   source no longer names
 
               check, writing nothing
                 1  gate each envelope's schema_version
@@ -89,21 +92,20 @@ If you write or read artifacts from a command or a workload, [Using the store](#
                                  └─ otherwise admitted
               the caller records its run
               write
-                5  each member whose held copy is older or absent,
-                   whole, by rename; a member already at the batch's
-                   version is kept as it is
+                5  every member, whole, by rename
                 6  remove every member the batch does not name
 
               a refusal at 1–4 refuses the whole batch, and nothing is written
-              an admitted replace reports the members it wrote and removed
+              an admitted write reports the version held before and the
+              version admitted; equal versions mean unchanged content
 
   read        one document by key
                 1  the key: the workload the caller names, and the plane (mgmt)
                 2  absent → reported
                 3  gate the envelope's schema_version
                 4  hand back the document; its payload is the caller's to
-                   parse and gate
-              also offered: one node's set, and one node's mark
+                   parse and gate, or to take raw
+              also offered: one node's set
 ```
 
 **RULES**
@@ -114,15 +116,17 @@ If you write or read artifacts from a command or a workload, [Using the store](#
                 converging when its writer re-runs, nothing read while it is
                 written, no history beyond what is on disk, reads by key
 
-  admission     replace is the one place a document is verified; no read
+  admission     a write is the one place a document is verified; no read
                 verifies
 
   placement     a document's place comes from its envelope alone
 
-  pruning       a replace removes what it was not given: a member missing
-                from a node's set, a node missing from every set
+  pruning       a write removes what it was not given: a member missing
+                from a node's set, and, in a rebuild, a node missing from
+                every set
 
-  opacity       the store parses envelopes and never a payload
+  opacity       the store parses envelopes and never a payload; it compares
+                versions, never bytes
 
   freshness     the mark is the highest version admitted, kept per node
                 on files it is the highest stamp present, with no record of
@@ -130,9 +134,8 @@ If you write or read artifacts from a command or a workload, [Using the store](#
                 nothing overrides a refusal; the way past one is a newer set
 
   integrity     the store keeps no journal; members at different versions
-                mark an interrupted replace, and re-running the same batch
-                writes exactly what the interruption left
-                a replace at the held version writes nothing
+                mark an interrupted write, and re-running the same batch
+                completes it
 
   locking       the store takes no lock; a node-side caller holds the scope
                 lock across a check and its write, the vertex for its life
@@ -150,13 +153,15 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 **On a first enrollment the signature check shows only that the documents will work.** The anchors the handle carries arrive in the same bundle, so the check catches a wrong signer or a corrupted envelope and proves nothing against whoever wrote the bundle. On every later enrollment the anchors are the ones the scope pinned, and the same check is a judgement about authority.
 
+**The check's clock is safe because the ledger keeps signatures current.** A signer's certificate is checked against the present time, and `compile`'s ledger re-signs whatever a rotated signer signed ([Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile)), so nothing a write carries is refused for its age once the signer is rotated.
+
 ## Freshness
 
 **The store never goes backwards.** It keeps a **mark** per node, the highest version it has admitted, and refuses a set older than it. A bundle that has been overtaken — cut before a revocation and enrolled after it — is refused naming both versions, so a node cannot be rolled back by delivering stale material to it. Nothing overrides that refusal: the way past one is a newer set.
 
-**At the mark, the store writes only what is behind it.** Each member is written when the copy held is older or missing, and kept when it already carries the batch's version. Re-enrolling to re-key a node, which packs the same artifacts at the same version, therefore writes nothing and reports nothing. A replace that was interrupted leaves members at different versions, and re-running it writes exactly the ones the interruption left.
+**Anything not older is written whole, an equal version included.** Two sets at one version carry the same content, so what an equal-version write can change is the signature, and writing it is how a re-signed set reaches the compiled tree and, at its next re-key, a node. Re-enrolling to re-key a node therefore rewrites its set and reports the same version before and after, which the caller reads as unchanged. A write that was interrupted leaves members at different versions, and re-running it completes it.
 
-**A version issued twice is not the store's to catch.** The compiled tree is the ledger, and `retectl issue-bundle` refusing an uncommitted tree is what keeps a number from being handed out twice. A set arriving at the version already held is content the store holds already as far as it can tell, so it writes nothing and says so.
+**A version issued twice is not the store's to catch.** The compiled tree is the ledger, and `retectl issue-bundle` refusing an uncommitted tree is what keeps a number from being handed out twice. A set arriving at the version already held is, as far as the store can tell, the content it holds, and it is written like any other.
 
 ## Storing documents on files
 
@@ -172,12 +177,12 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 Recorded so that nothing above forecloses them. None is designed, and each names the property it needs from this design.
 
-- **A backend that is not a directory.** A store serving readers while it is written, keeping earlier sets, or holding a mark of its own, is a second backend rather than a richer file layout — a document database, most likely, where "write this set, serve that document" is the engine's problem rather than this design's. *Owed:* the calls stay what they are, and the mark stays a property of the store rather than of any file ([ART-A0-01](#decision-log), [ART-A0-02](#decision-log)).
-- **A supervisor that admits artifacts.** Where a supervisor receives a node's artifacts from a channel of its own, it writes them through the same call an enrollment uses, and its own checks are already the store's: the verification and the mark are what an intake would otherwise carry ([ART-A0-09](#decision-log), [ART-A0-10](#decision-log)). *Owed:* nothing on a node may need artifacts staged anywhere before they are admitted.
-- **A relay that serves artifacts it cannot parse.** A cache between the operator and a node stores documents byte for byte and serves them by key and by version. *Owed:* documents keep their producer's bytes, and a node's mark is readable without opening any member ([ART-A0-03](#decision-log)).
+- **A backend that is not a directory.** A store serving readers while it is written, keeping earlier sets, or holding a mark of its own, is a second backend rather than a richer file layout — a document database, most likely, where "write this set, serve that document" is the engine's problem rather than this design's. *Owed:* the calls stay what they are, and the mark stays the store's rather than any file's ([ART-A0-01](#decision-log), [ART-A0-02](#decision-log)).
+- **A supervisor that admits artifacts.** Where a supervisor receives a node's artifacts from a channel of its own, it writes them through the same call an enrollment uses, and its own checks are already the store's: the verification and the mark are what an intake would otherwise carry ([ART-A0-09](#decision-log), [ART-A0-15](#decision-log)). *Owed:* nothing on a node may need artifacts staged anywhere before they are admitted.
+- **A relay that serves artifacts it cannot parse.** A cache between the operator and a node stores documents byte for byte and serves them by key and by version. *Owed:* documents keep their producer's bytes, and a set's version is the stamp each member carries, readable from any one of them ([ART-A0-03](#decision-log), [ART-A0-15](#decision-log)).
 - **Artifacts that arrive one at a time.** A stream of decisions for one workload has no set to be coherent with: each document carries its own version and replaces its predecessor. *Owed:* the key already carries the plane, so a second plane needs a write of its own and no new vocabulary ([ART-A0-06](#decision-log)).
 - **Access narrowed per process.** Every process that can open a handle can read every document in that store, as it can read every key in the identity store. A custodian standing behind the same calls could hand each workload only what is addressed to it. *Owed:* consumers read by key and never list, so there is a single read to narrow ([ART-A0-12](#decision-log)).
-- **A compiled tree kept out of git.** Artifacts are deterministic from the source, so what a clone must carry is the ladder rather than the tree. *Owed:* the mark is a store read rather than a property of a committed file, and each plane is a separable tree ([ART-A0-13](#decision-log)).
+- **A compiled tree kept out of git.** Artifacts are deterministic from the source, but the ledger is not: a version moves only when content changes, so a clone must carry, per set, its version and enough to tell whether its content or its signer changed — the tree itself, or a record of versions, content digests and signers. The same holds for any plane whose ladder `compile` keeps. *Owed:* the ladder is read from the sets the store holds, so such a record could stand in for the tree, and each plane is a separable tree ([ART-A0-04](#decision-log), [ART-A0-13](#decision-log)).
 
 ## Decision Log
 
@@ -186,7 +191,7 @@ Entries are grouped by what a change would touch.
 ### The store
 
 **ART-A0-01. Promise no more than a directory of files written by one process at a time.**
-The store's guarantees about storage are what such a directory gives by itself: each file whole or absent, a set converging when its writer re-runs, nothing read while it is written, no history beyond what is on disk, reads by key. The bound covers storage only; what replace checks (ART-A0-08, ART-A0-09, ART-A0-10) is a rule about content, and not bounded by it.
+The store's guarantees about storage are what such a directory gives by itself: each file whole or absent, a set converging when its writer re-runs, nothing read while it is written, no history beyond what is on disk, reads by key. The bound covers storage only; what a write checks (ART-A0-08, ART-A0-09, ART-A0-15) is a rule about content, and not bounded by it.
 *Because* a bound that names the medium drops a mechanism the moment it is proposed — concurrent readers, an atomic switch across files, a journal, retained sets, a mark kept apart, queries beyond a key — with no argument needed.
 *Accepting* that a user needing any of those needs another backend, not a stronger file backend.
 *Rejected* a git working tree as the reference, which fits the operator's instance only and holds one writer by convention; a tar extracted into place, which says nothing of reads; the identity store, the same bound borrowed from a component a reader may not know; no bound beyond admission, which bounds nothing.
@@ -199,19 +204,21 @@ The store is linked into each user, with no process, socket or daemon. It is two
 *Revisit* when a backend other than files is needed.
 *Rejected* a process of its own, which A0 cannot run; one module fusing rules with files, which a second backend would have to take apart; a backend interface with one implementation.
 
-**ART-A0-03. Speak documents: fixed bytes with a parsed envelope, and a payload typed by the caller.**
-A document is an artifact's bytes, fixed when its producer signs and serialises it and never re-serialised after, with its envelope parsed beside them. It hands its payload out as the type its caller names, gating that family's version. Payload models are modules of their own, one per family, shared by that family's producer and consumer; the store depends on none of them.
+**ART-A0-03. Speak documents: fixed bytes with a parsed envelope, and a payload handed out raw or typed by the caller.**
+A document is an artifact's bytes, fixed when its producer signs and serialises it and never re-serialised after, with its envelope parsed beside them. It hands its payload out raw, or as the type its caller names, gating that family's version. Payload models are modules of their own, one per family, shared by that family's producer and consumer; the store depends on none of them.
 *Because* a signature covers a canonical form and a compiled tree is reviewed as a diff, so the bytes a producer wrote are the bytes every later party holds.
 *Because* the envelope checks need one shared home, while a payload is parsed only by the party that consumes it — the one component that may parse a family is that family's consumer.
+*Because* a raw payload is payload-blind: it lets a party compare payloads, as the version ledger does, without parsing one.
 *Rejected* opaque blobs, which push every envelope check back to each caller; a store that parses payloads, which makes it enumerate every family; a parsed value re-serialised on write, which breaks the signature and the diff.
 
 ### Users and keys
 
 **ART-A0-04. Route every A0 user through one store, with two instances.**
-`retectl compile` writes every node's set and reads each node's mark as its version ladder; `retectl issue-bundle` reads one node's set; `flor enroll` replaces its scope's set; `flor-vertex` reads its own document. The compiled tree is one instance, holding every node's set and committed to git; a scope is the other, holding its own node's set. Both use the same file backend and layout.
+`retectl compile` reads each node's set as its version ladder and rebuilds the store; `retectl issue-bundle` reads one node's set; `flor enroll` replaces its scope's set; `flor-vertex` reads its own document. The compiled tree is one instance, holding every node's set and committed to git; a scope is the other, holding its own node's set. Both use the same file backend and layout.
 *Because* a tree and a scope differ only in how many nodes they hold, and every place that knows where an artifact lives or what admits one is then one module — `issue-bundle` included, which otherwise reads back `compile`'s layout by its own path code.
-*Accepting* that the scope's layout is fixed by the compiled tree's, which is a format people review.
-*Rejected* the store on the node alone, which leaves the operator's tree to path arithmetic; the document layer everywhere with sets on the node only, the same defect one layer up; a separate backend per instance from the start, a divergence nothing in A0 needs.
+*Because* the version ledger is the producer's, and the store only holds and admits: a store that versioned and signed would verify signatures it had just made, which leaves the operator's instance no party independent of the producer.
+*Accepting* that the scope's layout is fixed by the compiled tree's, which is a format people review; and that two modules reason about versions — `compile` decides them, and the store refuses an older one.
+*Rejected* the store owning the ledger — comparing, versioning, signing — which makes its own admission circular, hands the signer's key to a library that runs on every node, and makes the store the envelope's producer; a store query answering the ledger's question, which only `compile` asks and a set read already answers; the store on the node alone, which leaves the operator's tree to path arithmetic; the document layer everywhere with sets on the node only, the same defect one layer up; a separate backend per instance from the start, a divergence nothing in A0 needs.
 
 **ART-A0-05. Give every user a handle on the whole store, opened with the scope's identity.**
 Producers and consumers alike open a handle; no path leaves the store. A consumer sees the whole store and reads one document at a time. A handle is opened with a trust domain, the anchors, and a node where the store belongs to one; its caller takes all of them from the identity store, on either side of the rete. The operator's handle differs in one thing only: it names no node. **What the handle names is what admission enforces**: a handle bound to a node admits that node's documents alone, and a handle bound to none admits every node's, grouping each by the node its own address carries.
@@ -231,38 +238,42 @@ The envelope names its destination in one claim, `workload`, holding a node-scop
 ### Writes and admission
 
 **ART-A0-07. Write whole sets, and remove what a write was not given.**
-A set is one node's mgmt documents at one version, with at least one member. There are two writes: replacing a node's set, and replacing every set. Afterwards the store holds exactly what it was given: a member missing from a node's set is removed, and so, in the second write, is a node missing from every set. An admitted replace reports the members it wrote and removed. Reads besides a document are one node's set and one node's mark.
+A set is one node's mgmt documents at one version, with at least one member. There are two writes: **replace a set**, one node's, and **rebuild the store**, every set at once. Afterwards the store holds exactly what it was given: a member missing from a node's set is removed, and so, in a rebuild, is a node missing from every set. An admitted write reports the version held before and the version admitted. Besides a document, a read offers one node's set.
 *Because* a node's set is the statement of what runs on it, so a write that left members behind would keep a renamed or removed vertex's artifact for the vertex to find.
 *Because* the compiled tree must hold exactly what the source names, and the rule stated once in the store serves both sizes.
 *Because* an empty set carries no version, and would erase the mark.
 *Accepting* a whole-store write only the operator's instance uses; and that removing every artifact from a node is not a write.
 *Rejected* additive writes, which leave stale members for the vertex to find; readers filtering stale members by version, which re-implements one delete in every reader; per-node writes with the caller computing removals; document-level writes with sets as the caller's convention, which hands the set's rule to every caller.
 
-**ART-A0-08. Check placement at replace, and check the whole batch before writing any of it.**
-Replace gates each envelope's `schema_version`, then checks that each workload parses as a node-scoped workload ID whose trust domain is the handle's, that its node is the handle's where the handle names one and otherwise the set the document joins, that the plane is the write's, that no two members share a key, and that one version runs through each set. Replace is two steps: a check that writes nothing, then the write; the caller records its run between them.
+**ART-A0-08. Check placement at every write, and check the whole batch before writing any of it.**
+A write gates each envelope's `schema_version`, then checks that each workload parses as a node-scoped workload ID whose trust domain is the handle's, that its node is the handle's where the handle names one and otherwise the set the document joins, that the plane is the write's, that no two members share a key, and that one version runs through each set. A write is two steps: a check that writes nothing, then the write; the caller records its run between them.
 *Because* the store is where an envelope becomes a place, so each fact that decides placement is checked where it is used, and a bundle cut for another node never lands on a scope.
 *Because* a store belonging to no node has no destination to enforce: a document's own address is what sorts it, and what is left to check is that it parses, that it belongs to this rete, and that the set it joins is coherent.
 *Because* enroll refuses before its receipt claims a run, and writes the identity store and the artifact store together, the identity store's import having the same two steps ([ID-C0-31](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)).
 *Accepting* that an admitted batch is valid only under the lock it was checked under.
 *Rejected* a node check and a path-component check alone, which let a malformed name reach a path; comparing the trust domain read out of an unverified signer certificate, a check that looks like authority and carries none; one call validating internally, which makes enroll write its receipt before it knows; a dry-run flag, which runs the checks twice.
 
-**ART-A0-09. Verify signatures at replace, and nowhere else.**
-Replace validates each signer's certificate against the handle's anchors as of now, checks its kind against the plane, then checks the signature. Every writer passes this check, and no read repeats it.
-*Because* replace is where every document enters a store, so admission is one call for every writer, and a producer's signing is checked before its output is committed.
+**ART-A0-09. Verify signatures at every write, and nowhere else.**
+A write validates each signer's certificate against the handle's anchors as of now, checks its kind against the plane, then checks the signature. Every writer passes this check, and no read repeats it.
+*Because* a write is where every document enters a store, so admission is one call for every writer, and a producer's signing is checked before its output is committed.
 *Because* a read that verified would re-authorise at every start, and an expired signer would then stop a node that restarted ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 *Accepting* that on a fresh enrollment the anchors arrive in the same bundle, so there the check shows only that the documents will work — a wrong signer or a corrupted envelope — and proves nothing against whoever altered the bundle; on a re-enrollment it checks authority against the pinned anchors.
-*Rejected* verifying nowhere on a node; verification as a replace option, off for `compile`, which skips it for the writer where signing starts; verifying at read.
+*Accepting* that the check depends on `compile`'s ledger re-signing whatever a rotated signer signed; without that, a signer's expiry would refuse every later rebuild, re-key and late enrollment.
+*Rejected* verifying nowhere on a node; verification as a write option, off for `compile`, which skips it for the writer where signing starts; the validity window skipped on the operator's instance, one rule per instance; the window measured against the document's own time, which lets the holder of an expired key choose its validity; verifying at read.
 
-**ART-A0-10. Refuse a set older than the mark, and write only what is older or missing.**
-The mark is the highest version the store admitted, per node. Replace refuses a batch older than it. Otherwise each member is written when its held copy is older or absent and kept when it is at the batch's version, so a replace at the held version writes nothing. Nothing overrides a refusal. On files the mark is the highest version stamped on a member present, with no record of its own.
+**ART-A0-10.** *Superseded by [ART-A0-15](#decision-log).*
+
+**ART-A0-15. Refuse a set older than the mark, write every other set whole, and number content rather than envelopes.**
+The mark is the highest version the store admitted, per node. A write refuses a set older than it and writes any other whole, an equal version included. A version numbers a set's content — its members' payloads and its membership — so a new signature over the same content keeps its version. Nothing overrides a refusal. On files the mark is the highest version stamped on a member present, with no record of its own.
 *Because* a stale bundle enrolled after a newer one would otherwise roll its node back, a revocation included, and the way past a refusal is always a newer set.
-*Because* per-member writing makes a re-key — the same compiled set at the same version — and a re-run after an interrupted replace the same operation, with no branch for either.
+*Because* with versions numbering content, two sets at one version differ only in their signature, so writing the newer delivery can only bring in a fresher one — which is how a re-signed set reaches the compiled tree and, at its next re-key, a node — and a re-run after an interrupted write needs no branch of its own.
+*Because* equal versions then mean unchanged content, so a caller learns "unchanged" from the versions a write reports, and the store compares no bytes.
 *Because* a version issued twice is a fault of the ledger, which the commit gate on `issue-bundle` guards ([ENRL-C0-35](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)), not of the store.
-*Accepting* that a version reissued with different content writes nothing, and is reported as unchanged rather than refused; and that a node whose compiled tree is lost for good is re-enrolled only once the tree is restored, or its scope root is removed by hand.
-*Rejected* accepting a rollback; a warning, which lands after the harm; an override, which has no case a newer set does not cover; comparing bytes at an equal version, a fork check for the ledger's fault; freshness left to each caller, which splits admission in two.
+*Accepting* that one version can exist under several signatures, a node keeping the one it admitted until it is re-enrolled; that a version reissued with different content overwrites what a node holds; and that a node whose compiled tree is lost for good is re-enrolled only once the tree is restored, or its scope root is removed by hand.
+*Rejected* accepting a rollback; a warning, which lands after the harm; an override, which has no case a newer set does not cover; keeping the held copy at an equal version, which strands a re-signed set outside the tree; one equal-version rule per write, two rules where one serves; a version bumped by a re-signature, which makes every rotation a fleet-wide change; comparing bytes at an equal version, a fork check for the ledger's fault; freshness left to each caller, which splits admission in two.
 
 **ART-A0-11. Write each file by rename, with no journal and no lock of the store's own.**
-A member is written whole by one rename; after the writes, a pass removes what the batch did not name. Members at different versions mark an interrupted replace, which the caller's record of its run says, and re-running the batch completes it. The store takes no lock: a node-side caller holds its scope's lock across a check and its write, and the vertex holds it for its life.
+A member is written whole by one rename; after the writes, a pass removes what the batch did not name. Members at different versions mark an interrupted write, which the caller's record of its run says, and re-running the batch completes it. The store takes no lock: a node-side caller holds its scope's lock across a check and its write, and the vertex holds it for its life.
 *Because* nothing reads a scope mid-write and nothing starts on an interrupted one, so an interruption needs only convergence — the identity store's rule ([ID-C0-32](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)) applied to documents.
 *Because* the scope lock already excludes every reader and writer on a node, and guards both stores together, which a lock inside either could not.
 *Accepting* that the operator's instance has one writer by convention, one operator machine and git.
@@ -286,7 +297,7 @@ On both instances: `<compiled tree>/mgmt/<node>/<name>.json`, and `<scope root>/
 *Rejected* node first, which groups a node's planes that no operation touches together; dropping the node segment on a scope, two layouts for one backend.
 
 **ART-A0-14. Keep the bundle a container of Enrollment's, outside the store.**
-Enroll hands replace the documents it extracted; the store receives documents and knows no bundle entry. Enrollment renders an entry's name from its envelope with one function, which names entries in `issue-bundle` and checks them in enroll.
+Enroll hands the store the documents it extracted; the store receives documents and knows no bundle entry. Enrollment renders an entry's name from its envelope with one function, which names entries in `issue-bundle` and checks them in enroll.
 *Because* the bundle is a wire format read across releases that skew, and the store's layout a repository format; sharing one would turn every layout change into a manifest version.
 *Because* the documents already carry their key, so an API taking labels beside them states one fact twice.
 *Rejected* the bundle as a backend of the store, which lets a library change alter a versioned container; the set's directory tarred as it lies, whose entry names become destinations; each tool spelling entry names itself, three owners for one spelling; labels passed to the store, a second copy of the envelope's claims.
