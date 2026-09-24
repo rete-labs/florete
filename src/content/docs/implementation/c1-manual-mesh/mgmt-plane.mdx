@@ -53,16 +53,16 @@ my-rete/
 ├── .gitignore                   # contains `.flor/compiled/ctrl/`
 └── .flor/
     └── compiled/                # committed (operator runs `retectl compile` then commits)
-        ├── alpha/
-        │   ├── mgmt/            # signed by operator; committed
+        ├── mgmt/                # signed by operator; committed
+        │   ├── alpha/
         │   │   ├── agent.json
-        │   │   └── vertices/
-        │   │       ├── hop-public.json   # link-vertex named "hop-public"
-        │   │       └── rete.json     # mesh-vertex named "rete"
-        │   └── ctrl/            # signed by CP key; gitignored
-        │       └── vertices/
-        │           └── rete.json
-        └── …
+        │   │   ├── hop-public.json   # link-vertex named "hop-public"
+        │   │   └── rete.json         # mesh-vertex named "rete"
+        │   └── …
+        └── ctrl/                # signed by CP key; gitignored
+            ├── alpha/
+            │   └── rete.json
+            └── …
 ```
 
 YAMLs in the repo are mgmt-source — they author bounds. The mgmt subtree is the compiled, signed projection of those bounds. The ctrl subtree alongside it is produced by the same `retectl compile` step in C1 (the ctrl producer becomes a CP service in B1+); it's gitignored because its lifecycle is "runtime state, not authoring artifact." See [Ctrl Plane](../ctrl-plane/) for what's inside `ctrl/`.
