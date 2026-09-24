@@ -9,9 +9,9 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 ## Using the store
 
-**Everything goes through a handle, and no path comes out of one.** A caller opens the store for one instance and asks it for documents; it never joins a path of its own, on either side of the rete. A handle is opened with a trust domain, the trust anchors and, where the store belongs to one node, that node — all read from the [identity store](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#the-identity-store) beside it. A scope's handle names its node; the operator's names none, that instance holding every node's artifacts.
+**Everything goes through a handle, and no path comes out of one.** A caller opens the store for one instance and asks it for documents; it never joins a path of its own, on either side of the rete. A handle is opened with a trust domain, the trust anchors and, where the store belongs to one node, that node — the values the scope's [identity store](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#the-identity-store) holds or, in the run that first establishes it, the values its check has just accepted. A scope's handle names its node, its identity store beside it in the scope root; the operator's names none, that instance holding every node's artifacts, and its identity store is the one in `retectl`'s own tree.
 
-**What the handle names is what a write is held to.** A handle bound to a node admits that node's documents and refuses any other, so a bundle cut for `beta` cannot land on `alpha`. A handle bound to none sorts each document by the node its own address carries, and what it checks is that the document parses, belongs to this rete, and joins a coherent set.
+**What the handle names is what a write is held to.** A handle bound to a node admits that node's documents and refuses any other, so a bundle carrying another node's artifact never lands. A handle bound to none sorts each document by the node its own address carries, and what it checks is that the document parses, belongs to this rete, and joins a coherent set.
 
 **An artifact is addressed to a workload, and that address is its key.** The envelope names one node-scoped workload — `spiffe://flor.demo/workload/alpha/hop` — and one plane, and the pair is how every caller asks for it. A node's **set** is its mgmt documents at one version, and the version numbers the set's content — its payloads and its membership — so a set signed again over the same content keeps its version. In A0 a set holds one document, its vertex's.
 
@@ -19,7 +19,7 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 **Two calls read.** A consumer asks for one document by its key and gets it back with its envelope parsed; the payload is handed over as the type the caller names, which nothing else parses, or raw. The other read is a node's whole set: `retectl issue-bundle` packs it, and `retectl compile` reads each node's as the ladder its next versions are built on ([Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile)). Deciding versions and signing are `compile`'s; the store compares nothing but versions.
 
-**A write is refused whole, before anything is written.** The store refuses a document whose envelope it cannot read, one addressed to another rete or another node, one whose signature does not check out, and a set older than the mark. Any of those refuses the batch it arrived in, leaving what the store holds untouched. A consumer's read refuses almost nothing: a document that is not there is reported absent, and the caller decides what that means, while a document stamped for a newer release than the one reading it is the same upgrade error a write would raise.
+**A write is refused whole, before anything is written.** The store refuses a document whose envelope it cannot read, one addressed to another rete or another node, one whose signature does not check out, and a set older than the mark. Any of those refuses the batch it arrived in, leaving what the store holds untouched. A consumer's read refuses little: a key naming another node than the handle's is refused, as a write would refuse it; a document of the handle's own node that is not there is reported absent, and the caller decides what that means; and a document stamped for a newer release than the one reading it is the same upgrade error a write would raise.
 
 ## Shape
 
@@ -57,6 +57,8 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
   handle      every user, producer or consumer, opens one; no path leaves it
               opened with a trust domain, the anchors and, on a scope, a node
+              — what the identity store holds, or what its check has just
+              accepted in the run that establishes it
               a handle naming a node admits that node's documents alone
               one naming none admits every node's, each grouped into its own
               set by the node its own address carries
@@ -101,9 +103,10 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
   read        one document by key
                 1  the key: the workload the caller names, and the plane (mgmt)
-                2  absent → reported
-                3  gate the envelope's schema_version
-                4  hand back the document; its payload is the caller's to
+                2  another node than the handle's → refused
+                3  absent → reported
+                4  gate the envelope's schema_version
+                5  hand back the document; its payload is the caller's to
                    parse and gate, or to take raw
               also offered: one node's set
 ```
@@ -137,6 +140,10 @@ If you write or read artifacts from a command or a workload, [Using the store](#
                 mark an interrupted write, and re-running the same batch
                 completes it
 
+  files         directories 0700 and files 0600, each created with its final
+                mode by the account that writes; a member is written to a
+                temporary file in its own directory, flushed, then renamed
+
   locking       the store takes no lock; a node-side caller holds the scope
                 lock across a check and its write, the vertex for its life
 
@@ -157,17 +164,21 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 ## Freshness
 
-**The store never goes backwards.** It keeps a **mark** per node, the highest version it has admitted, and refuses a set older than it. A bundle that has been overtaken — cut before a revocation and enrolled after it — is refused naming both versions, so a node cannot be rolled back by delivering stale material to it. Nothing overrides that refusal: the way past one is a newer set.
+**The store never goes backwards.** It keeps a **mark** per node, the highest version it has admitted, and refuses a set older than it. A bundle that has been overtaken — cut before a revocation and enrolled after it — is refused naming both versions, so a node cannot be rolled back by delivering stale material to it. Nothing overrides that refusal: the way past one is a newer set. A rollback is therefore a revert of the sources, compiled forward at a higher version; reverting the compiled tree along with them puts back versions the nodes have already passed, and every node refuses them.
 
 **Anything not older is written whole, an equal version included.** Two sets at one version carry the same content, so what an equal-version write can change is the signature, and writing it is how a re-signed set reaches the compiled tree and, at its next re-key, a node. Re-enrolling to re-key a node therefore rewrites its set and reports the same version before and after, which the caller reads as unchanged. A write that was interrupted leaves members at different versions, and re-running it completes it.
 
 **A version issued twice is not the store's to catch.** The compiled tree is the ledger, and `retectl issue-bundle` refusing an uncommitted tree is what keeps a number from being handed out twice. A set arriving at the version already held is, as far as the store can tell, the content it holds, and it is written like any other.
+
+**A node removed from the source takes its ladder with it.** A rebuild removes the node's set, and with it the only record of the versions it reached. Declared again later, it starts low, below the mark its host still holds, and its next enrollment is refused until that scope root is removed by hand.
 
 ## Storing documents on files
 
 **A store is a directory, and the design promises nothing a directory does not give.** Each file is written whole or not at all; a set converges when its writer re-runs; nothing reads a scope while it is being written; there is no history beyond what is on disk; and a read is a key. Anything more — readers during a write, a switch across several files at once, sets kept for rollback, a mark of its own — is a different backend's to offer, not a stronger file layout's.
 
 **Documents lie under their plane, then their node.** The operator's instance keeps `<compiled tree>/mgmt/<node>/<name>.json`, and a scope keeps `<scope root>/artifacts/mgmt/<node>/<name>.json`: the workload's own path below its kind, under the plane that authorised it. One directory is one node's set, which is what a write replaces and what `issue-bundle` reads.
+
+**Every directory is created `0700` and every file `0600`, each with its final mode, by the account that writes.** A member is first written to a temporary file in its own destination directory and flushed there, so the rename that puts it in place never crosses a filesystem, and a power cut leaves either the old file or the new one whole.
 
 **A member is written by one rename, and the pass that follows removes what the batch did not name.** The store keeps no journal: an interrupted write leaves members at different versions, which is what says the run did not finish, and the writer's own record — `flor enroll`'s receipt on a node, `git status` on the operator's machine — says whose run it was. Re-running the same batch completes it.
 
@@ -178,11 +189,11 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 Recorded so that nothing above forecloses them. None is designed, and each names the property it needs from this design.
 
 - **A backend that is not a directory.** A store serving readers while it is written, keeping earlier sets, or holding a mark of its own, is a second backend rather than a richer file layout — a document database, most likely, where "write this set, serve that document" is the engine's problem rather than this design's. *Owed:* the calls stay what they are, and the mark stays the store's rather than any file's ([ART-A0-01](#decision-log), [ART-A0-02](#decision-log)).
-- **A supervisor that admits artifacts.** Where a supervisor receives a node's artifacts from a channel of its own, it writes them through the same call an enrollment uses, and its own checks are already the store's: the verification and the mark are what an intake would otherwise carry ([ART-A0-09](#decision-log), [ART-A0-15](#decision-log)). *Owed:* nothing on a node may need artifacts staged anywhere before they are admitted.
-- **A relay that serves artifacts it cannot parse.** A cache between the operator and a node stores documents byte for byte and serves them by key and by version. *Owed:* documents keep their producer's bytes, and a set's version is the stamp each member carries, readable from any one of them ([ART-A0-03](#decision-log), [ART-A0-15](#decision-log)).
+- **A supervisor that admits artifacts.** Where a supervisor receives a node's artifacts from a channel of its own, it writes them through the same call an enrollment uses, and its own checks are already the store's: the verification and the mark are what an intake would otherwise carry ([ART-A0-09](#decision-log), [ART-A0-15](#decision-log)). *Owed:* nothing on a node may need artifacts staged anywhere before they are admitted; and a set arriving over a channel not trusted to deliver it whole carries a statement of its own membership inside what is signed — a root document naming its members, or a list of digests as a bundle's manifest has — since the store takes a set as given and cannot tell a withheld member from a removed one.
+- **A relay that serves artifacts it cannot parse.** A cache between the operator and a node stores documents byte for byte and serves them by key and by version. *Owed:* documents keep their producer's bytes, and a set's version is the stamp each member carries, readable from any one of them; and whatever a relay serves as a set carries its membership inside what is signed, as the supervisor sketch owes ([ART-A0-03](#decision-log), [ART-A0-15](#decision-log)).
 - **Artifacts that arrive one at a time.** A stream of decisions for one workload has no set to be coherent with: each document carries its own version and replaces its predecessor. *Owed:* the key already carries the plane, so a second plane needs a write of its own and no new vocabulary ([ART-A0-06](#decision-log)).
 - **Access narrowed per process.** Every process that can open a handle can read every document in that store, as it can read every key in the identity store. A custodian standing behind the same calls could hand each workload only what is addressed to it. *Owed:* consumers read by key and never list, so there is a single read to narrow ([ART-A0-12](#decision-log)).
-- **A compiled tree kept out of git.** Artifacts are deterministic from the source, but the ledger is not: a version moves only when content changes, so a clone must carry, per set, its version and enough to tell whether its content or its signer changed — the tree itself, or a record of versions, content digests and signers. The same holds for any plane whose ladder `compile` keeps. *Owed:* the ladder is read from the sets the store holds, so such a record could stand in for the tree, and each plane is a separable tree ([ART-A0-04](#decision-log), [ART-A0-13](#decision-log)).
+- **An issuance ledger apart from the source.** The source is authored state, branched and reverted at will; the ladder records what was issued and must never move back. One working tree holding both gives the ladder the source's life: a revert rewinds it, a removed node loses it, and a clone must carry the whole compiled tree to keep it. An append-only record of what each node was last issued — its version, a digest of its content, its signer — kept where a revert of the source cannot reach, lets `compile` compare its projection with what was issued rather than with the tree: a revert compiles forward, a node declared again continues its ladder, and the compiled tree becomes a regenerable output. The same holds for any plane whose ladder `compile` keeps, and a record of issued credentials is the same kind of thing. *Owed:* the ladder is read through the store, never from git or a path, so its source can change behind the same read; and the store compares a version only as not older ([ART-A0-04](#decision-log), [ART-A0-13](#decision-log), [ART-A0-15](#decision-log)).
 
 ## Decision Log
 
@@ -221,7 +232,7 @@ A document is an artifact's bytes, fixed when its producer signs and serialises 
 *Rejected* the store owning the ledger — comparing, versioning, signing — which makes its own admission circular, hands the signer's key to a library that runs on every node, and makes the store the envelope's producer; a store query answering the ledger's question, which only `compile` asks and a set read already answers; the store on the node alone, which leaves the operator's tree to path arithmetic; the document layer everywhere with sets on the node only, the same defect one layer up; a separate backend per instance from the start, a divergence nothing in A0 needs.
 
 **ART-A0-05. Give every user a handle on the whole store, opened with the scope's identity.**
-Producers and consumers alike open a handle; no path leaves the store. A consumer sees the whole store and reads one document at a time. A handle is opened with a trust domain, the anchors, and a node where the store belongs to one; its caller takes all of them from the identity store, on either side of the rete. The operator's handle differs in one thing only: it names no node. **What the handle names is what admission enforces**: a handle bound to a node admits that node's documents alone, and a handle bound to none admits every node's, grouping each by the node its own address carries.
+Producers and consumers alike open a handle; no path leaves the store. A consumer sees the whole store and reads one document at a time. A handle is opened with a trust domain, the anchors, and a node where the store belongs to one; its caller takes all of them from the identity store, on either side of the rete — the values it holds or, in the run that first establishes it, the values its check has just accepted. The operator's handle differs in naming no node. **What the handle names is what admission enforces**: a handle bound to a node admits that node's documents alone, and a handle bound to none admits every node's, grouping each by the node its own address carries.
 *Because* artifacts then reach a process as identity material does ([ID-C0-28](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)): asked for by key through a module that owns where it lives.
 *Because* every caller already opens the identity store for itself, so handing its values over keeps the two stores independent; the artifact store depends on identity's certificate checks, never on its store.
 *Accepting* that any process holding a handle can read every document on its node, as it can every key today — artifacts carry no secret; that a caller handing over a wrong node defeats the node check, as any check is bounded by its input; and that a store belonging to no node cannot check a destination, only its form and its rete.
@@ -265,27 +276,31 @@ A write validates each signer's certificate against the handle's anchors as of n
 
 **ART-A0-15. Refuse a set older than the mark, write every other set whole, and number content rather than envelopes.**
 The mark is the highest version the store admitted, per node. A write refuses a set older than it and writes any other whole, an equal version included. A version numbers a set's content — its members' payloads and its membership — so a new signature over the same content keeps its version. Nothing overrides a refusal. On files the mark is the highest version stamped on a member present, with no record of its own.
-*Because* a stale bundle enrolled after a newer one would otherwise roll its node back, a revocation included, and the way past a refusal is always a newer set.
+*Because* a stale bundle enrolled after a newer one would otherwise roll its node back, a revocation included, and the way past a refusal is always a newer set — a rollback being a revert of the sources compiled forward, never a revert of the compiled tree.
 *Because* with versions numbering content, two sets at one version differ only in their signature, so writing the newer delivery can only bring in a fresher one — which is how a re-signed set reaches the compiled tree and, at its next re-key, a node — and a re-run after an interrupted write needs no branch of its own.
 *Because* equal versions then mean unchanged content, so a caller learns "unchanged" from the versions a write reports, and the store compares no bytes.
 *Because* a version issued twice is a fault of the ledger, which the commit gate on `issue-bundle` guards ([ENRL-C0-35](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment#decision-log)), not of the store.
-*Accepting* that one version can exist under several signatures, a node keeping the one it admitted until it is re-enrolled; that a version reissued with different content overwrites what a node holds; and that a node whose compiled tree is lost for good is re-enrolled only once the tree is restored, or its scope root is removed by hand.
+*Accepting* that one version can exist under several signatures, a node keeping the one it admitted until it is re-enrolled; that a version reissued with different content overwrites what a node holds; that a node whose compiled tree is lost for good is re-enrolled only once the tree is restored, or its scope root is removed by hand; and that a node removed from the source and declared again restarts its ladder below its host's mark, with the same remedy.
+*Revisit* when the version ladder is designed apart from the compiled tree.
 *Rejected* accepting a rollback; a warning, which lands after the harm; an override, which has no case a newer set does not cover; keeping the held copy at an equal version, which strands a re-signed set outside the tree; one equal-version rule per write, two rules where one serves; a version bumped by a re-signature, which makes every rotation a fleet-wide change; comparing bytes at an equal version, a fork check for the ledger's fault; freshness left to each caller, which splits admission in two.
 
 **ART-A0-11. Write each file by rename, with no journal and no lock of the store's own.**
-A member is written whole by one rename; after the writes, a pass removes what the batch did not name. Members at different versions mark an interrupted write, which the caller's record of its run says, and re-running the batch completes it. The store takes no lock: a node-side caller holds its scope's lock across a check and its write, and the vertex holds it for its life.
+A member is written to a temporary file in its own destination directory, flushed, and renamed into place; after the writes, a pass removes what the batch did not name. Every directory is created `0700` and every file `0600`, each with its final mode, by the account that writes. Members at different versions mark an interrupted write, which the caller's record of its run says, and re-running the batch completes it. The store takes no lock: a node-side caller holds its scope's lock across a check and its write, and the vertex holds it for its life.
 *Because* nothing reads a scope mid-write and nothing starts on an interrupted one, so an interruption needs only convergence — the identity store's rule ([ID-C0-32](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)) applied to documents.
 *Because* the scope lock already excludes every reader and writer on a node, and guards both stores together, which a lock inside either could not.
-*Accepting* that the operator's instance has one writer by convention, one operator machine and git.
-*Rejected* a staged directory swapped in, whose recovery logic serves a live reader A0 does not have; a versioned directory behind a pointer, the same; the store taking the scope lock, which its owners hold across more than the store; a lock of its own, the scope lock's extent twice.
+*Because* a rename is atomic only within one filesystem, and a file renamed before it is flushed can survive a power cut empty, so a temporary file beside its destination, flushed first, is what makes each file whole or absent.
+*Because* the modes are the scope root's own rule, which the identity store also states for its files ([ID-C0-28](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#decision-log)), and a mode set at creation leaves no moment when a file is more open than it should be.
+*Accepting* that the operator's instance has one writer by convention, one operator machine and git; and that it takes the same modes, which git keeps no record of.
+*Rejected* the writer's umask, which makes a store's modes depend on whoever ran the write; a mode changed after creation, which leaves a window; a temporary file outside the destination directory, whose rename can become a copy; a staged directory swapped in, whose recovery logic serves a live reader A0 does not have; a versioned directory behind a pointer, the same; the store taking the scope lock, which its owners hold across more than the store; a lock of its own, the scope lock's extent twice.
 
 ### Reads
 
 **ART-A0-12. Read one document by the key its caller names, and gate its envelope again.**
-A consumer names the workload and the plane; a missing document is reported absent, and the caller decides what that means. The read gates the envelope's `schema_version` again and verifies nothing. No consumer lists keys.
+A consumer names the workload and the plane. On a handle bound to a node, a key naming another node is refused; a missing document of the handle's own node is reported absent, and the caller decides what that means. The read gates the envelope's `schema_version` again and verifies nothing. No consumer lists keys.
 *Because* the name reaches a consumer from outside the store, so its read is one key and nothing else, and access narrowed later has only single reads to narrow.
+*Because* a handle bound to a node deals in that node's documents alone, for reads as for writes, and a key naming another node is a caller's mistake rather than an absence — a vertex forms its key from the handle's own node.
 *Because* a binary older than the store's documents would otherwise meet an envelope minor it cannot read as a parse error indistinguishable from corruption; the gate is about parsing, not trust.
-*Rejected* finding the set's sole member, a listing for consumers; gating at replace only, which leaves the older-binary case to a strict parse error.
+*Rejected* finding the set's sole member, a listing for consumers; reporting another node's key as absent, which hides a caller's mistake as an ordinary outcome; gating at replace only, which leaves the older-binary case to a strict parse error.
 
 ### Layout and the bundle
 
