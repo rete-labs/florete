@@ -3,7 +3,8 @@
         "scope",
         "design",
         "installer",
-        "artifact-store"
+        "artifact-store",
+        "decomposition"
     ],
     "defaultOpen": true
 }

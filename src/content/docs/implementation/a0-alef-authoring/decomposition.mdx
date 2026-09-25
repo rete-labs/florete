@@ -1,0 +1,349 @@
+---
+title: Decomposition
+description: A0's units — the crates whose APIs humans author — and the integration generated around them
+---
+
+A0's code divides into eleven units — crates in `flor` whose public APIs humans author before either line implements them — and the integration generated around them in `flor-dist`. This page says which code is a unit, why, on which line each starts, and what binds the code that is not one; the rules it applies are [AI-First Development](/docs/contributing/workflows/ai-first-development)'s, and the behaviour it divides is A0's [Design](/docs/implementation/a0-alef-authoring/design), [Installer](/docs/implementation/a0-alef-authoring/installer) and [Artifact Store](/docs/implementation/a0-alef-authoring/artifact-store).
+
+If you are authoring a unit's API or implementing one, [Units](#units) is yours. If you generate integration, [Outside the units](#outside-the-units) says what binds it. If you are changing the decomposition, start at the [Shape](#shape) and the [Decision Log](#decision-log). How ready each unit's code is, and what its work is estimated at, lives in the tracker, not here.
+
+## Units
+
+| Unit | Owns | Line at A0 |
+|---|---|---|
+| `flor-identity` | names, certificate checks, issuance and signing, the import check | DD |
+| `flor-identity-store` | every file of the identity store | SD |
+| `flor-artifact` | signed documents: envelope, canonical form, signing, verification, admission checks | DD |
+| `flor-artifact-store` | the artifact store: handle, writes, reads, freshness mark, file backend | SD |
+| `flor-bundle` | the enrollment bundle: container, manifest, entries | SD |
+| `flor-logging` | the log sink, framing, line format and sanitising; the error report | DD |
+| `flor-vertex-config` | the vertex's configuration family, the ingress rules among it | DD |
+| `flor-vertex-authz` | the access check on every accepted connection | DD |
+| `flor-vertex-transport` | QUIC over one UDP socket, mTLS both ways, SNI registry, resolver | DD |
+| `flor-vertex-inbound-socks5` | a SOCKS5 listener per initiator | DD |
+| `flor-vertex-outbound-tcp` | admitted connections to their own targets' upstreams | DD |
+
+Each unit was judged on four ratings — fan-out, adversarial input, an irreversible failure or the repair path, and a contract read across releases ([DECOMP-A0-01](#decision-log)). The ratings advise; the line each unit starts on was weighed against its code today and the churn C0 and C1 bring. A DD unit may sit above SD ones: a unit depends on units whatever their line ([DECOMP-A0-03](#decision-log)). Every unit's API returns `error_stack` reports over its own `Error`, exposes no DI framework type, runs inside a tokio runtime without building one, and emits its events through `tracing` ([DECOMP-A0-15](#decision-log)).
+
+### `flor-identity`
+Names and the name rules, the certificate checks — chain, kind against plane, validity as of now — and the authorities' operations: minting a rete, minting a signer, issuing a node's principals, signing. It holds key material as opaque types that read and write themselves through a handle the caller opens, so no authority key crosses its API; the one key it hands out is a new TLS principal's, for the bundle. Its import check, the pin included, returns the evidence the store's write requires. Every executable uses it, and the pin and the root's custody are failures no release can take back. DD; it depends on nothing of ours.
+
+### `flor-identity-store`
+Every file of the identity store, the authorities' included: layout, modes, writes by rename, reads by SPIFFE ID. It writes only what identity's check admitted, and reads through identity's per-principal checks. SD — new code whose checks are identity's. Its layout is pinned by fixtures.
+
+### `flor-artifact`
+Signed documents: the envelope and its schema gate, the canonical form and signature block of any signed JSON — the envelope and the bundle manifest alike — signing through identity, verification, and the admission checks for placement, signature and freshness. Every executable reads documents, and verification decides what a node runs. DD. Its envelope and signature form are fixtures read across releases.
+
+### `flor-artifact-store`
+The artifact store over its file backend: the handle, the two writes and two reads, the freshness mark, the plane-first layout. It writes only sets `flor-artifact` admitted. SD — the largest new A0 piece, its security held by the checks it must call ([DECOMP-A0-04](#decision-log)). The compiled tree's layout and the scope's are its fixtures.
+
+### `flor-bundle`
+The container, the manifest, the entry names, digests and refusals, the schema-version check. It has no crypto of its own: the manifest is signed and verified through `flor-artifact`, and opening a bundle takes the scope's identity state, so whether it is verified follows from the anchors the scope holds. It is a unit because it is A0's only channel and a format that `retectl` and `flor` read on different releases. SD, pinned by golden bundles across releases, its refusals in the suite.
+
+### `flor-logging`
+What a process says: the log sink, the `flor-<workload>` framing, the line with its scope, sanitising, the exits on a bad destination, and the error report a command prints. DD, because sanitising stands between peer-supplied text and an operator's terminal. The line and the report are golden output.
+
+### `flor-vertex-config`
+The vertex configuration family — types, schema ladder, validation — which `retectl`'s compiler writes and the vertex reads. It alone makes the ingress rules, from an admitted document, and the access check takes nothing else. DD. Its format is a fixture.
+
+### `flor-vertex-authz`
+The access check: given a target, its ingress rules and an authenticated peer, admit or deny with a closed reason. Transport calls it on every accepted connection, and the outbound accepts only connections it admitted, so no transport — generated one day — can skip it. DD; it is also where A0 rehearses a substitution, its SD body generated first and swapped for DD's own before release.
+
+### `flor-vertex-transport`
+The transport endpoint: QUIC over one UDP socket, mTLS both ways, the SNI registry, the resolver from identity to address. DD, as its code stands. The TLS profile and the SNI labels are what peers on other releases meet.
+
+### `flor-vertex-inbound-socks5`
+A SOCKS5 listener per initiator, resolving `.rete` names to targets. DD, as its code stands; it moves to SD by reverse substitution when it needs substantial change ([DECOMP-A0-20](#decision-log)).
+
+### `flor-vertex-outbound-tcp`
+Delivers each admitted connection to its own target's upstream, taking its targets and upstreams from the vertex configuration as evidence. DD, as its code stands.
+
+## Outside the units
+
+Everything else in A0 is integration, generated in `flor-dist`, in packages named `flor-dist-*`: each executable's own logic — `retectl`, `flor`, `flor-vertex`; the rete source, the validator, and the compiler with its version ladder; enroll's run; activation; the state directory, scope roots, the scope lock and the receipt; and the systemd unit.
+
+Three things bind it. The corpus says what it does. Golden fixtures, held in `flor`, pin what it writes for others to read — the compiled tree, the scope root, the receipt and the lock, the unit's text, the CLIs' output. The suite checks its behaviour — the refusals, an interrupted enrollment converging, and the compiler's output against golden trees and a policy oracle that recomputes every ingress rule from the source ([DECOMP-A0-16](#decision-log)). Where integration relies on a DD check, it holds the check's evidence and passes it on, and cannot make it.
+
+## Evolution sketches
+
+Recorded so that nothing above forecloses them; each names what A0's boundaries owe.
+
+- **C0's agent** takes over the scope lock and the receipt. *Owed:* they are one protocol, generated today and contracted then if the agent goes DD.
+- **C0's coordinator** reads documents without a store. *Owed:* `flor-artifact` stands apart from `flor-artifact-store`.
+- **C0's counters and flood-safe Layer.** *Owed:* they split out of `flor-logging` as a unit of their own, SD first.
+- **C1's forwarding engine and connection manager** arrive as candidates of their own, the vertex's integration regenerated around them. *Owed:* transport's UDP socket moves behind the connection manager then, a change to one contract; FlorIO arrives as `flor-vertex-florio`.
+- **C1's ctrl plane** joins `flor-vertex-config`, one family across both planes. *Owed:* the family's churn may land beside it as a unit of its own, SD first.
+
+## Shape
+
+**STRUCTURE**
+
+```log
+  subject     A0's code as units — crates in flor whose public API a human
+              authors before either line implements it — and the
+              integration outside them, bound by the corpus, fixtures and
+              the suite
+
+  units       crate                        owns                         line
+              flor-identity                names and name rules;          DD
+                                           certificate checks; issuance
+                                           and signing over keys it holds
+                                           as opaque types; the import
+                                           check
+              flor-identity-store          every file of the identity     SD
+                                           store, the authorities'
+                                           included
+              flor-artifact                signed documents: the          DD
+                                           envelope, the canonical form,
+                                           signing, verification, the
+                                           admission checks
+              flor-artifact-store          the artifact store: handle,    SD
+                                           writes, reads, freshness mark,
+                                           file backend
+              flor-bundle                  the enrollment bundle:         SD
+                                           container, manifest, entries
+              flor-logging                 the log sink, framing, line    DD
+                                           format and sanitising; the
+                                           error report
+              flor-vertex-config           the vertex's configuration     DD
+                                           family, the ingress rules
+                                           among it
+              flor-vertex-authz            the access check: admit or     DD
+                                           deny by the target's rules
+              flor-vertex-transport        QUIC over one UDP socket,      DD
+                                           mTLS both ways, the SNI
+                                           registry, the resolver
+              flor-vertex-inbound-socks5   a SOCKS5 listener per          DD
+                                           initiator
+              flor-vertex-outbound-tcp     admitted connections to their  DD
+                                           own targets' upstreams
+
+  integration generated in flor-dist, bound by the corpus, fixtures and
+              the suite
+              each executable's own logic: retectl, flor, flor-vertex
+              the rete source, the validator, the compiler and its version ladder
+              enroll's run, activation
+              host: the state directory, scope roots, the lock, the
+              receipt
+              the systemd unit, its text a golden fixture
+
+  layers      edges point down only
+                1  flor-identity, flor-logging
+                2  flor-artifact
+                3  flor-vertex-config, flor-bundle, both stores
+                4  flor-vertex-authz
+                5  flor-vertex-transport
+                6  the two adapters
+              a data crate never depends on a lifecycle crate
+              only integration calls a store
+
+  contracts   unit APIs            the public-API diff
+              formats, layouts     golden fixtures generation reads — the
+              and text surfaces    envelope, the vertex config, the
+                                   bundle, both stores, receipt and lock,
+                                   the compiled tree, the systemd unit,
+                                   the log line, the error report
+              behaviour            the suite — refusals, convergence, the
+                                   compiler's golden trees and its policy
+                                   oracle
+```
+
+**FLOW**
+
+```log
+  runs        retectl compile       compiler → flor-vertex-config
+                                    validates → flor-artifact signs
+                                    through flor-identity →
+                                    flor-artifact-store rebuilds
+              retectl issue-bundle  flor-artifact-store reads the set →
+                                    flor-identity issues the principals →
+                                    flor-bundle packs and signs the
+                                    manifest
+              flor enroll           flor-bundle opens with the scope's
+                                    identity state → flor-identity's import
+                                    check → flor-artifact's admission
+                                    check → both stores write what was
+                                    admitted
+              flor-vertex           both stores read → flor-vertex-config
+                                    yields the rules as evidence →
+                                    transport, the access check, the adapters
+
+  lines       flor-vertex-authz     SD body first, DD's own beside it,
+                                    swapped by the fixed sequence before
+                                    A0 ships
+              churn reaching a      reverse substitution: SD implements
+              DD unit               the new contract, DD catches up after
+                                    the release
+```
+
+**RULES**
+
+```log
+  ratings     fan-out; adversarial input, counted on the path;
+              irreversible or repair path; contract across releases —
+              strong, some or none, never summed, and advice only
+
+  granularity crates split where lines, consumers or directions differ;
+              otherwise a few large crates
+
+  closure     a unit depends on units and on declared third-party crates;
+              flor holds the units, the fixtures pinning external
+              contracts, and the conformance suite with its defect
+              ledger — nothing else
+
+  evidence    a DD check a generated caller relies on returns a type only
+              it can make, and the contract that caller satisfies takes
+              that type
+
+  fixtures    a format or a text surface is pinned by golden fixtures
+              generation reads; a unit is drawn where an API surface is
+
+  conventions errors as error_stack reports over the crate's own Error;
+              no DI framework type in a unit's API; a unit runs inside a
+              tokio runtime and never builds one; events through tracing,
+              checked as behaviour
+
+  names       flor-<concern> when shared; flor-vertex-<part> for a
+              vertex's parts, direction before protocol where the kind has
+              one; flor-dist-<name> for integration
+```
+
+## Decision Log
+
+Entries are grouped by what a change would touch.
+
+### How candidates are judged
+
+**DECOMP-A0-01. Rate every candidate on four dimensions, and let the ratings advise.**
+Fan-out (AIFIRST-06); adversarial input, counting code that sets what a check admits unless reviewed output stands after it; irreversible or repair path (AIFIRST-07's second question, read in full); contract across releases — a format another release or party reads. Each is rated strong, some or none, never summed. Which candidates become units, and on which line, is a human call weighed from the ratings.
+*Because* a security-only reading scored the bundle at nothing, though re-enrollment is A0's only channel and its format crosses releases that skew; the contract dimension is AIFIRST-04's subject applied to code, since fixtures hold a format only for the inputs they cover.
+*Accepting* that AIFIRST-07 reads as binding — "authored on DD from the start" — and owes an amendment to match.
+*Rejected* the security-only reading, which missed the bundle; one combined score, which reads as a mandate.
+
+**DECOMP-A0-02. Split crates only where lines, consumers or directions differ.**
+Concerns share a crate unless they start on different lines, serve different consumer sets, or would point the graph both ways; otherwise the doctrine's few large crates hold.
+*Because* a unit is swapped whole and supplied by one line, so a crate mixing DD and SD code could be supplied by neither.
+*Accepting* that a line flipped later may split or merge crates.
+*Rejected* a crate per concern, API authoring for boundaries nothing crosses; a crate per line and side, which mixes units starting on different lines.
+
+**DECOMP-A0-03. Close the unit graph, and layer it.**
+A unit depends only on units and on third-party crates a human declared; `flor` holds the units, the fixtures pinning external contracts, and the conformance suite with its defect ledger. Edges point down the layers of the Shape; a data crate never depends on a lifecycle crate; only integration calls a store, and units take what the stores yield as values.
+*Because* one protocol wants one implementation in a build, and every crate `flor-dist` resolves from `flor` should be one the graph invariant covers (ADR-0016). The stores serve executables, opening files under roots the executable chose; their API is no building block for libraries.
+*Accepting* that a DD unit's reach enlarges the inventory.
+*Rejected* private copies in a DD unit, two implementations of one on-disk protocol; DD-internal crates outside the invariant, which duplicate silently; layering discovered unit by unit.
+
+**DECOMP-A0-04. Keep a DD check in force under a generated caller with evidence types.**
+A DD check returns a type only it can construct — an admitted set, a checked import, the ingress rules — and the contract a generated unit or integration satisfies takes that type where it writes or applies.
+*Because* an omission in generated code then fails to compile instead of passing every test (AIFIRST-15), for the cost of the contract's shape, which a human authors anyway.
+*Accepting* that it proves the check ran, not that it ran on true inputs: a mark or a pin misread by generated code still reaches it, and that residue is the suite's. A contract form AIFIRST-05 does not list yet.
+*Rejected* trusting the caller and the suite; moving the check into generated code.
+
+**DECOMP-A0-05. Pin formats with fixtures, and draw units where an API surface is.**
+A format, a layout or a text surface is contracted by golden fixtures held in `flor` with the other contracts (AIFIRST-26), read by generation and checked in the CI gate (AIFIRST-05); behaviour by the suite. A unit is drawn for an API between components, not to hold a file.
+*Because* a fixture is the text a reviewer would read, and a unit costs an API authored by the scarce resource.
+*Accepting* that fixtures reach only the cases they hold; AIFIRST-05 says this too briefly and owes emphasis.
+
+### Identity and artifacts
+
+**DECOMP-A0-06. Split identity: `flor-identity` DD, `flor-identity-store` SD — the store owning every file, identity every key.**
+`flor-identity` holds names and name rules, certificate checks, issuance and signing, and the import check with its pin; it holds key material as opaque types that read and write themselves through a handle the caller opens. `flor-identity-store` holds every file of the store, the authorities' included — its layout, modes and writes — writing only what the check admitted. Minting a rete, minting a signer, issuing a node's principals and signing are operations; the one key handed out is a new TLS principal's, as bundle material.
+*Because* the store is new code while the security-critical parts exist or are small, and files are the store's concern: key bytes streamed between identity's types and a file handle the store opened keep custody in the DD crate without identity touching the file system.
+*Accepting* that the generated store chooses the handle a key is written to, so a key sent to the wrong file is caught only by the suite and the audit; and that for principals' keys read from disk, keeping them out of logs rests on the key types' redacting output and the suite.
+*Rejected* one DD crate, which puts the store's new code on DD; identity writing its own key files, which splits the store's layout across two crates; authority keys as byte values, custody by discipline.
+
+**DECOMP-A0-07. Split artifact: `flor-artifact` DD, `flor-artifact-store` SD, and signatures at the bytes.**
+`flor-artifact` holds the envelope, the canonical form and signature block of any signed JSON — the envelope and the bundle manifest alike — signing and verification, and the admission checks; identity holds certificate checks, the key-type-to-scheme table and signing bytes. `flor-artifact-store` holds the handle, the writes and reads, the mark and the file backend.
+*Because* the store is the largest new A0 piece and can start on SD while signatures stay DD, and C0's relay reads documents without a store.
+*Accepting* that the store's placement, signature and rollback refusal are held by DD checks it must call (DECOMP-A0-04).
+*Rejected* one unit on one line; signatures wholly in identity, which would parse JSON documents; wholly in artifact, apart from the certificates they judge.
+
+**DECOMP-A0-08. Keep the vertex's configuration a unit, `flor-vertex-config`, holding the ingress rules.**
+The vertex configuration family — types, schema ladder, validation — shared by the compiler and the vertex, with the ingress rules as evidence only it makes from an admitted document. DD.
+*Because* payload models sit outside the documents layer, one per family (ART-A0-03), and evidence minted by generated code would prove nothing.
+*Accepting* that C1's ctrl payload and join rules churn here, and may land beside it as a unit of their own.
+*Rejected* inside `flor-artifact`, as ADR-0012's "one module" line has it; shared generated code; "payload" in the name, which needs the envelope's context.
+
+**DECOMP-A0-09. Contract the bundle, and generate it.**
+`flor-bundle` holds the container, the manifest, entry names, digests, the refusals and the schema-version check, with no crypto of its own; opening takes the scope's identity state, so whether a bundle is verified follows from the anchors held. SD at A0, pinned by golden bundles across releases, its refusals in the suite.
+*Because* it is A0's only channel and a format read across skewed releases, so it is contracted whatever its line; its security is `flor-artifact`'s and identity's.
+*Accepting* that a regenerated bundle is safe only as far as its fixtures reach.
+*Rejected* verification code of its own; generated code held by fixtures alone; a container inside `flor-artifact`, which ART-A0-14 keeps apart.
+
+### The node
+
+**DECOMP-A0-10. Hold the access check in a unit of its own, `flor-vertex-authz`.**
+Given a target, its rules and an authenticated peer, it admits or denies with a closed reason; the transport calls it in its accept path, and the outbound accepts only connections it admitted. DD.
+*Because* the access check is AIFIRST-07's own case and the stable core, while transport is where C1's churn lands and may move to SD; evidence keeps a generated transport from skipping it.
+*Rejected* the check inside transport, which ties it to transport's line; in an adapter or the vertex's assembly, a check per path; SD at A0, for a check small enough to review; the name `flor-vertex-acl`, which reads as the rules rather than the check applying them — the rules are `flor-vertex-config`'s, and "access check" is the identity model's term for authorization (ID-C0-16).
+
+**DECOMP-A0-11. Keep the transport endpoint and both adapters DD, as the code stands.**
+`flor-vertex-transport`, `flor-vertex-inbound-socks5` and `flor-vertex-outbound-tcp` are units with their current code as DD bodies; the outbound takes its targets and upstreams as evidence and holds dispatch. Transport stays UDP-bound in A0.
+*Because* the code works and SD cannot reuse it except through a contract (AIFIRST-12); a unit needing substantial change moves to SD by reverse substitution.
+*Rejected* regenerating working code; the outbound's dispatch in generated code.
+
+**DECOMP-A0-12. Generate every executable's own logic, the vertex's and enroll's included.**
+`retectl`, `flor` and `flor-vertex` are integration in `flor-dist`; so are enroll's run and activation.
+*Because* the rules and the dispatch reach DD units as evidence, and every check enroll performs is a unit's, so nothing rated is left in the glue; and the vertex's glue is where C0 and C1 churn.
+*Accepting* that SD writes lifecycle code in A0, and that the repair path rests on the bundle's fixtures and the suite's convergence tests.
+*Rejected* `flor-vertex` as a binary-shaped DD unit, which rested on rules and dispatch sitting in its glue; enroll as a unit.
+
+**DECOMP-A0-13. Leave host and the systemd unit to generation, pinned by fixtures.**
+The mode, the state directory, scope handles and roots, the lock and the receipt are integration, their layout in fixtures and their refusals in the suite; the systemd unit's text is a golden fixture, reviewed when it changes.
+*Because* neither has an API surface worth a contract, and a fixture reviews the text systemd reads.
+*Accepting* that INST-A0-14's reviewed crate is amended to a fixture.
+*Rejected* `flor-host` as a unit; a reviewed crate for one substituted string.
+
+### Cross-cutting
+
+**DECOMP-A0-14. Keep logging a DD unit, with the error report inside it.**
+`flor-logging` holds the sink, the framing, the line format and sanitising, and renders the report a command prints; errors themselves follow the conventions (DECOMP-A0-15), with no error unit.
+*Because* sanitising stands between peer text and an operator's terminal, half the code exists, and the two ways a process speaks to its operator belong together.
+*Accepting* that C0's flood-safe Layer and counters may arrive on SD and split out.
+*Rejected* logging as fixtures alone; an error crate for a style (AIFIRST-08).
+
+**DECOMP-A0-15. Fix four conventions for every unit's API, and leave the rest to each unit.**
+Errors as `error_stack` reports over the crate's own `Error`; no DI framework type in a public API — the glue may use fundle or propose another crate, approved like any dependency; a unit runs inside a tokio runtime and never builds one; events through `tracing`, checked as behaviour.
+*Because* every API author meets these, and a framework type in a contract ties every regeneration to its releases.
+*Accepting* that ADR-0013 then scopes fundle to a crate's insides.
+
+### Outside the units
+
+**DECOMP-A0-16. Generate the compiler, and check its output with the suite's oracle.**
+The rete source, the validator, the compiler and its version ladder are integration. Golden compile fixtures pin source to compiled tree; a property test checks that every ingress row's allow set equals the expansion of the source's roles and groups; `flor-vertex-config` validates before signing.
+*Because* the compiler carries A0's heaviest churn, its contracts are external, and the operator — not an adversary — writes its input.
+*Accepting* that the ratings advise DD for it, the operator's diff not being evidence, and the suite's oracle is the compensating control.
+*Rejected* the compiler as a unit, by policy or by size.
+
+**DECOMP-A0-17. Retire the code no unit covers.**
+At the split, `flor` keeps what becomes units and drops the rest — the compiler, loader and validator, the vertex's assembly, home resolution, the CLI mains; git history keeps it, and generation is not pointed at it.
+*Because* `flor` holds units, fixtures and the suite, and pre-A0 code in reach invites imitation of shapes the design has left.
+*Rejected* keeping it as reference material; contracting it because it is ready.
+
+### Lines, names and what follows
+
+**DECOMP-A0-18. Start eight units on DD and three on SD, and rehearse one substitution.**
+DD: `flor-identity`, `flor-artifact`, `flor-logging`, `flor-vertex-config`, `flor-vertex-authz`, `flor-vertex-transport`, both adapters. SD: `flor-identity-store`, `flor-artifact-store`, `flor-bundle`. `flor-vertex-authz` also gets an SD body first, swapped for DD's own by the fixed sequence before A0 ships; the suite comparison of AIFIRST-28 runs on `flor-bundle`.
+*Because* the ratings, the existing code and the churn ahead were weighed per unit, and the rehearsal wants a small review surface.
+*Accepting* new DD code on A0's path: the access check, identity's import check and its opaque key types, artifact's signing and verification, logging's sink.
+*Rejected* a DD body adopted from SD's, since nothing flows out of SD except findings (AIFIRST-26).
+
+**DECOMP-A0-19. Name crates for the component they belong to.**
+`flor-<concern>` when shared; `flor-vertex-<part>` for a vertex's parts, direction before protocol where the kind fixes one; FlorIO, both ways and both north and south, as `flor-vertex-florio`; `flor-dist-<name>` for integration, the executable's name in its bin target. An SD body keeps its unit's name.
+*Because* a name should say what a crate is part of without context, and many crates read grouped.
+*Rejected* `flor-<unit>` throughout; `northbound-` or `bidir-` for FlorIO.
+
+**DECOMP-A0-20. Draw DD around stable cores, and move later churn by reverse substitution.**
+DD units sit where C0 and C1 expect little change; churn that reaches one anyway goes SD first — the assembly restores its patch entry, and DD catches up after the release.
+*Because* new work belongs on SD first, and the doctrine moves units only DD-ward.
+*Accepting* that a unit's review lapses for a milestone, which the release report names, and that reverse substitution needs a doctrine entry of its own.
+*Rejected* DD implementing every change to a DD unit.
+
+**DECOMP-A0-21. Record what later milestones need, and leave C0 its own page.**
+C0's agent takes over the lock and the receipt; its coordinator reads documents without a store; its flood-safe Layer splits from `flor-logging`. C1's forwarding engine and connection manager arrive as candidates of their own, the UDP socket moving behind the connection manager; FlorIO arrives as `flor-vertex-florio`; the ctrl plane joins `flor-vertex-config`.
+*Because* each is known now and cheap to state.
+*Rejected* pre-drawing C0's units here.
+
+**DECOMP-A0-22. Render the decomposition, never its readiness.**
+The page carries each unit — what it owns, its ratings with their judgement, its starting line, its dependencies, the contracts it owns — and what lies outside with what binds it, as a summary table and a section per unit. Readiness, churn and estimates stay in the working files and the tracker.
+*Because* the page states the design, and readiness goes stale with every merged pull request.
+*Rejected* the units alone; per-unit sections with no map.
