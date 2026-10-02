@@ -15,6 +15,7 @@
         "0013-use-fundle-di-framework",
         "0014-provision-log-sinks",
         "0015-anchor-signer-trust-in-root-ca",
-        "0016-restructure-for-two-line-development"
+        "0016-restructure-for-two-line-development",
+        "0017-leave-di-to-sd-line"
     ]
 }

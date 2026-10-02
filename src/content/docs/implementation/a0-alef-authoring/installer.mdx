@@ -88,9 +88,8 @@ systemctl --user try-restart 'flor@*'
                         for development, which runs without systemd
               none      no configuration file, no runtime root, no lib directory
 
-  knowledge   the unit's text and its directory belong to a reviewed crate; the
-              archive's name, the host map and the default bin directory belong
-              to the script
+  knowledge   the unit's text is maintained by a human; the archive's name,
+              the host map and the default bin directory belong to the script
 ```
 
 **FLOW**
@@ -208,7 +207,7 @@ A failed check writes nothing, and because the script's body is one function cal
 
 `deactivate` disables and stops the instance and, once no scope's instance is enabled or running, removes the unit and reloads. It then reports what it left: the state directory, holding every enrolled scope, and the executables, which it did not place and does not delete.
 
-**The unit is one template, in the directory systemd keeps for units installed into a home** ([INST-A0-09](#decision-log)). `flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`, below the user's own `~/.config/systemd/user/` in systemd's search path. An operator's drop-in, written by `systemctl --user edit flor@`, therefore overrides it and survives every refresh. The unit's `ExecStart` names `flor-vertex` by an absolute path: the one in the directory of the `flor` that ran `activate`. Its policy is `Restart=on-failure`, with exit `78` exempt. Its text is a file owned by a reviewed crate in `flor`, which the product reaches through that crate's API, with the vertex's path as its one substitution ([INST-A0-14](#decision-log)).
+**The unit is one template, in the directory systemd keeps for units installed into a home** ([INST-A0-09](#decision-log)). `flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`, below the user's own `~/.config/systemd/user/` in systemd's search path. An operator's drop-in, written by `systemctl --user edit flor@`, therefore overrides it and survives every refresh. The unit's `ExecStart` names `flor-vertex` by an absolute path: the one in the directory of the `flor` that ran `activate`. Its policy is `Restart=on-failure`, with exit `78` exempt. Its text is maintained by a human, with the vertex's path as its one substitution ([INST-A0-14](#decision-log)).
 
 **Lingering is pointed out, never changed** ([INST-A0-11](#decision-log)). A user-mode scope stops when its user's last session ends, and does not start at boot, unless lingering is enabled. `activate` reads the user's state and, where lingering is off, prints the `loginctl enable-linger` line and what it changes.
 
@@ -234,7 +233,7 @@ Entries are grouped by what a change would touch.
 
 **INST-A0-01. A channel owes only the executables, and A0's own channel gives no more.**
 What any channel must provide is the executables — what a plain tar or `cargo install` gives — placed wherever that channel places them; A0's archive keeps them together, and nothing requires another channel to. Everything else a node needs is a `flor` command, the same whichever channel placed the files, and it finds the executables by a rule that follows the channels A0 supports (INST-A0-09). A richer channel may automate beyond that — refresh a unit or restart scopes after an upgrade — so long as nothing in flor depends on it doing so. A0's channel stays at the floor: it writes no unit, starts or restarts nothing, and keeps no record.
-*Because* a floor every channel can meet keeps anything in the design from resting on a guarantee some channel cannot give, and puts the wiring once, in reviewed code.
+*Because* a floor every channel can meet keeps anything in the design from resting on a guarantee some channel cannot give, and puts the wiring in one place.
 *Because* automating an upgrade needs state — what was placed, which scopes were running — and a mechanism that survives an interrupted run, which is a package manager's logic re-implemented; A0's channel leaves that to the channels that already have it.
 *Accepting* that on A0's channel every install is followed by `flor activate`, and every upgrade by a restart that is the operator's (INST-A0-10).
 *Rejected* requiring every channel to wire a scope — a plain tar or `cargo install` could not meet it; A0's channel placing and wiring — the receipt, lock and record of active scopes that re-implement a package manager; binaries plus a unit file left beside them — someone still has to copy and enable it, so the wiring step is only split in two; requiring the executables to share a directory — a package that keeps daemons apart from what people type could not meet it.
@@ -287,7 +286,7 @@ The archive is `flor-v<version>-<os>-<arch>.tar.gz` — `linux-x86_64` in A0 —
 *Rejected* a host-level `flor install` that writes the template — it has nothing to write where a service manager has no templates, and is redundant where a package places the unit; a facade over start, stop, restart and status — code and a contract for what `systemctl` does; no command, the operator authoring the unit — a second author on every node; printing the unit for the operator to place — the same; enroll writing it — host material from a command that writes only rete material, and stale after any upgrade without an enroll; leaving activation to `systemctl --user enable --now` with no command of flor's — the unit still needs an author, and nothing extends to a service manager without templates; `flor service …` — *service* is a published rete service; `flor unit …` — systemd's word; `flor vertex activate` and names like it — they name the process, which changes while the scope's unit does not; `--purge` — an irreversible deletion inside a routine command; deleting its own binaries — it did not place them.
 
 **INST-A0-09. The unit is one template in the home's package directory, naming the vertex beside `flor`.**
-`flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`. Its `ExecStart` is the `flor-vertex` in the directory of the `flor` that ran `activate`, written as an absolute path, with `--scope %i`; its policy is `Restart=on-failure` and `RestartPreventExitStatus=78`. Its text is the one file a reviewed crate owns, with the path as its only substitution.
+`flor@.service` lives in `$XDG_DATA_HOME/systemd/user/`. Its `ExecStart` is the `flor-vertex` in the directory of the `flor` that ran `activate`, written as an absolute path, with `--scope %i`; its policy is `Restart=on-failure` and `RestartPreventExitStatus=78`. Its text is maintained by a human, with the path as its only substitution.
 *Because* that directory is systemd's place for units installed into a home, below the user's own configuration, so the operator's drop-ins survive every refresh. systemd resolves a bare `ExecStart` name only against a fixed system path, so the unit names an absolute one; resolving it beside `flor` is a rule that grows a lib directory and an override later without being replaced.
 *Accepting* that moving the binaries, or an upgrade that changes the unit, needs a re-activation; and that a host should use one bin directory, since one unit serves every scope and each activation points it at its own `flor`'s directory.
 *Revisit* when a channel places `flor` through a link into a versioned directory: the resolved path then names that version.
@@ -321,8 +320,8 @@ The state directory is `$XDG_STATE_HOME/flor/`, and `FLOR_STATE_HOME` moves it f
 *Revisit* when a host setting has no correct default.
 *Rejected* an optional `config.toml` — a documented surface for a value with a right default; one written by `activate` — a writer and an overwrite rule for the same; overrides for configuration, runtime and lib — no consumer; the XDG variables alone — they move every tool's state, not flor's.
 
-**INST-A0-14. The unit's text belongs to a reviewed crate; release facts belong to the script.**
-The template and the directory it goes in are owned by a crate in `flor` and reach the product through that crate's API, the template kept as a file in its source tree. The archive's name, the host map and the default bin directory live in `install.sh`, beside the workflow that builds the archives.
-*Because* a fact about the host belongs with the reviewed code that writes it, and nothing is built in `flor`, so an API is the only way it reaches the product ([ADR-0016](/docs/implementation/adr/0016-restructure-for-two-line-development)). A file is reviewable as the text systemd loads, and a later package generator can translate it rather than re-derive it.
-*Accepting* that what the API looks like is the decomposition's to shape.
-*Rejected* the template as a literal in code — not reviewable as the file systemd reads; in `flor-dist`'s packaging — a host fact on the generated side; a file read at run time — edits a refresh destroys.
+**INST-A0-14. The unit's text is maintained by a human; release facts belong to the script.**
+The unit's text is maintained by a human, the vertex's path its one substitution. The archive's name, the host map and the default bin directory live in `install.sh`, beside the workflow that builds the archives.
+*Because* the unit is the file of ours that systemd acts on — what runs, how it restarts, which exit stops it — and a mistake in it reaches every scope on the host, so a person reads each change to it.
+*Accepting* that every change to the unit's text waits for a person.
+*Rejected* a unit no person maintains — nobody would read what systemd runs.
