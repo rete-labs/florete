@@ -308,7 +308,7 @@ Where the user's lingering is off, `activate` prints the exact `loginctl enable-
 
 **INST-A0-12. One mode, the systemd user manager, and a bare command means it.**
 The mode chooses the service manager, the unit's directory and the state directory; where the binaries are chooses nothing. A0 has no mode selector, and neither `flor` nor the vertex takes a mode flag.
-*Because* a user/system split is the service manager's own, so naming the mode after it makes those three one choice; and a bare command's meaning is part of the CLI's contract from 1.0.0 ([AIFIRST-23](/docs/contributing/workflows/ai-first-development#decision-log)).
+*Because* a user/system split is the service manager's own, so naming the mode after it makes those three one choice; and a bare command's meaning is part of the CLI's contract from day one.
 *Accepting* that a command run as root acts on root's own user mode.
 *Revisit* when a second mode is added: how a command selects it, and how the daemon learns it — explicitly from its unit, since a system daemon running as an unprivileged user cannot infer it from privilege.
 *Rejected* a mode inferred from where the executable sits — two channels would treat one scope differently; systemd's convention of a bare command meaning system mode — a flag on every command for a mode A0 does not have; a `--system` that refuses — a flag promising what A0 does not ship.

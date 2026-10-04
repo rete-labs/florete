@@ -1,0 +1,61 @@
+---
+title: Releasing
+description: How a release is versioned, promoted and described
+---
+
+How a release is numbered, how a candidate becomes one, and what each release promises. The [Shape](#shape) gives the rules, and the [Decision Log](#decision-log) says why each is what it is.
+
+## Shape
+
+**STRUCTURE**
+
+```log
+  release     every executable at one version, built and released together
+              from flor-dist
+
+  versions    semver, verbatim from the first release, which is 1.0.0
+              builds before it carry 0.x and promise nothing
+              a milestone usually breaks compatibility, and so takes a major
+
+  candidate   X.Y.Z-rc.N: not a release, and carries no note
+```
+
+**FLOW**
+
+```log
+  release
+      candidate built and CI-green          X.Y.Z-rc.N
+      → the test environment approves       rebuilt at X.Y.Z, not re-tagged
+      → released, with its note
+```
+
+**RULES**
+
+```log
+  note        who the release is for, what it does and promises
+
+  promise     to everyone: a supported-version window, security advisories
+              to paying customers: a response time and a fix turnaround
+
+```
+
+## Decision Log
+
+Entries are grouped by what a change would touch.
+
+### Versions
+
+**RELEASE-01. Version by semver, verbatim from 1.0.0 at the first release; candidates carry `-rc.N`.**
+Builds before the first release carry `0.x` and no promise. From 1.0.0 semver applies verbatim, and a milestone usually breaks compatibility and so usually takes a major. A candidate is `X.Y.Z-rc.N`, promoted to `X.Y.Z` once the test environment approves it, by a rebuild at the release version; an `-rc` build is not a release and carries no note.
+*Because* below 1.0 there is no position for a breaking change, and the convention that fills that gap is the one Cargo already implements for `0.x`.
+*Because* pre-release identifiers sort correctly and are not selected without an explicit opt-in.
+*Accepting* that majors climb roughly one per milestone, which reads as instability because it is.
+*Revisit* a stable-versus-candidate channel, wherever releases reach users by something other than a semver resolver.
+*Rejected* letting milestones drive version numbers — releases are more frequent than milestones.
+
+### Notes and promises
+
+**RELEASE-02. Give every release a note naming its audience and its promise, and promise support, never what we neither control nor can measure.**
+Each release states who it is for, what it does and does not do, and what is promised. Early milestones are testbed and dogfooding artifacts and say so. All users get a supported-version window and security advisories. Paying customers get a response time and a fix turnaround. Nothing we neither control nor can measure is promised, and the note says what that leaves out.
+*Because* "release" implies usability and support, and a milestone that sells nothing must say so or the word does the lying.
+*Because* a promise over what we neither control nor can measure can be neither kept nor checked — availability, wherever the software runs on hardware and networks that are not ours.
