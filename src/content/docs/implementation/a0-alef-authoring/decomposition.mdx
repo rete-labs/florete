@@ -3,153 +3,86 @@ title: Decomposition
 description: A0's units — the crates whose APIs humans author — and the integration generated around them
 ---
 
-A0's code divides into eleven units — crates in `flor` whose public APIs humans author before either line implements them — and the integration generated around them in `flor-dist`. This page says which code is a unit, why, on which line each starts, what must hold across all of it, and what binds the code that is not a unit; the rules it applies are [AI-First Development](/docs/contributing/workflows/ai-first-development)'s, and the behaviour it divides is designed in A0's [Design](/docs/implementation/a0-alef-authoring/design), [Installer](/docs/implementation/a0-alef-authoring/installer) and [Artifact Store](/docs/implementation/a0-alef-authoring/artifact-store), and in C0's [Identity & Naming](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity) and [Enrollment](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment), which A0 builds on.
+A0's code divides into units — crates in `flor` whose public APIs humans author before either line implements them — and the integration generated around them in `flor-dist`, two SD crates among it. This page says which code is a unit, why, on which line A0 ships each, what must hold across all of it, and what binds the code that is not a unit; the rules it applies are [AI-First Development](/docs/contributing/workflows/ai-first-development)'s, and the behaviour it divides is designed in A0's [Design](/docs/implementation/a0-alef-authoring/design), [Installer](/docs/implementation/a0-alef-authoring/installer) and [Artifact Store](/docs/implementation/a0-alef-authoring/artifact-store), and in C0's [Identity & Naming](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity) and [Enrollment](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment), which A0 builds on.
 
-Everyone starts at the [Shape](#shape): it maps the units with the line each starts on, the integration around them, and the rules that hold across both, the obligations among them. If you are authoring a unit's API, the obligations it touches are yours to keep. If you are changing the decomposition, the [Decision Log](#decision-log) says why each part is as it is. If you are decomposing a later milestone, [Rating candidates](#rating-candidates) gives the form to rate its candidates in. How ready each unit's code is, and what its work is estimated at, lives in the tracker, not here.
+Everyone starts at the [Shape](#shape): it maps the units with the line A0 ships each on, the SD crates and the rest of the integration around them, and the rules that hold across both, the obligations among them. If you are authoring a unit's API, the obligations it touches are yours to keep, and how you keep each is recorded beside it. If you are confirming a unit's line or changing the decomposition, the [Decision Log](#decision-log) says why each part is as it is. How far each unit's code has come, and what its work is estimated at, live in the tracker, and which line supplies a unit now in `flor-dist`'s assembly — not here.
 
 ## Shape
 
 **STRUCTURE**
 
 ```log
-  subject     A0's code as units — crates in flor whose public API a human
-              authors before either line implements it — each starting on
-              a line; the integration outside them, bound by the corpus,
-              fixtures and the suite; and what must hold across both
+  subject     A0's code as units — crates in flor whose public API a human authors before either
+              line implements it — each on the line A0 ships it on; the integration outside them,
+              bound by the corpus and the suite; and what must hold across both
 
-  units       crate                        owns                         line
-              flor-identity                names and name rules;          DD
-                                           certificate checks; issuance
-                                           and signing; the import check
-              flor-identity-store          every file of the identity     SD
-                                           store, the authorities'
-                                           included
-              flor-artifact                signed documents: the          DD
-                                           envelope, the canonical form,
-                                           signing, verification, the
-                                           admission checks
-              flor-artifact-store          the artifact store over its    SD
-                                           file backend, the freshness
-                                           mark included
-              flor-bundle                  the enrollment bundle:         SD
-                                           container, manifest, entries,
-                                           the entry-name check
-              flor-logging                 the log sink, framing, line    DD
-                                           format and sanitising; the
-                                           error report
-              flor-vertex-config           the vertex's configuration     DD
-                                           family, the ingress rules
-                                           among it
-              flor-vertex-authz            the access check: admit or     DD
-                                           deny by the target's rules;
-                                           the egress filter, advisory
-              flor-vertex-transport        QUIC over one UDP socket,      DD
-                                           mTLS both ways, the SNI
-                                           registry, the resolver
-              flor-vertex-inbound-socks5   a SOCKS5 listener per          DD
-                                           initiator
-              flor-vertex-outbound-tcp     admitted connections to their  DD
-                                           own targets' upstreams
+  units       crate                       owns                                                line
+              flor-identity               names and name rules; certificate checks;           DD
+                                          issuance and signing; the import check
+              flor-identity-store         every file of the identity store, the               SD
+                                          authorities' included
+              flor-artifact               signed documents: the envelope, the canonical       DD
+                                          form, signing, verification, the admission checks
+              flor-artifact-store         the artifact store over its file backend, the       SD
+                                          freshness mark included
+              flor-logging                the log sink, framing, line format and sanitising;  DD
+                                          the error report
+              flor-vertex-config          the vertex's configuration family, the ingress      DD
+                                          rules among it
+              flor-vertex-authz           the access check: admit or deny by the target's     DD
+                                          rules; the egress filter, advisory
+              flor-vertex-transport       QUIC over one UDP socket, mTLS both ways, the SNI   DD
+                                          registry, the resolver
+              flor-vertex-inbound-socks5  a SOCKS5 listener per initiator                     DD
+              flor-vertex-outbound-tcp    admitted connections to their own targets'          DD
+                                          upstreams
 
-  integration generated in flor-dist, bound by the corpus, fixtures and
-              the suite
+  SD crates   crate               owns                                                used by
+              flor-dist-bundle    the bundle: container, manifest, entry-name check   retectl, flor
+              flor-dist-scope     a scope's root under the state directory, its lock  flor,
+                                  and its receipt                                     flor-vertex
+
+  integration generated in flor-dist, bound by the corpus and the suite
               each executable's own logic: retectl, flor, flor-vertex
               the rete source, the validator, the compiler and its version ladder
               enroll's run, activation
-              host: the state directory, scope roots, the lock, the
-              receipt
               the systemd unit, its text a golden fixture
 
   layers      edges point down only
                 1  flor-identity, flor-logging                   data
                 2  flor-artifact                                 data
-                3  flor-vertex-config, flor-bundle, both stores  data
+                3  flor-vertex-config, both stores               data
                 4  flor-vertex-authz                             data
                 5  flor-vertex-transport                         lifecycle
                 6  the two adapters                              lifecycle
               a data crate never depends on a lifecycle crate
               only integration calls a store
-
-  contracts   kind          contract                        parties
-              API           every unit's public API         another unit
-              protocol      the TLS profile, the SNI        a peer
-                            labels
-                            SOCKS5 to local clients, with   another program
-                            .rete names
-              format        the envelope, the vertex        another release
-                            config, the bundle
-                            both stores, the scope root     another release
-                            with its receipt and lock, the
-                            compiled tree, retectl's tree
-                            the rete source                 a human user,
-                                                            another release
-                            the systemd unit                another program
-                            the log line                    a human user,
-                                                            another program
-              command line  commands, flags, environment,   a human user,
-                            exit codes, output, the error   another program
-                            report
 ```
 
 **FLOW**
 
 ```log
-  runs        retectl compile       flor-artifact-store reads the sets,
-                                    the version ladder → compiler →
-                                    flor-vertex-config validates →
-                                    flor-artifact signs through
-                                    flor-identity → flor-artifact's
-                                    admission check → flor-artifact-store
-                                    rebuilds with what was admitted
-              retectl issue-bundle  flor-artifact-store reads the set →
-                                    flor-identity issues the principals →
-                                    flor-bundle packs them, its manifest
-                                    signed through flor-artifact
-              flor enroll           flor-bundle opens the bundle, its
-                                    manifest verified through flor-artifact
-                                    against the scope's pin where it has
-                                    one → flor-identity's import check →
-                                    flor-artifact's admission check → both
-                                    stores write what was admitted
-              flor-vertex           both stores read → flor-vertex-config
-                                    makes the ingress rules from the
-                                    vertex's admitted document → transport,
-                                    the access check, the adapters
-
-  lines       every unit            starts on its line; whoever authors
-                                    its API confirms the line or changes
-                                    it, amending the decomposition
-              an obligation SD      the unit moves to DD, and ships SD
-              cannot keep, or       until then with the risk stated in
-              only convolutedly     each release note
-              churn reaching a      reverse substitution: SD implements
-              DD unit               the new contract, DD catches up after
-                                    the release
+  runs        retectl compile       flor-artifact-store reads the sets, the version ladder →
+                                    compiler → flor-vertex-config validates → flor-artifact signs
+                                    through flor-identity → flor-artifact's admission check →
+                                    flor-artifact-store rebuilds with what was admitted
+              retectl issue-bundle  flor-artifact-store reads the set → flor-identity issues the
+                                    principals → flor-dist-bundle packs them, the manifest signed
+                                    through flor-artifact
+              flor enroll           flor-dist-bundle opens the bundle, its manifest verified through
+                                    flor-artifact against the scope's pin where it has one →
+                                    flor-identity's import check → flor-artifact's admission check
+                                    → both stores write what was admitted
+              flor-vertex           both stores read → flor-vertex-config makes the ingress rules
+                                    from the vertex's admitted document → transport, the access
+                                    check, the adapters
 ```
 
 **RULES**
 
 ```log
-  ratings     fan-out; adversarial input, counted on the path;
-              irreversible (what being wrong leaves past
-              any release) or repair path;
-              contract across releases — strong, some or none, never
-              summed; advice to the decomposition and to each API's author
-
-  granularity a concern gets a crate of its own where it can move between
-              lines without the concerns it would share one with, where
-              an executable or a unit of any milestone uses it but not
-              them, or where sharing would close a cycle; otherwise a few
-              large crates
-
-  closure     a unit depends on units and on declared third-party crates;
-              flor holds the units, the fixtures pinning external
-              contracts, and the conformance suite with its defect
-              ledger — nothing else
-
-  obligations what must hold across A0's code, and the units owning the
-              checks it rests on; each holds despite the generated code
-              around its check
+  obligations what must hold across A0's code, and the units owning the checks it rests on; each
+              holds despite the generated code around its check
                  must hold                              checked by
               1  nothing lands in a store that its      flor-identity,
                  check did not admit                    flor-artifact
@@ -174,72 +107,19 @@ Everyone starts at the [Shape](#shape): it maps the units with the line each sta
                  store; no key's text reaches a log,
                  an error report or a stray file
 
-  apis        the decomposition designs none; whoever authors a unit's API
-              decides how the obligations it touches are kept
+  conventions errors as error_stack reports over the crate's own Error; no DI framework type in a
+              unit's API; a unit runs inside a tokio runtime and never builds one; events through
+              tracing, checked as behaviour
 
-  lines       an SD line — a starting one, or one reached by reverse
-              substitution — holds where every obligation its unit
-              touches is kept: by the API where an adversary chooses the
-              input, by the suite where the input is the unit's own state,
-              in tests written with the API
-
-  contracts   kind         API, protocol, format, command line; only an API
-                           is drawn as a unit; each has a shape tools check
-                           and a meaning only tests and reading do
-              parties      another unit, another release, a peer, a human
-                           user, another program
-              statement    the API in flor; design pages and ADRs; guides
-                           for a human user
-              enforcement  shape: the compiler and the API diff for an
-                           API, golden fixtures for the rest; meaning: the
-                           suite; skew: version gates; reading: review on DD
-
-  fixtures    golden fixtures are the suite's public part, held in flor and
-              read by generation: tests over exact examples that read (what
-              an earlier release wrote still reads the same), write (this
-              release produces exactly this) or transform (this input
-              yields exactly that output); the rest of the suite is hidden
-              from generation
-
-  conventions errors as error_stack reports over the crate's own Error;
-              no DI framework type in a unit's API; a unit runs inside a
-              tokio runtime and never builds one; events through tracing,
-              checked as behaviour
-
-  names       flor-vertex-<part> for a vertex's parts, direction before
-              protocol where the kind has one; flor-<concern> for other units;
-              flor-dist-<name> for integration
+  names       flor-vertex-<part> for a vertex's parts, direction before protocol where the kind has
+              one; flor-<concern> for other units; flor-dist-<name> for integration
 ```
-
-## Rating candidates
-
-Every piece of code that might become a unit is a candidate, rated before any unit is drawn ([DECOMP-A0-01](#decision-log)) and listed one row per candidate ([DECOMP-A0-22](#decision-log)). A0's list stays in its working files; its form is here, with one row as A0 rated it, for the next milestone's decomposition.
-
-| Candidate | Used by | Fan | Adv | Irr | Ctr | Ctr rdy | Impl rdy | Work left | Churn | Type | Depends on | Suggested |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Bundle | R F | ◐ | ◐ | ● | ● | designed | none | ? | little | data | `flor-identity`, `flor-artifact` | own crate, SD |
-
-Each rating is ● strong, ◐ some or ○ none, and a note beside the row names what it rests on — the bundle's: a container unauthenticated on a first enrollment, though what it carries is checked elsewhere; A0's only channel, the path every repair takes; a format written by one release and read by another.
-
-- **Candidate** — one concern that could stand as a crate of its own, finer than the units, so that nothing is merged before it is weighed.
-- **Used by** — the executables that use it, and after a dot the next milestone's; here `R` is `retectl` and `F` is `flor`.
-- **Fan** — fan-out: how many executables use it.
-- **Adv** — adversarial input: whether an adversary chooses what it handles, or it sets what a check admits with no reviewed output after it.
-- **Irr** — irreversible or repair path: what being wrong leaves past any release — state on a disk, a node left unreachable, the path every repair takes.
-- **Ctr** — contract across releases: whether another release or party reads a format it writes.
-- **Ctr rdy** — how far the corpus fixes its contract, whatever form the contract takes: *open*, questions remain; *designed*, its behaviour is designed and its contract is not; *ready*, the contract is written in its final form.
-- **Impl rdy** — how much of its body for the milestone exists, judged against the candidate itself: none, little, half or almost.
-- **Work left** — the work still to do on it, in story points summed over its stories; ? until the stories are estimated.
-- **Churn** — what later milestones bring it: none, little, some or heavy.
-- **Type** — data, or lifecycle when it brings a runtime and a shutdown with it.
-- **Depends on** — the other candidates it calls; here, the units they became.
-- **Suggested** — the crate it would join and the line it would start on; advice, as the ratings are.
 
 ## Evolution sketches
 
 Recorded so that nothing above forecloses them; each names what A0's boundaries owe.
 
-- **C0's agent** takes over the scope lock and the receipt. *Owed:* they are one protocol, generated today and contracted then if the agent goes DD.
+- **C0's agent** takes over the scope lock and the receipt. *Owed:* they sit in one SD crate, `flor-dist-scope`, which the agent takes up as it stands — a unit, renamed, if the agent goes DD.
 - **C0's coordinator** reads documents without a store. *Owed:* `flor-artifact` stands apart from `flor-artifact-store`.
 - **C0's counters and flood-safe Layer**, neither of which A0 builds. *Owed:* the closed event fields A0 keeps ready for both ([DSGN-A0-18](/docs/implementation/a0-alef-authoring/design#decision-log)), which the suite holds as behaviour; and a subscriber, set up by `flor-logging`, that takes another crate's Layer, so the Layer can arrive SD first beside it.
 - **C1's forwarding engine and connection manager** arrive as candidates of their own, the vertex's integration regenerated around them. *Owed:* transport's UDP socket moves behind the connection manager then, a change to one contract; FlorIO arrives as `flor-vertex-florio`.
@@ -249,47 +129,24 @@ Recorded so that nothing above forecloses them; each names what A0's boundaries 
 
 Entries are grouped by what a change would touch.
 
-### How candidates are judged
+### Across the units
 
-**DECOMP-A0-01. Rate every candidate on four dimensions, and let the ratings advise.**
-Fan-out ([AIFIRST-06](/docs/contributing/workflows/ai-first-development#decision-log)); adversarial input, counting code that sets what a check admits unless reviewed output stands after it; irreversible or repair path — what being wrong leaves past any release: state on a disk, a node left unreachable, or the path everything else is repaired by, a breach being the adversarial dimension's; contract across releases — a format another release or party reads. Each is rated strong, some or none, never summed. Which candidates become units, and the line each starts on, is a human call weighed from the ratings; whoever authors a unit's API weighs them again when confirming that line (DECOMP-A0-04).
-*Because* a security-only reading scored the bundle at nothing, though re-enrollment is A0's only channel and its format crosses releases that skew; the contract dimension is [AIFIRST-04](/docs/contributing/workflows/ai-first-development#decision-log)'s subject applied to code, since fixtures hold a format only for the inputs they cover; and a breach counted under two dimensions reads as two reasons where there is one.
-*Rejected* the security-only reading, which missed the bundle; one combined score, which reads as a mandate; the irreversible dimension counting a breach, which repeats the adversarial one.
+**DECOMP-A0-01.** *Superseded by [AIFIRST-31](/docs/contributing/workflows/ai-first-development#decision-log).*
 
-**DECOMP-A0-02. Give a concern a crate of its own where it can move between lines on its own.**
-Concerns share a crate unless one of them can move between lines without the rest — its line differs now, or the churn or risk ahead will part them — or some executable or unit, of this milestone or a later one, uses it but not the rest, or sharing one crate would close a cycle through another; otherwise the doctrine's few large crates hold. The entry that draws a unit says which applies.
-*Because* a unit is swapped whole and supplied by one line, so the crate is the grain of every substitution: a crate mixing DD and SD code could be supplied by neither, and one holding concerns that will part must be split under churn, when a split costs most.
-*Accepting* that whether two concerns will part is a forecast, judged pair by pair; and that a line flipped later may split or merge crates.
-*Rejected* a crate per concern, API authoring for boundaries nothing crosses; a crate per line and side, which mixes units starting on different lines; lines as they stand and users counted as executables, which merge the two adapters, and `flor-identity` with `flor-artifact`.
+**DECOMP-A0-02.** *Superseded by [AIFIRST-32](/docs/contributing/workflows/ai-first-development#decision-log).*
 
-**DECOMP-A0-03. Close the unit graph, and layer it.**
-A unit depends only on units and on third-party crates a human declared; `flor` holds the units, the fixtures pinning external contracts, and the conformance suite with its defect ledger. Edges point down the layers of the Shape; a data crate never depends on a lifecycle crate; only integration calls a store, and units take what the stores yield as values.
-*Because* one protocol wants one implementation in a build, and every crate `flor-dist` resolves from `flor` should be one the graph invariant covers ([ADR-0016](/docs/implementation/adr/0016-restructure-for-two-line-development)). The stores serve executables, opening files under roots the executable chose; their API is no building block for libraries.
-*Accepting* that a DD unit's reach enlarges the inventory.
-*Rejected* private copies in a DD unit, two implementations of one on-disk protocol; DD-internal crates outside the invariant, which duplicate silently; layering discovered unit by unit.
+**DECOMP-A0-03. Layer the units as the Shape draws them, and let only integration call a store.**
+Units take what the stores yield as values.
+*Because* the stores serve executables, opening files under roots the executable chose; their API is no building block for libraries.
 
-**DECOMP-A0-04. State what must hold, and let each API's author keep it and confirm the unit's line.**
-The page names the obligations that must hold across A0's code — the Shape's list — each with the units owning the check it rests on, and designs no API. Whoever authors a unit's API decides how the obligations it touches are kept, and confirms the unit's line or changes it, amending this page. An SD line, whether it starts there or is reached by reverse substitution, holds where each of its obligations is kept: by the API where an adversary chooses the input, and by the suite where the input is the unit's own state, in tests written with the API. Where SD cannot keep one, or only convolutedly, the unit moves to DD, and ships SD until then with the risk stated in each release note.
-*Because* an API is designed as code, through its consumers ([AIFIRST-09](/docs/contributing/workflows/ai-first-development#decision-log)): a mechanism sketched on this page can be checked against nothing, while an obligation can be checked against the API once one exists.
-*Because* a suite is evidence wherever no adversary chooses the input ([AIFIRST-07](/docs/contributing/workflows/ai-first-development#decision-log)): a unit's own state is deterministic, so tests written with its API can cover it, while an adversary picks its input after the tests are written, and only the API can hold an obligation against that.
-*Because* the reason a unit may be SD then stays next to its line, in a form its API's author can test with the API in hand.
-*Accepting* that A0 may ship an SD unit whose API cannot keep an obligation, its risk stated rather than closed; that the lines here are starting lines, any of which may change before A0 ships; and that evidence types — a check's result that only the check can construct, taken by the contract of whatever generated code writes or applies it — are one way an author may keep an obligation, which [AIFIRST-05](/docs/contributing/workflows/ai-first-development#decision-log) takes up once an API uses them.
-*Rejected* the page prescribing the means, evidence types among them, which designs APIs before anyone works on them and settles less than it seems to — evidence proves a check ran, not what it compared against; a test counting only what an API's types rule out, which counts every way code can go wrong rather than the inputs an adversary chooses, and moves units to DD before anyone works on their APIs; nothing about APIs, which leaves no check of an API against the reason its unit was allowed onto SD; every unit an obligation touches on DD from the start, which gives up A0's speed.
+**DECOMP-A0-04. State what must hold across A0's code, and record beside each obligation how it is kept.**
+The Shape's obligations, each with the units owning the check it rests on. Whoever authors a unit's API records, in a third column of that list, how the unit keeps each obligation it touches — by the API, or by tests at the API; an obligation its SD line cannot keep is marked unkept there, naming the unit, with the call and its reason in this log.
+*Because* one column, read one way, shows what is kept and what is not, while a call's reason stays with the call.
+*Rejected* a mark on the obligation with a note under the list, one fact in two places and a reason in the Shape.
 
-**DECOMP-A0-05. Contract every surface by its kind and its parties, and enforce it as strongly as its kind allows.**
-A contract has a kind — API, protocol, format or command line — and parties: another unit, another release, a peer, a human user, another program. It is stated in the API itself, in design pages and ADRs, and for a human user in guides. Its shape is enforced by the compiler and the API diff for an API and by golden fixtures for every other kind, its meaning by the suite, skew by version gates, and code by review on DD. Golden fixtures are the suite's public part, held in `flor` with the other contracts and read by generation; the rest of the suite stays hidden from it. Only an API is drawn as a unit.
-*Because* kind, party and enforcement vary apart — one kind serves several parties, and one party relies on several kinds — so a list that mixes them hides its gaps; and a statement checks nothing by itself.
-*Because* an exact shape is best stated by an example, so a fixture is at once a statement and a test, which generation must see to reproduce; a meaning is better judged by tests generation has not seen ([AIFIRST-28](/docs/contributing/workflows/ai-first-development#decision-log)).
-*Because* a unit costs an API authored by the scarce resource, and a file needs none.
-*Accepting* that fixtures and the suite reach only the cases they hold, and the suite an API's meaning only as far as the product's edge shows it.
-*Rejected* contracts listed by how they are enforced, which hides who relies on each and leaves out what nothing enforces; fixtures as a kind of contract, where they are a way to enforce one; style as a kind, its visible part being command-line output and the rest a code convention review holds; a unit to hold a file.
+**DECOMP-A0-05.** *Superseded by [AIFIRST-30](/docs/contributing/workflows/ai-first-development#decision-log).*
 
-**DECOMP-A0-22. Rate candidates in one form, and keep the form rather than the list.**
-A candidate is one concern that could stand as a crate of its own, finer than the units. Each is a row: who uses it, this milestone and the next; its four ratings, each with what it rests on; how ready its contract and its implementation are; the work left, in story points; the churn later milestones bring it; its type, data or lifecycle; the candidates it depends on; and the crate and line suggested, as advice. The page keeps the form with one row, and renders the units only in the Shape, restating no unit's behaviour; the list stays in the working files, with the estimates.
-*Because* each field moves a decision the list feeds: the next milestone's users are fan-out ahead of time; contract readiness prices the human's work on a contract, owed whichever line implements it; implementation readiness, rough and judged against the candidate, weighs its line, while the work left sizes the plan apart from the line that does it; type breaks ties when a unit moves; dependencies close the graph; and a suggestion gives something to strike rather than a blank to fill.
-*Because* the rows go stale with every merged pull request, and the form is what the next milestone needs.
-*Accepting* a wide list, and story points that need stories of at most 13 and reference stories to anchor them.
-*Rejected* the ratings alone, which leave readiness and churn unweighed; one readiness field, under which a written contract without code and code without a written contract read alike; readiness as a percentage, with no shared denominator; the list on the page, or a summary of it beside the Shape.
+**DECOMP-A0-22.** *Superseded by [AIFIRST-31](/docs/contributing/workflows/ai-first-development#decision-log).*
 
 ### Identity and artifacts
 
@@ -311,11 +168,7 @@ The vertex configuration family, shared by the compiler and the vertex, and the 
 *Accepting* that C1's ctrl payload churns here, and may land beside it as a unit of its own.
 *Rejected* inside `flor-artifact`, as [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)'s "one module" line has it; shared generated code; "payload" in the name, which needs the envelope's context.
 
-**DECOMP-A0-09. Contract the bundle, and generate it.**
-`flor-bundle` holds the container, the manifest and the entry-name check, with no crypto of its own: the manifest is signed and verified through `flor-artifact`. SD at A0, pinned by golden bundles across releases, its refusals in the suite.
-*Because* it is A0's only channel and a format read across skewed releases, so it is contracted whatever its line; its security is `flor-artifact`'s and identity's.
-*Accepting* that a regenerated bundle is safe only as far as its fixtures reach, and stays SD only as far as its API's author can keep the obligations it touches (DECOMP-A0-04).
-*Rejected* verification code of its own; generated code held by fixtures alone; a container inside `flor-artifact`, which starts on another line; the entry-name check in enroll's run, a second spelling of the names the bundle writes.
+**DECOMP-A0-09.** *Superseded by DECOMP-A0-23.*
 
 ### The node
 
@@ -337,10 +190,12 @@ The access check is a unit of its own, apart from transport and the adapters, wi
 *Accepting* that SD writes lifecycle code in A0, and that the repair path rests on the bundle's fixtures and the suite's convergence tests.
 *Rejected* `flor-vertex` as a binary-shaped DD unit, which rested on rules and dispatch sitting in its glue; enroll as a unit.
 
-**DECOMP-A0-13. Leave host and the systemd unit to generation, pinned by fixtures.**
-The mode, the state directory, scope handles and roots, the lock and the receipt are integration, their layout in fixtures and their refusals in the suite; the systemd unit's text is a golden fixture, reviewed when it changes.
-*Because* neither has an API surface worth a contract, and a fixture reviews the text systemd reads.
-*Rejected* `flor-host` as a unit; a reviewed crate for one substituted string.
+**DECOMP-A0-13. Share the scope through an SD crate, `flor-dist-scope`, and leave the rest of the host and the systemd unit to generation.**
+`flor-dist-scope` holds a scope's root under the state directory, its lock and its receipt, shared by `flor` and `flor-vertex`, its API and body the agent's. The state directory's upkeep and activation are `flor`'s own logic. The layout is pinned by fixtures and the refusals held by the suite; the systemd unit's text is a golden fixture, reviewed when it changes.
+*Because* both executables derive every path from a scope and hold its lock, so one crate keeps one implementation of them (AIFIRST-06), which C0's agent takes over with only its call sites regenerated; no unit calls it, and no obligation rests on its API.
+*Because* a fixture reviews the text systemd reads.
+*Accepting* that the scope's paths sit in generated code, so that no path comes from a name the rules refuse has to hold through identity's API (DECOMP-A0-04).
+*Rejected* `flor-host` as a unit, an API no unit calls; one crate holding `retectl`'s tree too, a layout no other consumer shares; a reviewed crate for one substituted string.
 
 ### Cross-cutting
 
@@ -359,8 +214,14 @@ Errors as `error_stack` reports over the crate's own `Error`; no DI framework ty
 **DECOMP-A0-16. Generate the compiler, and check its output with the suite's oracle.**
 The rete source, the validator, the compiler and its version ladder are integration. Golden compile fixtures, read by generation, pin source to compiled tree; a property test in the suite, hidden from generation, checks that every ingress row's allow set equals the expansion of the source's roles and groups; `flor-vertex-config` validates before signing.
 *Because* the compiler carries A0's heaviest churn, its contracts are external, and the operator — not an adversary — writes its input.
-*Accepting* that the ratings advise DD for it, the operator's diff not being evidence, and the suite's oracle is the compensating control.
+*Accepting* that its output decides what the access check admits, the suite's oracle — not the operator's diff — being the evidence for it.
 *Rejected* the compiler as a unit, by policy or by size.
+
+**DECOMP-A0-23. Generate the bundle as an SD crate, `flor-dist-bundle`.**
+`flor-dist-bundle` holds the bundle — container, manifest, entries, the entry-name check — shared by `issue-bundle` and enroll's run, its API and body the agent's, with no crypto of its own: the manifest is signed and verified through `flor-artifact`. Golden bundles from each release pin its format, and the suite holds its refusals.
+*Because* one crate keeps one implementation of a format one executable writes and another reads (AIFIRST-06); no unit calls it, and the checks a pinned scope's bundle needs are `flor-artifact`'s and `flor-identity`'s, so its API is the agent's.
+*Accepting* that a regenerated bundle is safe only as far as its fixtures reach, on A0's only channel, the path every repair takes.
+*Rejected* a unit on SD for its format, which no API keeps; a DD unit, or a container inside `flor-artifact`, either pacing A0 by a body nobody has written; the entry-name check in enroll's run, a second spelling of the names the bundle writes.
 
 **DECOMP-A0-17. Retire the code no unit covers.**
 At the split, `flor` keeps what becomes units and drops the rest — the compiler, loader and validator, the vertex's assembly, home resolution, the CLI mains; git history keeps it, and generation is not pointed at it.
@@ -369,21 +230,17 @@ At the split, `flor` keeps what becomes units and drops the rest — the compile
 
 ### Lines, names and what follows
 
-**DECOMP-A0-18. Start eight units on DD and three on SD.**
-DD: `flor-identity`, `flor-artifact`, `flor-logging`, `flor-vertex-config`, `flor-vertex-authz`, `flor-vertex-transport`, both adapters. SD: `flor-identity-store`, `flor-artifact-store`, `flor-bundle`.
-*Because* the ratings, the existing code and the churn ahead were weighed per unit.
+**DECOMP-A0-18. Ship eight units on DD and two on SD.**
+DD: `flor-identity`, `flor-artifact`, `flor-logging`, `flor-vertex-config`, `flor-vertex-authz`, `flor-vertex-transport`, both adapters. SD: `flor-identity-store`, `flor-artifact-store`.
+*Because* the cost of an error in each, its existing code and the churn ahead were weighed per unit.
 *Accepting* new DD code on A0's path: the access check, identity's import check and its key operations, artifact's signing and verification, logging's sink, the egress filter.
 
 **DECOMP-A0-19. Name a crate for what it is part of, not for who uses it.**
-`flor-vertex-<part>` for a part of the vertex, whichever executables use it — its configuration among them, though `retectl` writes it — direction before protocol where the kind fixes one; FlorIO, both ways and both north and south, as `flor-vertex-florio`; `flor-<concern>` for any other unit; `flor-dist-<name>` for integration, the executable's name in its bin target. An SD body keeps its unit's name.
+`flor-vertex-<part>` for a part of the vertex, whichever executables use it — its configuration among them, though `retectl` writes it — direction before protocol where the kind fixes one; FlorIO, both ways and both north and south, as `flor-vertex-florio`; `flor-<concern>` for any other unit; `flor-dist-<name>` for integration, the executable's name in its bin target. An SD body keeps its unit's name; an SD crate is named as integration, and takes a unit's name if it becomes one.
 *Because* a name should say what a crate is part of without context, and many crates read grouped; and what a crate is part of stays put while the executables using it change.
 *Rejected* `flor-<unit>` throughout; a prefix chosen by who uses a crate; `northbound-` or `bidir-` for FlorIO.
 
-**DECOMP-A0-20. Move churn that reaches a DD unit by reverse substitution.**
-Churn that reaches a DD unit goes SD first — the assembly restores its patch entry — and DD catches up after the release.
-*Because* new work belongs on SD first, and the doctrine moves units only DD-ward.
-*Accepting* that a unit's review lapses for a milestone, which the release report names.
-*Rejected* DD implementing every change to a DD unit; DD drawn only around stable cores, which would regenerate working code where churn is coming — a unit's line weighs its working code with the churn ahead (DECOMP-A0-18); DD catching up by adopting SD's body, since nothing flows out of SD except findings ([AI-First Development](/docs/contributing/workflows/ai-first-development)).
+**DECOMP-A0-20.** *Superseded by [AIFIRST-36](/docs/contributing/workflows/ai-first-development#decision-log).*
 
 **DECOMP-A0-21. Record what later milestones need, and leave C0 its own page.**
 Each need of C0 and C1 known now is an evolution sketch on this page, naming what A0's boundaries owe it; C0's units are drawn on C0's own page.
