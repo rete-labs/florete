@@ -48,22 +48,13 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
               a binary may be one; flor-dist still assembles and packages it
               code drawn into no unit is bound by the corpus and the suite
 
+  SD crate    such code that more than one consumer shares, in a crate of its own in flor-dist,
+              its API and body the agent's; no unit, and no obligation rests on it
+
   inventory   per milestone, in its decomposition.mdx
-              candidate   one concern, finer than a unit, recorded with its
-                          ratings, the readiness of its contract and body,
-                          the churn ahead, its type, what it depends on,
-                          and a suggested crate and line
-              ratings     fan-out        the executables using it, this
-                                         milestone's and the next's
-                          adversarial    an adversary picks its input, or
-                                         it sets what a check admits with
-                                         nothing reviewed after it
-                          irreversible   being wrong outlives any release:
-                                         state it writes, a node left
-                                         unreachable, the path repairs take
-                          each strong, some or none, never summed
-              obligations what must hold across the milestone's code, each
-                          with the units owning the check it rests on
+              crates      its units and its SD crates, each with the calls that drew it
+              obligations what must hold across the milestone's code, each with the units
+                          owning the check it rests on
               the decomposition designs no API
 
   assembly    flor-dist's workspace root alone says which line supplies a unit:
@@ -88,8 +79,7 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
 ```log
   milestone
       its scope and design in the corpus
-      → decomposition: candidates rated, units drawn, lines started,
-        obligations stated
+      → decomposition: crates and units drawn, lines set, obligations stated
       → each unit's API authored against generated consumers; its
         obligations kept, its line confirmed or changed
       → generation, against tagged APIs whether their bodies exist or not
@@ -115,11 +105,10 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
   reverse substitution (SD-ward)
       churn reaches a DD unit
       → SD implements the new contract, the assembly redirecting the unit to it
-      → released on SD, the lapse in review recorded
+      → released on SD, recorded in the decomposition
       → DD writes the new body itself, in the gap after the release
       → substituted back by the same sequence
-      a deferral, not a reclassification: staying on SD takes a line
-      change, recorded with its reason
+      a deferral, not a reclassification
 ```
 
 **RULES**
@@ -139,17 +128,17 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
               DD    also structure, naming, impl details, change review
               SD    none of those; no code review of generated code
 
-  drawing     the ratings advise; a human makes two calls, each recorded
-              with the ratings it weighed
-              unit    its boundary must exist before generation — many
-                      callers share it, or its API keeps an obligation —
-                      or its body is to be DD's, SD taking DD's code only
-                      as units; one drawn for its body alone is no unit
-                      while it stays on SD
-              line    who writes its body first; risk and working code
-                      weigh most; the API's author confirms it or
-                      changes it, with the reason
-              a call against strong ratings says what makes up for them
+  drawing     a human makes three calls on each concern, each recorded with its reason
+              crate   a crate of its own wherever more than one consumer uses it, on either line
+              unit    a human-authored API where a unit depends on the crate, an obligation rests on
+                      its API, or its body is to be DD's, SD taking DD's code only as units;
+                      otherwise an SD crate, and one drawn for its body alone is no unit while it
+                      stays on SD
+              line    the line that supplies a unit's body when the milestone ships: the cost of an
+                      error in it — an adversary picking its input, harm outliving a release —
+                      weighed against the cost of DD, its time and the release it delays, which
+                      working code lowers; the API's author confirms it or changes it, with the
+                      reason
 
   granularity concerns share a crate unless one can move between lines on
               its own, an executable or a unit uses one but not the others,
@@ -158,13 +147,12 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
   layering    units form layers, every edge pointing down; a data unit
               never depends on a lifecycle unit
 
-  obligations stated by the decomposition; kept as each API's author
-              decides, recorded beside the obligation: by the API itself
-              where an adversary picks the input, by tests at the API
-              where the input is the unit's own state
-              an SD line, however reached, holds where every obligation
-              it touches is kept; where one is not, the unit ships SD with
-              its risk stated, and is due on DD
+  obligations stated by the decomposition, on units only: a crate whose API must keep one is a
+              unit; kept as each API's author decides, recorded beside the obligation: by the API
+              itself where an adversary picks the input, by tests at the API where the input is the
+              unit's own state
+              an SD line, however reached, holds where every obligation it touches is kept; where
+              one is not, the unit ships SD with it recorded unkept, and is due on DD
 
   contracts   whatever something outside a unit reads; designed before
               generation, and reviewed by a human
@@ -199,12 +187,8 @@ A bugfix carries a failing test first: write it into the conformance suite, watc
               inherits every fix
 
   milestones  design-decomposition units and release points
-
-  frontier    kept live, in the decomposition that drew each unit: its
-              line and the reason, a lapse in review, an obligation its SD
-              line leaves unkept; the DD-authored share — of the units and
-              of the security-relevant surface — and the moves either way
-              read off them
+              a decomposition states what its milestone ships: each unit's line and the reason, and
+              any obligation an SD line cannot keep
 
   public      flor open to contribution; flor-dist read-only
               a defect in SD is reported as a suite test against flor
@@ -250,27 +234,21 @@ Two failure modes sit either side of all this. Contracting too little leaves the
 
 ### Decomposing a milestone
 
-Milestones do two jobs: each divides a design too large to settle whole, and each is a release point. Before a milestone's code is generated, it is decomposed — divided into units and the integration generated around them, in a `decomposition.mdx` that grows with the milestone.
+Milestones do two jobs: each divides a design too large to settle whole, and each is a release point. Before a milestone's code is generated, it is decomposed — divided into units and the integration generated around them, in a `decomposition.mdx` that states what the milestone ships, and grows with it.
 
 A unit is a crate whose public API a human settles before either line implements it. Being contracted is what makes it a unit, so there is no such thing as an uncontracted one — only code that is not a unit, bound by the corpus and the suite and by nothing else. SD and DD each supply a crate satisfying that API, and a substitution is a one-line change, in `flor-dist`'s workspace root, to which of them supplies it. Only an API is drawn as a unit, though a unit may own contracts of other kinds. A binary's own logic can be one like any other: what a unit names is a contract, and which line satisfies it is decided where the graph is assembled rather than by where the code sits, so the executable is built in `flor-dist` from a one-line `main` over that unit's entry point.
 
 The boundary is a crate rather than a module because a module boundary inside one crate is advisory: `pub(crate)` is visible throughout, so in a codebase nobody reads it erodes without anyone noticing. A crate boundary is checked by the compiler.
 
-Not everything becomes a unit, because authoring an API costs human time and that is the scarce resource. So a decomposition first rates every candidate — one concern, finer than any unit — on three ratings, each strong, some or none, never summed, and each with a note of what it rests on. Fan-out counts the executables using a candidate, this milestone's and the next's: a boundary every executable reads is cheapest drawn before generation, since retrofitting it later means regenerating most of the line. Adversarial input asks whether the candidate's obligation quantifies over all inputs, counting the code that sets what a check admits along with the check unless reviewed output stands between them: a suite is evidence about the inputs it uses, so a promise of that shape is beyond it — the input that matters is chosen by an adversary after we chose our tests. Irreversibility asks what being wrong leaves past any release: state a later release has to read, a node left unreachable, a broken path for every repair after it. The model trades a mistake against one regeneration, and where being wrong outlives the release that made it, that is no longer the trade being made. Code where authentication terminates rates strong on both of the last two.
+Not everything becomes a unit, because authoring an API costs human time and that is the scarce resource. So a decomposition weighs every concern that might stand as a crate, finer than any unit, and a human makes three calls on each, recording each with its reason. The first is whether it gets a crate of its own, which it does wherever more than one consumer uses it, on either line: one implementation is what keeps shared code from drifting between copies — a format one executable writes and another reads above all — and a boundary several consumers read is cheapest drawn before generation, since retrofitting it later means regenerating most of the line. The second is whether that crate is a unit, its API authored by a human: it is where a unit depends on it, where an obligation rests on its API, or where its body is to be DD's. Otherwise it is an SD crate — no unit, its API and its body the agent's, in `flor-dist` — so no human API is spent on a boundary only integration crosses.
 
-The ratings advise; a human makes two calls, and records each beside the unit with the ratings it weighed. The first is whether a candidate becomes a unit at all: where its boundary must exist before generation — many callers share it, or its API keeps an obligation — or where its body is to be DD's. The second is the line it starts on, for which risk and working code weigh most. The calls are separate because they turn on different things: a unit with strong risk ratings can start on SD where its API keeps its obligations, and one with working code can start on DD where nothing else argues for it. A candidate drawn for its body alone — to be reviewed, or to keep code that already works — is a unit on DD or none at all. A crate on SD protects only what its API keeps, so such a candidate stays integration code on SD, bound by its contract, and is drawn as a unit when it moves DD-ward; reviewed code worth keeping is drawn as a unit on DD, since SD takes nothing from DD but units, and throwing working code away buys a regeneration and nothing else. A call against strong ratings says what makes up for them.
+The third call is the line that supplies a unit's body when the milestone ships, and it weighs what an error in that body would cost against what DD costs: the time it takes and the release it delays, both of which working code lowers. Two things make an error costly. One is an obligation that quantifies over all inputs: a suite is evidence about the inputs it uses, so a promise that no input produces some result is beyond it — the input that matters is chosen by an adversary after we chose our tests. The other is harm that outlives a release: state a later release has to read, a node left unreachable, a broken path for every repair after it. The model trades a mistake against one regeneration, and where being wrong outlives the release that made it, that is no longer the trade being made. Code where authentication terminates is costly on both counts. Review reduces such risk and never removes it, so DD is bought where an error would cost more than the time and the release it takes.
 
-A decomposition records each candidate as a row: who uses it, its ratings, how ready its contract and its body are, the churn ahead, whether it is data or lifecycle, what it depends on, and the crate and line suggested. One row, for illustration:
-
-| Candidate | Used by | Fan | Adv | Irr | Contract ready | Body ready | Churn | Type | Depends on | Suggested |
-|---|---|---|---|---|---|---|---|---|---|---|
-| an export codec, writing a file another release reads | two executables | ◐ | ○ | ● | designed | none | little | data | — | integration on SD; a DD unit if it moves |
-
-Ratings run ● strong, ◐ some, ○ none; a contract is open, designed or ready, a body none, little, half or almost, and churn none, little, some or heavy. The row's note would say what its irreversible rating rests on — a file that outlives the release that wrote it, which no API shape keeps from drifting — so the codec stays integration code on SD, and becomes a DD unit if it ever moves.
+The calls are separate because they turn on different things: a unit whose error would cost much can ship on SD where its API keeps its obligations, and one with working code on DD where nothing else argues for it. A concern drawn for its body alone — to be reviewed, or to keep code that already works — is a unit on DD or none at all. On SD a unit protects only what its API keeps, so such a concern stays integration there, bound by its contract, and is drawn as a unit when it moves DD-ward; reviewed code worth keeping is drawn as a unit on DD, since SD takes nothing from DD but units, and throwing working code away buys a regeneration and nothing else. An export codec two executables share is the plain case of an SD crate: the file it writes outlives the release that wrote it, which no API shape keeps from drifting, so golden fixtures hold its format, and it becomes a unit only if it moves DD-ward.
 
 Units are few and large. Concerns share a crate unless one of them can move between lines without the others, an executable or a unit uses it but not them, or sharing would close a cycle. The crate is the grain of every substitution, so a crate mixing concerns bound for different lines could be supplied by neither, and one holding concerns that will part must be split later, under churn, when a split costs most. A unit depends only on units and on third-party crates a human declared, and units form layers, every edge pointing down, no data unit depending on a lifecycle unit — which would hand every consumer a runtime.
 
-Beside its units, a decomposition states what must hold across the milestone's code — each obligation with the units owning the check it rests on — and designs no API. APIs are not authored cold: the agent proposes one and generates consumers against it, and a human judges the result and iterates, since consumers are what reveal a bad API and generating throwaway ones is cheap. The work belongs at the very beginning, while DD has no call sites and SD is small, and changing an API costs almost nothing. Whoever authors a unit's API also decides how each obligation the unit touches is kept: by the API itself where an adversary chooses the input, its types and its checks leaving generated code around it no way past, and by conformance tests written against the API where the input is the unit's own state. An SD line, however it was reached, holds where every obligation its unit touches is kept that way. Holding the API, its author confirms the unit's line or changes it, amending the decomposition with the reason.
+Beside its units, a decomposition states what must hold across the milestone's code — each obligation with the units owning the check it rests on — and designs no API. Obligations rest on units alone: an SD crate's API changes with every regeneration, so it can hold none, and a crate whose API must keep one is a unit. APIs are not authored cold: the agent proposes one and generates consumers against it, and a human judges the result and iterates, since consumers are what reveal a bad API and generating throwaway ones is cheap. The work belongs at the very beginning, while DD has no call sites and SD is small, and changing an API costs almost nothing. Whoever authors a unit's API also decides how each obligation the unit touches is kept: by the API itself where an adversary chooses the input, its types and its checks leaving generated code around it no way past, and by conformance tests written against the API where the input is the unit's own state. An SD line, however it was reached, holds where every obligation its unit touches is kept that way. Holding the API, its author confirms the unit's line or changes it, amending the decomposition with the reason.
 
 A milestone therefore runs in an order that is a dependency rather than a schedule: its scope and design, its decomposition, each unit's API, then generation — which can begin against APIs tagged before their bodies exist.
 
@@ -300,9 +278,9 @@ Both configurations are expressed in one place. `flor-dist`'s workspace root nam
 
 DD work happens in the gap after a release rather than alongside the next one. Scheduled in the same window the two compete for the same people, and SD wins every time — it has customers where DD has principles.
 
-Churn can also reach a unit that is already DD's, and then it goes to SD first, as any new work does. The assembly redirects the unit to an SD crate by a `[patch]` entry — the same one-line edit, run the other way — and generation implements the new contract; the line it reaches is held to the same test as any SD line, an obligation it cannot keep recorded as unkept. The move defers the unit's review rather than reclassifying it. Its line stays DD, and in the gap after the release DD writes the new contract's body itself, never adopting SD's, and substitutes it back by the same sequence. A unit that should stay on SD has its line changed in the decomposition, with the reason; without that, a deferral would become a reclassification by default, the frontier slipping back with nobody deciding it.
+Churn can also reach a unit that is already DD's, and then it goes to SD first, as any new work does. The assembly redirects the unit to an SD crate by a `[patch]` entry — the same one-line edit, run the other way — and generation implements the new contract; the line it reaches is held to the same test as any SD line, an obligation it cannot keep recorded as unkept. The milestone ships the unit on SD, and its decomposition says so, with the reason. The move still defers the unit's review rather than reclassifying it: in the gap after the release DD writes the new contract's body itself, never adopting SD's, and substitutes it back by the same sequence. Keeping the unit on SD past that milestone takes a later decomposition saying so, with the reason; without that, a deferral would become a reclassification by default, the frontier slipping back with nobody deciding it.
 
-The state of the lines is kept live in the decomposition that drew each unit — its line and the reason for it, any lapse in review, any obligation its SD line leaves unkept — so the share of units that are DD-authored, how much of the security-relevant surface that share covers, and which units moved either way can be read off it at any time rather than once per release. The failure mode of this arrangement is not that the migration never finishes — it is not meant to — but that the frontier stops advancing because new work always outranks moving a unit. A bare ratio would not show that on its own, since we define the units it counts and a re-decomposition moves it without moving anything; naming the units that moved is what makes the frontier visible without dictating a response.
+A decomposition states what its milestone ships, not where the lines stand: either line may supply a unit until the milestone ships, but it ships on the line written, or the decomposition is amended first. Where the lines stand is the assembly's to say, so the share of units that are DD-authored, how much of the security-relevant surface that share covers, and which units moved either way are read from it at any time rather than once per release. The failure mode of this arrangement is not that the migration never finishes — it is not meant to — but that the frontier stops advancing because new work always outranks moving a unit. A bare ratio would not show that on its own, since we define the units it counts and a re-decomposition moves it without moving anything; naming the units that moved is what makes the frontier visible without dictating a response.
 
 What we say publicly is that state and the model behind it, the DD-authored share included — not that AI was involved. "Parts of this are AI-generated" is a sentence any slop project also writes, so as a disclosure it carries nothing. The claim worth making is that the boundaries are human-owned and the units are being replaced by reviewed implementations, which is a claim a vibe-coded product cannot make.
 
@@ -320,10 +298,12 @@ The spec-driven line (SD) is agent-generated, released and maintained. The decis
 *Rejected* running SD alone behind good contracts and a good suite — it is structurally evolvable, but it makes the suite the system's whole memory: every requirement has to be cheaply testable from outside, and each test added constrains every later regeneration, so the erosion moves from the code into the suite rather than going away.
 *Rejected* replacing SD wholesale once DD reaches parity — parity is not a state that arrives, since features keep being added ahead of it, and DD is needed only where the suite is not sufficient evidence. Rebuilding the rest by hand would buy nothing.
 
-**AIFIRST-02. Treat milestones as design-decomposition units and as release points.**
-A milestone divides a design too large to settle whole. Each is also a release, and further milestones may be added to divide the work more finely.
+**AIFIRST-02. Treat milestones as design-decomposition units and as release points, each decomposed into what it ships.**
+A milestone divides a design too large to settle whole. Each is also a release, and further milestones may be added to divide the work more finely. Its decomposition states what it ships: each unit's line with the reason, and any obligation an SD line cannot keep. Either line may supply a unit before the milestone ships; it ships on the line written, or the decomposition is amended first. Which line supplies a unit now is the assembly's (AIFIRST-11).
 *Because* the dual process exists to release more often, and a milestone that cannot be released makes releasing harder.
+*Because* a decomposition is drawn before its code exists, so what it can state is the target, which the code converges to by the release.
 *Accepting* more scope pages; the design content does not grow, only its division.
+*Rejected* the decomposition as a live record of the lines' current state, a status page beside the assembly that already holds it.
 
 **AIFIRST-03.** *Obsolete: when generation starts is a product's decision, not the doctrine's.*
 
@@ -369,40 +349,42 @@ A page `implementation/<milestone>/decomposition.mdx` holds the decomposition an
 *Accepting* that this concentrates the risk where nothing checks it: the diff enforces conformance to a contract, never the fitness of one, so a wrong boundary produces a clean and well-tested system that is expensive to correct and slow to notice. The available signal is late — a unit that resists substitution, or whose contract will not settle, is reporting a boundary drawn in the wrong place.
 *Rejected* deriving the boundaries from whatever structure SD arrives at; a unit to hold a contract of another kind, an API authored where a file needs none.
 
-**AIFIRST-31. Rate every candidate, and let a human draw each unit and start its line.**
-A decomposition rates every candidate — one concern, finer than a unit — before drawing any unit, on three ratings, each strong, some or none, never summed, and each with what it rests on: **fan-out** (AIFIRST-06), **adversarial input** (AIFIRST-07), and **irreversible or repair path** (AIFIRST-33). Beside the ratings it records how ready the candidate's contract and body are, the churn ahead, its type, what it depends on, and a suggested crate and line. The ratings advise, and a human makes two calls, recording each beside the unit with the ratings it weighed. The first is whether a candidate becomes a unit: where its boundary must exist before generation — many callers sharing it, or its API keeping an obligation (AIFIRST-34) — or where its body is to be DD's. A candidate drawn for its body alone, for review or for working code worth keeping (AIFIRST-12), is a unit on DD or none: on SD it stays integration code, bound by its contract, and is drawn as a unit when it moves DD-ward. The second call is the line a unit starts on, for which risk and working code weigh most, and which its API's author confirms or changes (AIFIRST-34). A call against strong ratings says what makes up for them.
-*Because* the ratings are several and never summed, so none decides alone: deciding is weighing them, and the record is what makes the weighing checkable.
-*Because* the two calls turn on different things: a boundary is drawn so that it exists before generation, while a line is chosen for who writes the body first — so a unit with strong risk ratings may start on SD where its API keeps the obligations, and a unit with working code may start on DD where nothing else argues for it.
-*Because* a crate on SD protects what its API keeps and nothing more: a format's bytes, or a body worth reviewing, are kept by review alone, so a unit drawn for them on SD buys only a seam for a later move, at the price of an API authored by the scarce resource — while drawing it when it moves costs one regeneration of its callers' area, which fan-out prices.
-*Rejected* the ratings as a mandate; a mandate with recorded exceptions, which makes working code and churn exceptions when they are reasons of the same rank; fan-out alone as a mandate, since a count still needs a judgement; one call fixing both unit and line, which puts every risky unit on DD before anyone knows whether an API can keep its obligations; lines left to API authoring alone, which generates and plans nothing until every API exists; one combined score, which reads as a mandate; readiness and churn as ratings, which weigh the line rather than the cost of a wrong boundary; the work left in the record, which is planning and the tracker's; a unit drawn on SD for its body alone, an API spent on a seam the move may never use.
+**AIFIRST-31. Let a human make three calls on each concern: its crate, its unit and its line.**
+A decomposition weighs every concern that might stand as a crate, finer than a unit so that nothing is merged before it is weighed, and a human makes three calls on each, recording each with its reason. The crate: one of its own wherever more than one consumer uses it (AIFIRST-06). The unit: a human-authored API where a unit depends on the crate, an obligation rests on its API (AIFIRST-34), or its body is to be DD's; otherwise it is an SD crate. A concern drawn for its body alone, for review or for working code worth keeping (AIFIRST-12), is a unit on DD or none: on SD it stays integration, bound by its contract, and is drawn as a unit when it moves DD-ward. The line: the one that supplies a unit's body when the milestone ships, weighing the cost of an error in it — an adversary picking its input (AIFIRST-07), harm outliving a release (AIFIRST-33) — against the cost of DD, its time and the release it delays, which working code lowers; its API's author confirms the line or changes it (AIFIRST-34).
+*Because* the calls turn on different things — a crate on how many consumers share the code, a unit on whether its boundary must hold before generation, a line on who writes the body the milestone ships — so a unit whose error costs much may ship on SD where its API keeps the obligations, and one with working code on DD where nothing else argues for it.
+*Because* a crate on SD protects only what its API keeps: a format's bytes, or a body worth reviewing, are kept by review alone, so a unit drawn for them on SD buys a seam at the price of an API.
+*Because* review reduces the risk an error carries and never removes it, so DD is bought where an error would cost more than the time and the release DD takes.
+*Revisit* once the cost of an error, and of DD, has a measure.
+*Rejected* rating every concern strong, some or none on fan-out, adversarial input and irreversibility, which fed the wrong calls — fan-out decides a crate rather than a unit, and irreversibility moved no line; a record of every concern on the decomposition page, stale once units split or merge; one call fixing both unit and line, which puts every risky unit on DD before anyone knows whether an API can keep its obligations; lines left to API authoring alone, which generates and plans nothing until every API exists.
 
-**AIFIRST-06. Weigh fan-out: a boundary every executable reads is cheapest drawn before generation.**
-Fan-out — the executables using a candidate, this milestone's and the next's — is the first of the ratings (AIFIRST-31). Low-fan-out code stays outside the inventory until extracting it is worth a regeneration, unless another rating or its working code draws it. What is a unit and what is not is recorded per milestone in `decomposition.mdx`.
-*Because* the cost of adding a boundary later is proportional to its call sites, and that is knowable from the corpus in advance.
-*Because* the next milestone's users are fan-out ahead of time: a boundary drawn for them now is not retrofitted then.
-*Accepting* that code left outside the inventory and later found to need DD work costs a regeneration of its area.
-*Rejected* making everything a unit — authoring every API without practice is the failure this avoids. *Rejected* making none — code that isn't a unit is exactly what cannot be substituted cheaply.
+**AIFIRST-06. Give code several consumers share a crate of its own, an SD crate where no unit needs it.**
+A concern more than one consumer uses — an executable or a unit, this milestone's or the next's — gets a crate of its own, on either line. Where only integration calls it and no obligation rests on its API, it is an SD crate: no unit, in `flor-dist`, its API and body the agent's. A milestone's crates and units are recorded in its `decomposition.mdx`.
+*Because* one implementation of what several consumers share keeps it from drifting between copies — a format one executable writes and another reads above all — and a boundary costs more to add later the more call sites it has.
+*Because* a human-authored API is the scarce resource, spent only where a unit or an obligation needs one.
+*Accepting* that code left in one consumer and later found to need DD costs a regeneration of its area.
+*Rejected* a unit for all shared code, human APIs spent on boundaries only integration crosses; integration left unstructured, which lets generation copy what several executables share.
 
 **AIFIRST-07. Weigh what a suite cannot evidence.**
-The question is one of the ratings (AIFIRST-31), weighing on its own whatever the call-site count. **Does the obligation quantify over all inputs?** A suite shows that the inputs it uses produce the promised result. Where the promise is that *no* input produces some result — no unauthenticated peer is accepted, no secret reaches a log, no data crosses between tenants — the input that matters is chosen by an adversary after we chose our tests, so a green suite says nothing about the gap and only reading the code does. The domains are not comparable either: we define what valid means, so a suite can cover the shape of that space and property tests can extend it, while its complement would need the adversary modelled to be generated at all. Code that sets what a check admits counts with the check, unless reviewed output stands after it: a check fed the wrong rules fails the way a missing check does. Code where authentication terminates answers yes.
-*Because* a test is evidence about the input it uses, so any universal claim is beyond a suite whichever way it points. What singles out the negative one is discovery: a universal positive fails toward the user, who notices and reports, and the field generates inputs at a scale no suite matches; a universal negative fails toward an adversary, who is the only party that learns. Field discovery is what stands in for proof everywhere else in this model — the suite, and its users reporting what it missed — and this is the class where it is blind, so a check an agent drops is caught by a test that thought of it and by nothing else afterwards. The universal positive that lacks field discovery too — every valid rollback succeeds, learnt during an incident — falls to the irreversible rating (AIFIRST-33) rather than to this one.
+The question weighs in an error's cost, for a unit's line (AIFIRST-31). **Does the obligation quantify over all inputs?** A suite shows that the inputs it uses produce the promised result. Where the promise is that *no* input produces some result — no unauthenticated peer is accepted, no secret reaches a log, no data crosses between tenants — the input that matters is chosen by an adversary after we chose our tests, so a green suite says nothing about the gap and only reading the code does. The domains are not comparable either: we define what valid means, so a suite can cover the shape of that space and property tests can extend it, while its complement would need the adversary modelled to be generated at all. Code where authentication terminates answers yes.
+*Because* a test is evidence about the input it uses, so any universal claim is beyond a suite whichever way it points. What singles out the negative one is discovery: a universal positive fails toward the user, who notices and reports, and the field generates inputs at a scale no suite matches; a universal negative fails toward an adversary, who is the only party that learns. Field discovery is what stands in for proof everywhere else in this model — the suite, and its users reporting what it missed — and this is the class where it is blind, so a check an agent drops is caught by a test that thought of it and by nothing else afterwards. The universal positive that lacks field discovery too — every valid rollback succeeds, learnt during an incident — falls to AIFIRST-33's question rather than to this one.
 *Accepting* that such a unit may be lifecycle-shaped, and so the harder contract to author this early.
+*Rejected* code that only sets what a check admits, its input crafted by nobody, counted with the check — a suite with an oracle evidences it.
 *Rejected* "the defect would be silent" as the criterion — a specific silent failure is exactly what a conformance test catches, since one can feed the input that must be refused and watch the result, so visibility separates nothing. What defeats a suite is the quantifier, not the noise a failure makes.
 
 **AIFIRST-33. Weigh what being wrong leaves past any release.**
-The question is one of the ratings (AIFIRST-31), weighing on its own whatever the call-site count: **can being wrong be taken back?** The model trades on a defect costing one unit's regeneration. Where being wrong instead leaves what outlives any release — state written to a disk, which a later release has to read, or state destroyed there; a node left unreachable — or disables the path by which everything else is repaired, that is no longer the trade being made, and review is bought as insurance. A breach is the adversarial rating's (AIFIRST-07).
+The question weighs in an error's cost, for a unit's line (AIFIRST-31): **can being wrong be taken back?** The model trades on a defect costing one unit's regeneration. Where being wrong instead leaves what outlives any release — state written to a disk, which a later release has to read, or state destroyed there; a node left unreachable — or disables the path by which everything else is repaired, that is no longer the trade being made, and review reduces the risk without removing it. A breach is AIFIRST-07's question.
 *Because* the model's economics assume that being wrong costs a regeneration. Where the cost lands on someone else and cannot be reversed, the cheapness of regenerating is not the question being asked.
-*Because* a breach is irreversible through its adversary, which the adversarial rating already counts, so counting it here too reads as two reasons where there is one; and the repair path belongs here, since a defect there makes every later defect unrepairable.
-*Because* a format another release reads is state its writer leaves behind: fixtures pin it only for the examples they carry, so a regenerated writer can drift outside them, and the drift persists in what it wrote — which makes a contract across releases this rating's case rather than a rating of its own.
-*Accepting* that the rating has no bright line — how far a consequence reaches is judged per unit, and the judgement is recorded beside it in `decomposition.mdx`.
-*Rejected* a breach counted here as well, one failure as two reasons; two questions in its place, the irreversible and the repair path, which are always judged together; the repair path folded into fan-out — a repair path is not a matter of call sites; a contract across releases as a rating of its own — beyond the state a writer leaves, what it caught is output another program reads live, which the next release can fix.
+*Because* a breach is irreversible through its adversary, which AIFIRST-07 already weighs, while the repair path belongs here, a defect there making every later defect unrepairable.
+*Because* a format another release reads is state its writer leaves behind: fixtures pin it only for the examples they carry, so a regenerated writer can drift outside them, and the drift persists in what it wrote.
+*Accepting* that the question has no bright line — how far a consequence reaches is judged per unit, and recorded with its line's reason.
+*Rejected* a breach counted here as well, one failure as two reasons; the repair path folded into fan-out, a repair path being no matter of call sites; a contract across releases as a question of its own — beyond the state a writer leaves, what it caught is output another program reads live, which the next release can fix.
 
 **AIFIRST-12. Keep reviewed code by contracting it; generate SD from the corpus.**
 Reviewed code worth keeping is drawn as a unit on DD, since SD takes nothing from DD but units; its API opens the loop in AIFIRST-09, and its CLI surface is reused. Churn that reaches it goes to SD first, by reverse substitution (AIFIRST-36). SD is generated from the corpus, taking reviewed code only as units.
 *Because* SD can take a DD body only as a unit, so reviewed code is either contracted or thrown away, and throwing working code away buys a regeneration and nothing else.
 *Because* generating SD over existing code would make its first act an evolution step over code that does not match the design — the operation the model concedes agents cannot do — and would give SD an agent-mutated descendant of DD's own history.
-*Accepting* more units than the ratings alone would draw, each an API to keep.
-*Rejected* working code as a weight on the line alone, or as no reason at all — each regenerates working code the ratings do not draw; a seed alone, at the moment the lines start — reviewed code worth keeping is not confined to that moment, and a rule tied to it is a milestone's plan; an existing API alone as a reason to contract — a signature with no body worth keeping says nothing about whether the boundary must exist before generation.
+*Accepting* more units than the other reasons would draw, each an API to keep.
+*Rejected* working code as a weight on the line alone, or as no reason at all — each regenerates working code nothing else draws; a seed alone, at the moment the lines start — reviewed code worth keeping is not confined to that moment, and a rule tied to it is a milestone's plan; an existing API alone as a reason to contract — a signature with no body worth keeping says nothing about whether the boundary must exist before generation.
 
 **AIFIRST-32. Give a concern a crate of its own only where it can part from the rest, and keep the unit graph closed and layered.**
 Concerns share a crate unless one of them can move between lines without the others — its line differs now, or the churn or risk ahead will part them — or an executable or a unit, of this milestone or a later one, uses it but not them, or sharing one crate would close a cycle through another; otherwise a few large crates hold. A unit depends only on units and on third-party crates a human declared. Units form layers, every edge pointing down, and a data unit never depends on a lifecycle unit.
@@ -412,13 +394,14 @@ Concerns share a crate unless one of them can move between lines without the oth
 *Rejected* a crate per concern, which authors APIs for boundaries nothing crosses; a crate per line, which mixes units that start on different lines; users counted as executables alone, which merges concerns a later unit will use apart; layering discovered unit by unit.
 
 **AIFIRST-34. State what must hold across units, and let each API's author keep it and confirm the unit's line.**
-Beside its units, a decomposition states the obligations that must hold across the milestone's code, each with the units owning the check it rests on, and where each unit's line starts; it designs no API. Whoever authors a unit's API decides how each obligation the unit touches is kept, and records it beside the obligation: by the API itself where an adversary chooses the input, its types and its checks leaving generated code around it no way past; by conformance tests written against the API where the input is the unit's own state (AIFIRST-14). An SD line, however reached, holds where every obligation its unit touches is kept so. While authoring the API, the author confirms the unit's line or changes it, amending the decomposition with the reason.
+Beside its units, a decomposition states the obligations that must hold across the milestone's code, each with the units owning the check it rests on, and the line each unit ships on; it designs no API. An obligation rests on units only: a crate whose API must keep one is a unit, never an SD crate. Whoever authors a unit's API decides how each obligation the unit touches is kept, and records it beside the obligation: by the API itself where an adversary chooses the input, its types and its checks leaving generated code around it no way past; by conformance tests written against the API where the input is the unit's own state (AIFIRST-14). An SD line, however reached, holds where every obligation its unit touches is kept so. While authoring the API, the author confirms the unit's line or changes it, amending the decomposition with the reason.
 *Because* an obligation that spans units — one unit's check, another's write, generated code between them — belongs to no single API, and the decomposition is the one page that sees them all.
 *Because* an API is designed as code, through its consumers (AIFIRST-09): a mechanism sketched in prose can be checked against nothing, while an obligation can be checked against the API once one exists.
 *Because* a suite is evidence for the inputs it uses, so where an adversary picks the input after the tests, only the API's own construction keeps the promise; a unit's own state is deterministic, and tests at its API reach it.
 *Because* whether an SD line holds turns on whether the API keeps the unit's obligations, which only its author knows, and only once the API exists.
-*Accepting* that a decomposition's lines are starting lines, any of which may change before the milestone ships.
-*Rejected* a mechanism sketched for each obligation — a type only the check can construct, say — which designs APIs before anyone works on them, and settles less than it seems, evidence that a check ran not being evidence of what it compared against; units and lines alone, which leave an obligation spanning units to whichever author notices it; obligations held by the security design, when not every obligation is a security one and their checks live in units; the means left to the author with no rule, under which an adversarial obligation kept by tests is kept only for the inputs tested; the means prescribed by the decomposition, which is API design in prose; a decider other than the API's author, a hand-off that adds no sight; the decomposition's line as final, routing a call through a pass with less evidence than its author; every line settled in one review after the last API; no line changed before generation, a wrong one shipping until a trigger fires.
+*Because* an agent-owned API changes with every regeneration, so neither its types nor tests written against it can hold an obligation.
+*Accepting* that a decomposition's lines may change until its milestone ships.
+*Rejected* a mechanism sketched for each obligation — a type only the check can construct, say — which designs APIs before anyone works on them and settles less than it seems, evidence that a check ran not being evidence of what it compared against; an obligation counted kept only where the API's types rule its breach out, which counts every way code can go wrong rather than the inputs an adversary chooses; units and lines alone, which leave an obligation spanning units to whichever author notices it; obligations held by the security design, when not every obligation is a security one and their checks live in units; lines settled in one review after the last API, or frozen before generation.
 
 **AIFIRST-09. Arrive at a unit's API by generating consumers and judging the result.**
 The agent proposes an API and generates consumers against it; the human judges and iterates. A concern a third-party standard already defines needs no interface of ours — an event stream or a counter mechanism, say — though what the product emits through it is a surface of its own.
@@ -427,7 +410,7 @@ The agent proposes an API and generates consumers against it; the human judges a
 *Rejected* authoring APIs cold. *Rejected* extracting them from a generated implementation, which lets its accidents harden into the contract.
 
 **AIFIRST-35. Run a milestone as its design, its decomposition, its units' APIs, then generation.**
-A milestone's code is generated after three steps, each depending on the one before: its scope and design in the corpus; its decomposition — candidates rated, units drawn, lines started, obligations stated; and each unit's API, authored through generated consumers, keeping its obligations and confirming its line. Generation then runs against the tagged APIs, whether their bodies exist yet or not (AIFIRST-27).
+A milestone's code is generated after three steps, each depending on the one before: its scope and design in the corpus; its decomposition — crates and units drawn, lines set, obligations stated; and each unit's API, authored through generated consumers, keeping its obligations and confirming its line. Generation then runs against the tagged APIs, whether their bodies exist yet or not (AIFIRST-27).
 *Because* the steps are dependencies, not dates: generation needs the contracts (AIFIRST-04), the contracts need units drawn (AIFIRST-31), and the units need the milestone's design — an order that holds for any milestone, which makes it the doctrine's rather than a plan.
 *Rejected* the order told in prose alone, where nobody checks a milestone against it; the order left to each milestone's tracker, which holds dates and owners, not what must precede what.
 
@@ -437,9 +420,9 @@ A milestone's code is generated after three steps, each depending on the one bef
 `flor` is the DD workspace, and it holds a crate for every unit, since a contract exists as compilable code before a body fills it (AIFIRST-27). `flor-dist` holds the SD implementations and the integration, assembles the graph, and packages every executable. They share no history. Binaries live in `flor-dist` because they are integration, not because a unit may not be one: where a binary's own logic has to be reviewed it becomes a unit like any other, with its crate in `flor`. Cargo builds a workspace's own bin targets and not a dependency's, so the executable is produced in `flor-dist` by a one-line `main` over that unit's entry point — assembly rather than implementation, and human-owned like the manifest around it.
 *Because* the review regimes are incompatible: DD requires review of every change and SD forbids it, so one repository would mean one CI, one CODEOWNERS and one set of protections covering opposite rules, with misclassification silent.
 *Because* SD's history is regeneration-shaped, and wholesale rewrites in the same log would degrade blame and bisect for the line that depends on them.
-*Accepting* that a DD binary can only be compile-tested in `flor`, against whatever bodies exist there; its real exercise is the suite, which only `flor-dist` can run.
+*Accepting* that a DD binary runs in `flor` only against whatever bodies exist there; its real exercise is the suite at the product's edge, which only `flor-dist` can run.
 *Rejected* branches or directories in one repository — a boundary held by discipline breaks on one inattentive command. *Rejected* naming the SD repository for the product — it is read mainly by agents and is not a front door.
-*Rejected* forbidding a binary-shaped unit — a DD binary needs no dependency running from `flor` into `flor-dist`, because what a unit names is a contract and which line satisfies it is decided by the assembly (AIFIRST-11). Nor is the shim a consolation prize: the shape it makes possible is a unit sitting *above* generated units rather than only beneath them, which is what the assembly rule buys and what lets a binary's logic be reviewed at all. What differs from a library unit is enforcement — its contract is the CLI and the output, carried by fixtures and by the guide rather than by a public-API diff.
+*Rejected* forbidding a binary-shaped unit: what a unit names is a contract and the assembly decides which line satisfies it (AIFIRST-11), so a DD binary needs no dependency running from `flor` into `flor-dist`, and its logic can be reviewed while it sits above generated units.
 
 **AIFIRST-11. Move DD code to SD as git-tagged crates, and publish nothing.**
 Each unit is its own crate, tagged on demand: when it becomes substitutable, or when a fix must reach SD. `flor-dist`'s workspace root is the single place that says which line supplies each unit — a dependency it declares itself by source, a path for an SD implementation and a git tag for a DD one; a dependency declared inside a DD crate by a `[patch]` entry over the `flor` source, which reaches transitively and unifies the graph. Substitution is a one-line edit there either way, and the patch table is a standing inventory of which units are generated now. Nothing goes to crates.io.
@@ -448,7 +431,7 @@ Each unit is its own crate, tagged on demand: when it becomes substitutable, or 
 *Because* the graph will otherwise carry a unit twice and say nothing about it: Cargo resolves two revisions of one unit without complaint, and the compiler objects only where a type crosses between the copies — otherwise the product ships two of the unit and of whatever state it holds. So the assembly carries an invariant of its own: **each unit resolves to exactly one package in every build configuration**, enforced mechanically, and scoped to our own units so that ordinary third-party duplicates cannot mute it.
 *Because* that check is also what keeps pins per unit rather than repository-wide: units that depend on one another are forced to a common revision by it, and units that do not are left independent — which is the constraint the dependency graph actually imposes, rather than a coarser one declared over the whole repository and paid for by dragging every unit's unreleased work along with each bump.
 *Accepting* that `flor` and `florete` may be taken by someone else; the binary name, the crate names and the brand do not depend on the registry.
-*Accepting* a third mechanical check in the gate, and that a duplicate unit is diagnosed rather than prevented.
+*Accepting* one more mechanical check in `flor-dist`'s CI, and that a duplicate unit is diagnosed rather than prevented.
 *Revisit* when a third-party SDK is designed.
 *Rejected* vendoring a copy.
 
@@ -467,7 +450,6 @@ Generating agents build against the real `flor` — a git dependency checks out 
 **AIFIRST-13. Substitute by a fixed sequence, deleting the SD implementation last.**
 Freeze the unit's contract; have `flor-dist` build a second configuration taking the DD crate by git tag; require the suite green in both configurations; land the assembly move; then delete the SD implementation.
 *Because* deleting last keeps every earlier step reversible by the same one-line change, and running both configurations catches a DD crate that passes on its own terms while changing behaviour the product depends on.
-*Because* the suite is black-box over the product, not individual crates.
 *Rejected* substituting automatically on a DD release — it couples a release decision to a product decision and removes the human from a change that reaches customers.
 
 **AIFIRST-14. Hold the conformance suite in `flor`, append-only and black-box over a contract.**
@@ -508,23 +490,19 @@ Any of the three triggers a regeneration: fixes reliably producing new defects, 
 *Because* all three are visible from outside the code, and the append-only suite makes any of them safe to act on.
 *Accepting* that the defect ceiling is noisy and its first firing is a judgement rather than a threshold crossing.
 
-**AIFIRST-18. Choose what moves DD-ward by trigger, and keep the lines' state live.**
-Movement is triggered by a security finding, by the defect ceiling, or by an obligation the unit's SD line cannot keep, or keeps only convolutedly — judged by its API's author while authoring the API, or raised by a finding later — and never by quota. Until the move lands, the unit ships on SD with that obligation recorded as unkept. Among triggered candidates, severity decides and shape breaks ties — data-shaped units substitute into any consumer, lifecycle-shaped ones impose a runtime. A unit may move once everything it depends on is contracted, not once its dependencies are DD-authored. The state of the lines is kept live in the decomposition that drew each unit — its line and the reason, a lapse in review, an obligation its SD line leaves unkept — and the DD-authored share, of the units and of the security-relevant surface, and the moves either way are read off it.
-*Because* the failure mode is a frontier that never advances, and keeping what moved visible shows it without dictating a response.
-*Because* a bare share would not show it: we define the units it counts, so a re-decomposition moves the ratio without moving any implementation.
+**AIFIRST-18. Choose what moves DD-ward by trigger, and read the frontier off the assembly.**
+Movement is triggered by a security finding, by the defect ceiling, or by an obligation the unit's SD line cannot keep, or keeps only convolutedly — judged by its API's author while authoring the API, or raised by a finding later — and never by quota. Until the move lands, the unit ships on SD with that obligation recorded as unkept in its decomposition (AIFIRST-02). Among triggered candidates, severity decides and shape breaks ties — data-shaped units substitute into any consumer, lifecycle-shaped ones impose a runtime. A unit may move once everything it depends on is contracted, not once its dependencies are DD-authored. The DD-authored share, of the units and of the security-relevant surface, and the moves either way are read off the assembly, which says which line supplies each unit.
+*Because* the failure mode is a frontier that never advances, and naming the units that moved shows it without dictating a response — which a bare share would not, since we define the units it counts.
 *Because* an obligation SD cannot keep is what makes an SD line wrong, whether it is found while the API is authored or later, and not every obligation is a security one.
-*Because* the lines' state changes with each move rather than with each release, and the decomposition is where each line is decided.
-*Rejected* a fixed effort split — it converts judgement into arithmetic and will be gamed by whoever is behind on it.
-*Rejected* an unkept obligation as a blocker on the release, which paces releasing by DD's body; a report per release, stale between moves; the lines' state in release notes, which carry none of the model (AIFIRST-21).
+*Rejected* a fixed effort split, which turns judgement into arithmetic that whoever is behind will game; an unkept obligation as a blocker on the release, which paces releasing by DD's body.
 
 **AIFIRST-36. Take churn reaching a DD unit on SD first, and bring the unit back after the release.**
-When a milestone's churn reaches a DD unit, SD implements its new contract first: the assembly redirects the unit to SD's crate by a `[patch]` entry, and generation supplies the body. The SD line it reaches is held to the test any SD line is (AIFIRST-34), and where an obligation is not kept the unit ships with it recorded as unkept, due back on DD (AIFIRST-18). The move defers the unit's review rather than reclassifying it: its line stays DD, and DD writes the new contract's body itself in the gap after the release (AIFIRST-25), substituting back by the fixed sequence (AIFIRST-13). A unit that should stay on SD has its line changed in the decomposition, with the reason.
-*Because* releasing first applies to churn as much as to new units: a DD unit taking every change on DD would pace the milestone by DD.
-*Because* mechanically it is substitution run backwards — a patch entry added back, the one-line edit the assembly keeps reversible.
+When a milestone's churn reaches a DD unit, SD implements its new contract first: the assembly redirects the unit to SD's crate by a `[patch]` entry, and generation supplies the body. The milestone ships the unit on SD, and its decomposition says so, with the reason (AIFIRST-02). That SD line is held to the test any SD line is (AIFIRST-34), an obligation it cannot keep recorded as unkept. The move defers the unit's review rather than reclassifying it: in the gap after the release DD writes the new contract's body itself (AIFIRST-25) and substitutes it back by the fixed sequence (AIFIRST-13), and keeping the unit on SD past that milestone takes a later decomposition saying so, with the reason.
+*Because* releasing first applies to churn as much as to new units.
 *Because* a deferral that needs a fresh trigger to end becomes a reclassification by default, the frontier slipping back with nobody deciding it.
-*Because* nothing flows out of SD except findings, so DD writes its own body: adopting SD's would give DD code its review did not produce.
-*Accepting* that the unit's review lapses for a milestone, the suite again its only evidence and the lapse recorded in the decomposition; and that catching up competes with the next milestone's work for the gap.
-*Rejected* DD implementing every change to a DD unit, which paces the milestone by DD; DD drawn only around stable cores, when churn arrives where it arrives — often where working code was kept; a stricter test for a reverse-substituted line, which reinstates a mandate the ratings replaced; no test at all, which ships an unkept obligation unrecorded; the way back only by a trigger, which makes the lapse permanent unless something else fires; the API's author deciding afresh after each release, a recorded call reopened every time; DD adopting SD's body after reviewing it.
+*Because* nothing flows out of SD except findings: adopting SD's body would give DD code its review did not produce.
+*Accepting* that the unit's review lapses for a milestone, the suite again its only evidence; and that catching up competes with the next milestone's work for the gap.
+*Rejected* DD drawn only around stable cores, when churn arrives where it arrives — often where working code was kept; a stricter test for a reverse-substituted line, which reinstates a mandate where a human's call stands; the line left DD while the unit ships on SD, under which a decomposition states what its milestone does not ship.
 
 **AIFIRST-29. On DD, shed erosion by controlled regeneration below the unit.**
 Regeneration is how generated text sheds the erosion edits accumulate, and DD uses it too — below the unit. A smaller scope of regeneration buys human control: a function or a section of design prose may be regenerated, a whole contract implementation or design doc shouldn't. It is refactoring with generation as its engine: what matters is pinned before the step and checked after it — in code by the component's own tests, held fixed through the step; in prose by a reviewed extraction of what the section carries beyond its log and Shape, and of what is erosion to be dropped — and an agent compares the two versions once the step is done. The review then reads the new version whole rather than the diff.
