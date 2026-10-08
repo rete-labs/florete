@@ -38,12 +38,12 @@ Everyone starts at the [Shape](#shape): it maps the units with the line A0 ships
                                           upstreams
 
   SD crates   crate               owns                                                used by
-              flor-dist-bundle    the bundle: container, manifest, entry-name check   retectl, flor
+              flor-dist-bundle    the bundle: container, manifest, entry-name check   rete, flor
               flor-dist-scope     a scope's root under the state directory, its lock  flor,
                                   and its receipt                                     flor-vertex
 
   integration generated in flor-dist, bound by the corpus and the suite
-              each executable's own logic: retectl, flor, flor-vertex
+              each executable's own logic: rete, flor, flor-vertex
               the rete source, the validator, the compiler and its version ladder
               enroll's run, activation
               the systemd unit, its text a golden fixture
@@ -62,11 +62,11 @@ Everyone starts at the [Shape](#shape): it maps the units with the line A0 ships
 **FLOW**
 
 ```log
-  runs        retectl compile       flor-artifact-store reads the sets, the version ladder →
+  runs        rete compile          flor-artifact-store reads the sets, the version ladder →
                                     compiler → flor-vertex-config validates → flor-artifact signs
                                     through flor-identity → flor-artifact's admission check →
                                     flor-artifact-store rebuilds with what was admitted
-              retectl issue-bundle  flor-artifact-store reads the set → flor-identity issues the
+              rete issue-bundle     flor-artifact-store reads the set → flor-identity issues the
                                     principals → flor-dist-bundle packs them, the manifest signed
                                     through flor-artifact
               flor enroll           flor-dist-bundle opens the bundle, its manifest verified through
@@ -185,7 +185,7 @@ The access check is a unit of its own, apart from transport and the adapters, wi
 *Rejected* regenerating working code; the outbound's dispatch in generated code.
 
 **DECOMP-A0-12. Generate every executable's own logic, the vertex's and enroll's included.**
-`retectl`, `flor` and `flor-vertex` are integration in `flor-dist`; so are enroll's run and activation.
+`rete`, `flor` and `flor-vertex` are integration in `flor-dist`; so are enroll's run and activation.
 *Because* every check an obligation rests on is a unit's, and every obligation must hold despite the glue (DECOMP-A0-04); and the vertex's glue is where C0 and C1 churn.
 *Accepting* that SD writes lifecycle code in A0, and that the repair path rests on the bundle's fixtures and the suite's convergence tests.
 *Rejected* `flor-vertex` as a binary-shaped DD unit, which rested on rules and dispatch sitting in its glue; enroll as a unit.
@@ -195,7 +195,7 @@ The access check is a unit of its own, apart from transport and the adapters, wi
 *Because* both executables derive every path from a scope and hold its lock, so one crate keeps one implementation of them (AIFIRST-06), which C0's agent takes over with only its call sites regenerated; no unit calls it, and no obligation rests on its API.
 *Because* a fixture reviews the text systemd reads.
 *Accepting* that the scope's paths sit in generated code, so that no path comes from a name the rules refuse has to hold through identity's API (DECOMP-A0-04).
-*Rejected* `flor-host` as a unit, an API no unit calls; one crate holding `retectl`'s tree too, a layout no other consumer shares; a reviewed crate for one substituted string.
+*Rejected* `flor-host` as a unit, an API no unit calls; one crate holding `rete`'s tree too, a layout no other consumer shares; a reviewed crate for one substituted string.
 
 ### Cross-cutting
 
@@ -236,7 +236,7 @@ DD: `flor-identity`, `flor-artifact`, `flor-logging`, `flor-vertex-config`, `flo
 *Accepting* new DD code on A0's path: the access check, identity's import check and its key operations, artifact's signing and verification, logging's sink, the egress filter.
 
 **DECOMP-A0-19. Name a crate for what it is part of, not for who uses it.**
-`flor-vertex-<part>` for a part of the vertex, whichever executables use it — its configuration among them, though `retectl` writes it — direction before protocol where the kind fixes one; FlorIO, both ways and both north and south, as `flor-vertex-florio`; `flor-<concern>` for any other unit; `flor-dist-<name>` for integration, the executable's name in its bin target. An SD body keeps its unit's name; an SD crate is named as integration, and takes a unit's name if it becomes one.
+`flor-vertex-<part>` for a part of the vertex, whichever executables use it — its configuration among them, though `rete` writes it — direction before protocol where the kind fixes one; FlorIO, both ways and both north and south, as `flor-vertex-florio`; `flor-<concern>` for any other unit; `flor-dist-<name>` for integration, the executable's name in its bin target. An SD body keeps its unit's name; an SD crate is named as integration, and takes a unit's name if it becomes one.
 *Because* a name should say what a crate is part of without context, and many crates read grouped; and what a crate is part of stays put while the executables using it change.
 *Rejected* `flor-<unit>` throughout; a prefix chosen by who uses a crate; `northbound-` or `bidir-` for FlorIO.
 

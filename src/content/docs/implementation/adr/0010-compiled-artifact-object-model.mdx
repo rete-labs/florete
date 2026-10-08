@@ -154,7 +154,7 @@ Keep `payload` (signed-container convention) — not `spec`, which carries the K
 
 ### Evolution
 
-- B1+ swaps the ctrl *producer* (`retectl compile` → Coordinator) with no wire change; the join and verification rules are unchanged.
+- B1+ swaps the ctrl *producer* (`rete compile` → Coordinator) with no wire change; the join and verification rules are unchanged.
 - Link ctrl (liveness/up-down) slots into the existing ctrl envelope; the agent already dispatches "has ctrl" per vertex.
 - New `links` rule types and first-class objective objects grow under the typed-rule shape, feature-by-feature.
 

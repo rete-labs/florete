@@ -3,21 +3,21 @@ title: Artifact Store
 description: How A0 writes, checks and reads compiled artifacts, on the operator's machine and on a node
 ---
 
-`retectl compile` produces each node's artifacts, `retectl issue-bundle` packs one node's, `flor enroll` lands them on that node, and `flor-vertex` reads its own. This page designs the one library all four reach them through: what an artifact is while it is moved, where a node's artifacts rest, what is checked before one is written, and what a consumer gets back.
+`rete compile` produces each node's artifacts, `rete issue-bundle` packs one node's, `flor enroll` lands them on that node, and `flor-vertex` reads its own. This page designs the one library all four reach them through: what an artifact is while it is moved, where a node's artifacts rest, what is checked before one is written, and what a consumer gets back.
 
 If you write or read artifacts from a command or a workload, [Using the store](#using-the-store) is the whole surface. If you are implementing the store, the sections after the [Shape](#shape) take a write through its checks and then describe the files beneath. If you are changing the design, start at the Shape and the [Decision Log](#decision-log). How a bundle carries artifacts to a node is [Enrollment](/docs/implementation/c0-tended-tunnels/mgmt-plane/enrollment)'s, and what a vertex does with the configuration it reads is A0's [Design](/docs/implementation/a0-alef-authoring/design)'s.
 
 ## Using the store
 
-**Everything goes through a handle, and no path comes out of one.** A caller opens the store for one instance and asks it for documents; it never joins a path of its own, on either side of the rete. A handle is opened with a trust domain, the trust anchors and, where the store belongs to one node, that node — the values the scope's [identity store](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#the-identity-store) holds or, in the run that first establishes it, the values its check has just accepted. A scope's handle names its node, its identity store beside it in the scope root; the operator's names none, that instance holding every node's artifacts, and its identity store is the one in `retectl`'s own tree.
+**Everything goes through a handle, and no path comes out of one.** A caller opens the store for one instance and asks it for documents; it never joins a path of its own, on either side of the rete. A handle is opened with a trust domain, the trust anchors and, where the store belongs to one node, that node — the values the scope's [identity store](/docs/implementation/c0-tended-tunnels/mgmt-plane/identity#the-identity-store) holds or, in the run that first establishes it, the values its check has just accepted. A scope's handle names its node, its identity store beside it in the scope root; the operator's names none, that instance holding every node's artifacts, and its identity store is the one in `rete`'s own tree.
 
 **What the handle names is what a write is held to.** A handle bound to a node admits that node's documents and refuses any other, so a bundle carrying another node's artifact never lands. A handle bound to none sorts each document by the node its own address carries, and what it checks is that the document parses, belongs to this rete, and joins a coherent set.
 
 **An artifact is addressed to a workload, and that address is its key.** The envelope names one node-scoped workload — `spiffe://flor.demo/workload/alpha/hop` — and one plane, and the pair is how every caller asks for it. A node's **set** is its mgmt documents at one version, and the version numbers the set's content — its payloads and its membership — so a set signed again over the same content keeps its version. In A0 a set holds one document, its vertex's.
 
-**Two calls write, and each leaves exactly what it was given.** `flor enroll` **replaces a set**, its scope's. `retectl compile` **rebuilds the store**, every set at once, so a node the source no longer names stops being shipped and an artifact no longer compiled stops being kept. An admitted write reports the version the store held before and the version it admitted; equal versions mean the content did not change.
+**Two calls write, and each leaves exactly what it was given.** `flor enroll` **replaces a set**, its scope's. `rete compile` **rebuilds the store**, every set at once, so a node the source no longer names stops being shipped and an artifact no longer compiled stops being kept. An admitted write reports the version the store held before and the version it admitted; equal versions mean the content did not change.
 
-**Two calls read.** A consumer asks for one document by its key and gets it back with its envelope parsed; the payload is handed over as the type the caller names, which nothing else parses, or raw. The other read is a node's whole set: `retectl issue-bundle` packs it, and `retectl compile` reads each node's as the ladder its next versions are built on ([Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile)). Deciding versions and signing are `compile`'s; the store compares nothing but versions.
+**Two calls read.** A consumer asks for one document by its key and gets it back with its envelope parsed; the payload is handed over as the type the caller names, which nothing else parses, or raw. The other read is a node's whole set: `rete issue-bundle` packs it, and `rete compile` reads each node's as the ladder its next versions are built on ([Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile)). Deciding versions and signing are `compile`'s; the store compares nothing but versions.
 
 **A write is refused whole, before anything is written.** The store refuses a document whose envelope it cannot read, one addressed to another rete or another node, one whose signature does not check out, and a set older than the mark. Any of those refuses the batch it arrived in, leaving what the store holds untouched. A consumer's read refuses little: a key naming another node than the handle's is refused, as a write would refuse it; a document of the handle's own node that is not there is reported absent, and the caller decides what that means; and a document stamped for a newer release than the one reading it is the same upgrade error a write would raise.
 
@@ -29,9 +29,9 @@ If you write or read artifacts from a command or a workload, [Using the store](#
   subject     the artifact store: one library through which every A0 user
               writes and reads compiled artifacts, with no process behind it
 
-  users       retectl compile       reads each node's set as its version
+  users       rete compile          reads each node's set as its version
                                     ladder, then rebuilds the store
-              retectl issue-bundle  reads one node's set
+              rete issue-bundle     reads one node's set
               flor enroll           replaces its scope's set
               flor-vertex           reads its own document
 
@@ -168,7 +168,7 @@ If you write or read artifacts from a command or a workload, [Using the store](#
 
 **Anything not older is written whole, an equal version included.** Two sets at one version carry the same content, so what an equal-version write can change is the signature, and writing it is how a re-signed set reaches the compiled tree and, at its next re-key, a node. Re-enrolling to re-key a node therefore rewrites its set and reports the same version before and after, which the caller reads as unchanged. A write that was interrupted leaves members at different versions, and re-running it completes it.
 
-**A version issued twice is not the store's to catch.** The compiled tree is the ledger, and `retectl issue-bundle` refusing an uncommitted tree is what keeps a number from being handed out twice. A set arriving at the version already held is, as far as the store can tell, the content it holds, and it is written like any other.
+**A version issued twice is not the store's to catch.** The compiled tree is the ledger, and `rete issue-bundle` refusing an uncommitted tree is what keeps a number from being handed out twice. A set arriving at the version already held is, as far as the store can tell, the content it holds, and it is written like any other.
 
 **A node removed from the source takes its ladder with it.** A rebuild removes the node's set, and with it the only record of the versions it reached. Declared again later, it starts low, below the mark its host still holds, and its next enrollment is refused until that scope root is removed by hand.
 
@@ -225,7 +225,7 @@ A document is an artifact's bytes, fixed when its producer signs and serialises 
 ### Users and keys
 
 **ART-A0-04. Route every A0 user through one store, with two instances.**
-`retectl compile` reads each node's set as its version ladder and rebuilds the store; `retectl issue-bundle` reads one node's set; `flor enroll` replaces its scope's set; `flor-vertex` reads its own document. The compiled tree is one instance, holding every node's set and committed to git; a scope is the other, holding its own node's set. Both use the same file backend and layout.
+`rete compile` reads each node's set as its version ladder and rebuilds the store; `rete issue-bundle` reads one node's set; `flor enroll` replaces its scope's set; `flor-vertex` reads its own document. The compiled tree is one instance, holding every node's set and committed to git; a scope is the other, holding its own node's set. Both use the same file backend and layout.
 *Because* a tree and a scope differ only in how many nodes they hold, and every place that knows where an artifact lives or what admits one is then one module — `issue-bundle` included, which otherwise reads back `compile`'s layout by its own path code.
 *Because* the version ledger is the producer's, and the store only holds and admits: a store that versioned and signed would verify signatures it had just made, which leaves the operator's instance no party independent of the producer.
 *Accepting* that the scope's layout is fixed by the compiled tree's, which is a format people review; and that two modules reason about versions — `compile` decides them, and the store refuses an older one.

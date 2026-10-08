@@ -25,7 +25,7 @@ gh attestation verify flor-v1.0.0-linux-x86_64.tar.gz --repo rete-labs/flor-dist
 tar -xzf flor-v1.0.0-linux-x86_64.tar.gz -C ~/.local/bin
 ```
 
-Without `gh`, `sha256sum -c` against the release's `SHA256SUMS` checks integrity, but not origin. The archive holds `flor`, `flor-vertex` and `retectl` at its root, so any bin directory will do.
+Without `gh`, `sha256sum -c` against the release's `SHA256SUMS` checks integrity, but not origin. The archive holds `flor`, `flor-vertex` and `rete` at its root, so any bin directory will do.
 
 **A scope runs once it is activated.** Activation writes the systemd unit if needed, then enables and starts the scope's instance:
 
@@ -55,7 +55,7 @@ systemctl --user try-restart 'flor@*'
   boundary    the channel places binaries; flor wires and activates a scope;
               enroll writes rete material and installs nothing
 
-  executables flor, flor-vertex, retectl — one release version over all of them,
+  executables flor, flor-vertex, rete — one release version over all of them,
               built and released together, flat in one bin directory
 
   channel     one: github releases of flor-dist
@@ -258,7 +258,7 @@ It sits at the root of `flor-dist`, on a human-owned path guarded as the CI conf
 *Rejected* the script in `flor` — a release in `flor-dist` blocked on a `flor` commit, and a tag and an asset in different trust domains; a subdirectory — a longer audit URL, and a file users are told to read sitting among build plumbing; a version-free script resolving the latest release at run time — its URL would no longer pin anything, and a kept copy would not say what it installed; a version argument or variable — a second way to the same release, and a constant that stops describing what runs.
 
 **INST-A0-05. A release publishes one archive per platform, `SHA256SUMS` and attestations.**
-The archive is `flor-v<version>-<os>-<arch>.tar.gz` — `linux-x86_64` in A0 — musl-static, holding `flor`, `flor-vertex` and `retectl` at its root and nothing else. `SHA256SUMS` lists every asset of the release, and every asset carries an attestation from the release workflow. The script maps `uname` to these names.
+The archive is `flor-v<version>-<os>-<arch>.tar.gz` — `linux-x86_64` in A0 — musl-static, holding `flor`, `flor-vertex` and `rete` at its root and nothing else. `SHA256SUMS` lists every asset of the release, and every asset carries an attestation from the release workflow. The script maps `uname` to these names.
 *Because* an archive that holds only executables unpacks straight into a bin directory. The OS is spelled as its users say it and the arch as that platform spells it, and a map is needed whatever the names are, since `uname` misreports under emulation and differs between systems for one architecture.
 *Accepting* that the release carries no licence asset: the project's licence, MIT or Apache-2.0, is stated by the repository, and the licences of bundled dependencies are not reproduced beside the binaries.
 *Revisit* when flor is distributed beyond its own pilots.

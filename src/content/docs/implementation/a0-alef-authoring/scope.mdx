@@ -21,7 +21,7 @@ Limitations:
 - Cross-platform, with only Linux target in A0 (Mac joins in C0, Windows in C1)
 - User-mode only (system-mode joins in C0)
 - Requires separate access path for remote nodes even for normal operations (cannot rely on Florete as the single connectivity: re-enrolling a running node requires separate SSH access, because enroll needs flor-vertex to be terminated)
-- Requires ~/.retectl backup as the only safety measure for root CA
+- Requires ~/.rete backup as the only safety measure for root CA
 - Requires re-enrollment of each node before 90-day cliff of TLS principals' certificates (A0 enrollment extends the cliff, as a node is freshly re-keyed); no mechanisms for monitoring & alerting in A0, so operator must rely on his own timer/calendar item.
 
 ### Maintenance
@@ -70,10 +70,10 @@ systemctl --user start flor@<node>.<rete>          # start it again
 ### Rete-authoring CLI
 
 ```bash
-retectl init                    # initialize new rete, minting its root CA and signer
-retectl validate                # validate rete config
-retectl compile                 # compile rete for all nodes
-retectl issue-bundle --node <n> # pack identities and artifacts for a node
+rete init                       # initialize new rete, minting its root CA and signer
+rete validate                   # validate rete config
+rete compile                    # compile rete for all nodes
+rete issue-bundle --node <n>    # pack identities and artifacts for a node
                                 # in A0 re-mints identities each time
 ```
 
@@ -97,8 +97,8 @@ retectl issue-bundle --node <n> # pack identities and artifacts for a node
 
 ## Deferred Features
 
-- A way for `retectl issue-bundle` to issue only artifacts, without re-minting identities. This should be considered right after A0's release.
-- `retectl id issue`, minting further signing principals; the command joins in C0.
+- A way for `rete issue-bundle` to issue only artifacts, without re-minting identities. This should be considered right after A0's release.
+- `rete id issue`, minting further signing principals; the command joins in C0.
 
 ## Release Gate
 
