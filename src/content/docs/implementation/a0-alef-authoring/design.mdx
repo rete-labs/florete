@@ -17,7 +17,7 @@ If you are implementing A0, the sections after the [Shape](#shape) follow a node
               workstation, and whose only channel between them is a couriered
               bundle
 
-  components  retectl      init, id issue, validate, compile, issue-bundle —
+  components  retectl      init, validate, compile, issue-bundle —
                            offline in every command
               flor         activate, deactivate, version, enroll
               flor-vertex  the node's network proxy
@@ -238,10 +238,10 @@ The vertex serves every principal it holds material for, opens no listener for o
 *Rejected* refusing such a set, which lets the identity store veto the set.
 
 **DSGN-A0-06. Roll out by re-enrollment, with no `publish`.**
-Every change to a node's state reaches it in a fresh bundle — compile, commit, issue, courier, stop, enroll, start — and re-mints every principal on the node. `retectl` ships `init`, `id issue`, `validate`, `compile` and `issue-bundle`, all offline, with no `publish`, no `config.toml` and no path into flor.
+Every change to a node's state reaches it in a fresh bundle — compile, commit, issue, courier, stop, enroll, start — and re-mints every principal on the node. `retectl` ships `init`, `validate`, `compile` and `issue-bundle`, all offline, with no `publish`, no `id issue`, no `config.toml` and no path into flor.
 *Because* A0 has no coordinator to publish to or sync from, and a command that exists is a promise.
-*Accepting* that the fleet converges as fast as the operator walks it, and that a revocation takes effect node by node on the same walk.
-*Rejected* a `publish` that refuses; calling the courier step a publish, which names a mechanism A0 does not have.
+*Accepting* that the fleet converges as fast as the operator walks it, and that a revocation takes effect node by node on the same walk; and that a rete keeps the signer `init` mints for as long as it runs A0.
+*Rejected* a `publish` that refuses; calling the courier step a publish, which names a mechanism A0 does not have; `id issue`, minting a second signer, when the one `init` mints lasts a year by default, longer than any A0 pilot.
 
 ### Installation and supervision
 

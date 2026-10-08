@@ -70,10 +70,9 @@ systemctl --user start flor@<node>.<rete>          # start it again
 ### Rete-authoring CLI
 
 ```bash
-retectl init                    # initialize new rete
+retectl init                    # initialize new rete, minting its root CA and signer
 retectl validate                # validate rete config
 retectl compile                 # compile rete for all nodes
-retectl id issue                # mint signing principals
 retectl issue-bundle --node <n> # pack identities and artifacts for a node
                                 # in A0 re-mints identities each time
 ```
@@ -99,6 +98,7 @@ retectl issue-bundle --node <n> # pack identities and artifacts for a node
 ## Deferred Features
 
 - A way for `retectl issue-bundle` to issue only artifacts, without re-minting identities. This should be considered right after A0's release.
+- `retectl id issue`, minting further signing principals; the command joins in C0.
 
 ## Release Gate
 
