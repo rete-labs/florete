@@ -7,7 +7,7 @@ description: OpenMetrics- and tracing-based, node-local for C0
 
 C0 observability is **node-local by constraint** ([Scope · Maintenance](../scope#maintenance)): every flor process logs to stderr, the host's system logger stores the stream, and nothing leaves the node — no collector, no upload, no dashboards. The upload path arrives as a metrics push to the coordinator's node-facing service (C1+/B1, sketched under [Collection](#collection-where-each-signal-goes)).
 
-Within that constraint, this page covers the scope's five maintenance events — loss of connectivity, crashes and abnormal terminations, slowdown of traffic flows, excessive resource usage, security issues — for all of flor's own running components: the vertex, the agent, the coordinator, and (in its small, operator-tool way) `retectl`. Tenant workloads are out of scope: the [supervised-program contract](../mgmt-plane/agent#supervision-mechanics) provisions their log sink, and everything else about their observability is their own business.
+Within that constraint, this page covers the scope's five maintenance events — loss of connectivity, crashes and abnormal terminations, slowdown of traffic flows, excessive resource usage, security issues — for all of flor's own running components: the vertex, the agent, the coordinator, and (in its small, operator-tool way) `rete`. Tenant workloads are out of scope: the [supervised-program contract](../mgmt-plane/agent#supervision-mechanics) provisions their log sink, and everything else about their observability is their own business.
 
 Two consumers set the bar for every choice below: an **operator reading the host log during an incident** (`journalctl`, or whatever the host's syslog daemon writes), and a **pilot user exporting logs** to attach to a bug report ([user-guide obligations](#user-guide-obligations)). The future third consumer — the Coordinator's Monitor step ([B1 sketch](/docs/implementation/b1-cloud-control/coordinator#microservice-decomposition-sketch), where node observations feed the control loop) — consumes the counter layer through a transport that does not exist yet; C0's job is only to make sure the counters will not need re-instrumenting when it does.
 
@@ -335,7 +335,7 @@ after:   DEBUG socks5_inbound: conn{initiator=…/user/carol client_sock_addr=12
 
 Under concurrency that is the difference between a readable log and an unreadable one, and it is why the decision could not wait: C0 is already rewriting the output layer for the [sink classes](#the-log-stream) and the [self-stamped clock](#timestamps-and-the-clock), and that layer is written once either way.
 
-**Instrument sparingly — spans mark operations, never packets.** C0's spans: one per proxied connection in the vertex, one per sync in the agent (with `set_version` as a field), one per request in the coordinator. Nothing on a per-packet or per-datagram path, where span creation would be a real cost rather than a rounding error. `retectl` gets none — a sequential CLI has no concurrency to attribute.
+**Instrument sparingly — spans mark operations, never packets.** C0's spans: one per proxied connection in the vertex, one per sync in the agent (with `set_version` as a field), one per request in the coordinator. Nothing on a per-packet or per-datagram path, where span creation would be a real cost rather than a rounding error. `rete` gets none — a sequential CLI has no concurrency to attribute.
 
 **When an event must be a `tracing::` event rather than a `log::` one.** The `log` bridge carries a fixed field set (`message`, `log.target`, `log.module_path`, `log.file`, `log.line`) — a bridged record is an opaque string plus source location, and `log`'s own key-values are not forwarded. Therefore:
 
@@ -380,7 +380,7 @@ C0 collects nothing. But the shape collection will take determines whether C0's 
 
 **External log consumers stay possible, and are not ours to build.** A SIEM, or any log-aggregation stack, ingests from the host logger — journald, syslog, a file — which is exactly where the event stream already lands. We build no integration and block none. That such consumers may be wanted on some nodes and not others (a cloud node shipping a full stream; an edge node shipping a reduced or locally-processed one) is the general shape rather than a special case: **stream verbosity and upload scope are per-node policy**, which in Florete's model eventually means operator-authored mgmt bounds with the Coordinator choosing within them — lowering a node's verbosity under congestion, raising it during an investigation. Nothing here is designed now; the placement is recorded so it lands in the right layer when it is.
 
-## retectl
+## `rete`
 
 An operator CLI, not a daemon: its observability is human-readable stderr, meaningful exit codes, and `RUST_LOG` verbosity when needed — no counters, no snapshots. Its audit story is elsewhere by design: the git history of the rete repo (what was authored) and the coordinator's log plus `flor_coordinator_requests_total{operation="publish"}` (what was published, when).
 
