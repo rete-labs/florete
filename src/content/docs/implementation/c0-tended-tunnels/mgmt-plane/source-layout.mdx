@@ -83,7 +83,7 @@ source:                                                  # optional; which files
   exclude: ["examples/**", "vendor/**"]                  # repo-relative globs; subtracted after include
 
 rete:
-  name: rete-lovers                                      # also the SPIFFE trust domain
+  name: flor.demo                                        # also the SPIFFE trust domain
 
   root_ca:
     validity_days: 3650                                  # optional; compiler default: 3650
@@ -103,7 +103,7 @@ rete:
     # they aren't committed; this block only sets policy.
 ```
 
-The rete `name` doubles as the SPIFFE trust domain: every principal in this rete has a SPIFFE ID of the form `spiffe://rete-lovers/<kind>/<name>` (see [Identity & Naming](../identity#names)).
+The rete `name` doubles as the SPIFFE trust domain: every principal in this rete has a SPIFFE ID of the form `spiffe://flor.demo/<kind>/<name>` (see [Identity & Naming](../identity#names)).
 
 **Source discovery (`source.include` / `source.exclude`).** Optional top-level block (not nested under `rete`), shapes *which files* the compiler treats as rete source. Omitted, the compiler uses its default: recursively glob `*.yaml`/`*.yml` under the repo, skipping `.flor/`, `bundles/`, and dotfiles (see [Source files are a recommended split](#source-files-are-a-recommended-split-not-a-requirement) above). `include` **replaces** that default glob set with an explicit, repo-relative list; `exclude` is applied **after** `include` to subtract paths — a `vendor/`/`examples/` subtree, or YAML that isn't rete source. `rete.yaml` must live at the repo root and is always read regardless of these globs (it is the anchor); without it, discovery cannot start and `rete validate`/`compile` fail. Reach for this when the rete repo shares space with unrelated YAML, or when you want discovery to be explicit rather than implicit. Nothing bypasses `source` per invocation: a flag that chose a different file set per run would be a second discovery rule, and the one that is committed is the one a reviewer sees.
 

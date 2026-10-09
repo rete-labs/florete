@@ -240,7 +240,7 @@ The **short form** of a name is its path below the kind: `<name>` for a rete-sco
 
 ### Workloads
 
-A supervised workload — a process a supervisor runs, always on one node — is `workload/<node>/<name>`, and the supervisor itself is `workload/<node>/agent`. What an artifact's envelope addresses by its `node` and `name` is this workload, its plane choosing which of the workload's configurations it is. A workload running one vertex takes that vertex's declared name, so `agent` and `coordinator` are not vertex names; workload names are unique per node.
+A supervised workload — a process a supervisor runs, always on one node — is `workload/<node>/<name>`, and the supervisor itself is `workload/<node>/agent`. An artifact's envelope addresses this workload by its ID, its plane choosing which of the workload's configurations it is. A workload running one vertex takes that vertex's declared name, so `agent` and `coordinator` are not vertex names; workload names are unique per node.
 
 Entities and workloads stay distinct. A node, a vertex or a service may be backed by one workload, by several, or by a process nobody supervises, and a workload may act as several principals or none: the coordinator's workload owns both `service/coordinator` and `service/coordinator-publisher`.
 
@@ -456,8 +456,7 @@ The rete's name is the trust domain; the kind, in singular form, is the first pa
 *Rejected* a scheme of Florete's own, which gives up that compatibility for a brand.
 
 **ID-C0-09. Name a supervised workload `workload/<node>/<name>`.**
-A supervised workload — a process a supervisor runs, always on one node — is `spiffe://<rete>/workload/<node>/<name>`, and the supervisor is `workload/<node>/agent`. What an envelope addresses by its node and name is this workload, its plane choosing which of the workload's configurations it is. A workload running one vertex takes that vertex's declared name. Workload names are unique per node, and `agent` and `coordinator` are not vertex names. Entities and workloads stay distinct: a node, a vertex or a service is backed by a workload, by several, or by a process nobody supervises.
-*Because* the envelope already carries the pair, so the name costs no field.
+A supervised workload — a process a supervisor runs, always on one node — is `spiffe://<rete>/workload/<node>/<name>`, and the supervisor is `workload/<node>/agent`. An envelope addresses this workload by its ID, its plane choosing which of the workload's configurations it is. A workload running one vertex takes that vertex's declared name. Workload names are unique per node, and `agent` and `coordinator` are not vertex names. Entities and workloads stay distinct: a node, a vertex or a service is backed by a workload, by several, or by a process nobody supervises.
 *Because* identity belongs to what is connected to — a service may be backed by several workloads, and a workload may publish several services or none — so a workload is never named by another principal's name.
 *Because* only a per-vertex name gives two vertices on one node two names.
 *Accepting* names that coincide by rule and mean nothing by coinciding — the coordinator's workload beside its services, a vertex's workload beside the vertex.

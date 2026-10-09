@@ -57,7 +57,7 @@ This split doesn't give per-node isolation of *reads* — every `node` principal
 - `coordinator: GET /artifact/mgmt/<node>?have=<v>` — **conditional set fetch**: Not Modified while the node's published set version is still `<v>` (`?have=` optional — omitted means "send it all"), else the complete set as one [set document](#packaging-the-set-document). Gated by `coordinator-sync`; no path/identity cross-check in C0 — see note above.
 - `coordinator-publisher: POST /publish/mgmt` — **atomic whole-tree publish** from `rete`. Only reachable by callers with `operator` role.
 
-**As a relay, the coordinator reads only the envelope's routing core** — the `plane` discriminator, `version`, `node`, `name` (plus `schema_version`, informationally) — via a lenient probe; payloads and signatures are opaque bytes it stores and serves unchanged, whatever their schema version, including majors it has never heard of. The core is frozen precisely so relays never gate contract evolution ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
+**As a relay, the coordinator reads only the envelope's routing core** — the `plane` discriminator, `version`, `workload` (plus `schema_version`, informationally) — via a lenient probe, taking the node from the workload's ID; payloads and signatures are opaque bytes it stores and serves unchanged, whatever their schema version, including majors it has never heard of. The core is frozen precisely so relays never gate contract evolution ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
 
 ## Packaging: the set document
 
@@ -66,17 +66,19 @@ This split doesn't give per-node isolation of *reads* — every `node` principal
 ```json
 {
   "artifacts": [
-    { "schema_version": "1.0", "plane": "mgmt", "version": 42, "node": "alpha", "name": "agent",
+    { "schema_version": "1.0", "plane": "mgmt", "version": 42,
+      "workload": "spiffe://flor.demo/workload/alpha/agent",
       "generated_at": "…", "payload": { … }, "signature": { … } },
-    { "schema_version": "1.0", "plane": "mgmt", "version": 42, "node": "alpha", "name": "hop",
+    { "schema_version": "1.0", "plane": "mgmt", "version": 42,
+      "workload": "spiffe://flor.demo/workload/alpha/hop",
       "generated_at": "…", "payload": { … }, "signature": { … } }
   ]
 }
 ```
 
-Each array element is a **complete signed envelope**, byte-for-byte as the compiler emitted it (the shape in [The envelope](../validate-and-compile#the-envelope)); `node` and `name` live *inside* each envelope, in the routing core, so the array is self-describing: no external index, no filenames, no ordering assumptions. `POST /publish/mgmt` sends every node's envelopes in one such document; `GET /artifact/mgmt/<node>` returns the identical document filtered to that one node's members. The coordinator groups by the probed `(node, name)` and holds each envelope as a **raw byte span** (`serde_json::value::RawValue`-class), so slicing and re-serving never re-serialize signed bytes — byte preservation is what makes the agent's signature verification meaningful ([Agent § Sync](../agent#sync)).
+Each array element is a **complete signed envelope**, byte-for-byte as the compiler emitted it (the shape in [The envelope](../validate-and-compile#the-envelope)); each envelope's `workload` lives *inside* it, in the routing core, so the array is self-describing: no external index, no filenames, no ordering assumptions. `POST /publish/mgmt` sends every node's envelopes in one such document; `GET /artifact/mgmt/<node>` returns the identical document filtered to that one node's members. The coordinator groups by the probed workload's node and holds each envelope as a **raw byte span** (`serde_json::value::RawValue`-class), so slicing and re-serving never re-serialize signed bytes — byte preservation is what makes the agent's signature verification meaningful ([Agent § Sync](../agent#sync)).
 
-**The per-node `node` field is redundant on a single-node fetch, and kept deliberately.** One struct — `{ "artifacts": [ envelope, … ] }` — serves both directions, so producer and consumer compile one packaging type; and the agent re-checks that every returned envelope's `node` equals the node it asked for, so a relay cannot hand it a misfiled or cross-node set. A few constant bytes buy a single code path plus a coherence check. **No paths on the wire**: the agent derives placement from `(plane, name)` by its own "located by name, never by path" convention — which also structurally kills the tar-extraction path-traversal class. The document is exactly what a future push/watch frame would carry, so packaging survives pull→push unchanged.
+**The node each envelope's workload names is redundant on a single-node fetch, and kept deliberately.** One struct — `{ "artifacts": [ envelope, … ] }` — serves both directions, so producer and consumer compile one packaging type; and the agent re-checks that every returned envelope's workload is on the node it asked for, so a relay cannot hand it a misfiled or cross-node set. A few constant bytes buy a single code path plus a coherence check. **No paths on the wire**: the agent derives placement from the plane and the workload's name by its own "located by name, never by path" convention — which also structurally kills the tar-extraction path-traversal class. The document is exactly what a future push/watch frame would carry, so packaging survives pull→push unchanged.
 
 A fetch response carries the set version in a `Flor-Set-Version` header — informational, for `curl`-level diagnostics; the agent trusts only the signed stamps inside the envelopes.
 
@@ -84,7 +86,7 @@ A fetch response carries the set version in a `Flor-Set-Version` header — info
 
 A publish **replaces the whole published tree** — compile is whole-rete ([Compile Step](../validate-and-compile#compile-step)), so publish is too. A node absent from the new tree is simply no longer published: its next fetch answers `404`, and it keeps running last-known-good. Acceptance is a two-layer gate, both layers reading only the frozen routing core — the coordinator never gates payload contracts:
 
-1. **Structural (`400`)**: every artifact's routing core parses; `plane` is `mgmt` (C0); artifacts group by `node` with no duplicate `(node, name)` and exactly one `name: "agent"` root per node; every member of a node's group carries the same `version` stamp. A malformed upload is rejected whole; nothing is stored.
+1. **Structural (`400`)**: every artifact's routing core parses, its `workload` as a node-scoped workload ID; `plane` is `mgmt` (C0); artifacts group by the workload's node with no duplicate `workload` and exactly one `workload/<node>/agent` root per node; every member of a node's group carries the same `version` stamp. A malformed upload is rejected whole; nothing is stored.
 2. **Monotonic (`409`)**: for each node present in both the incoming and stored trees, the incoming set version must be ≥ the stored one, and equal versions require byte-identical members. Any regression — or equal-version-different-bytes, a compiler-discipline violation — rejects the publish whole. There is deliberately **no force-override**: agents reject regressed versions as replay ([ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca), which carries the high-water-marks forward unchanged), so a forced regression would not roll anything back — it would silently brick sync. Rollback is roll-forward: revert the YAML, recompile, publish ([Distribution & Reload](../distribution-and-reload)).
 
 Re-publishing the identical tree is an idempotent no-op `200` — `rete publish` is safe to re-run.
@@ -132,7 +134,7 @@ Small and HTTP-native; callers read the status plus a one-word JSON body. The tw
 
 ## The coordinator's own artifact
 
-The coordinator is itself a supervised workload, so it has a config artifact — and its production needs no new machinery. **`rete compile` emits it, triggered by the reserved services**: for the node hosting `coordinator`/`coordinator-publisher` (validator rule 5), the compiler emits the supervision entry `{ "name": "coordinator", "run": ["flor-coordinator"] }` into that node's `agent.json` and a `coordinator.json` beside it — envelope `(node: mgmt01, plane: mgmt, name: "coordinator")`, mgmt-signed, stamped with the node's set version, a full set member under all coherence checks. It reaches the node like every other artifact: in the enrollment bundle first, then by normal `flor agent sync`. The self-hosting loop is safe — the agent fetches and verifies the complete set *before* restarting anything, and payload-byte equality means the coordinator restarts only when its own config actually changed.
+The coordinator is itself a supervised workload, so it has a config artifact — and its production needs no new machinery. **`rete compile` emits it, triggered by the reserved services**: for the node hosting `coordinator`/`coordinator-publisher` (validator rule 5), the compiler emits the supervision entry `{ "name": "coordinator", "run": ["flor-coordinator"] }` into that node's `agent.json` and a `coordinator.json` beside it — envelope `(workload/mgmt01/coordinator, mgmt)`, mgmt-signed, stamped with the node's set version, a full set member under all coherence checks. It reaches the node like every other artifact: in the enrollment bundle first, then by normal `flor agent sync`. The self-hosting loop is safe — the agent fetches and verifies the complete set *before* restarting anything, and payload-byte equality means the coordinator restarts only when its own config actually changed.
 
 **This is built-in platform-workload knowledge, not a general facility.** For every workload flor runs, the compiler supplies the *launch recipe*: no YAML carries a `run` argv, and the validator restricts `run` to the argvs it knows. What differs between the two C0 cases is **discovery**. Vertices are **declared** — `nodes.yaml` carries vertex entries, so the compiler emits a supervision entry per declared vertex (exactly one per node in C0, several from C1), inventing nothing. The coordinator is found by **reserved name** among ordinary `services.yaml` entries.
 
@@ -145,8 +147,7 @@ Its **payload is deliberately near-empty**:
   "schema_version": "1.0",
   "plane": "mgmt",
   "version": 42,
-  "node": "mgmt01",
-  "name": "coordinator",
+  "workload": "spiffe://flor.demo/workload/mgmt01/coordinator",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "schema_version": "1.0",
@@ -164,7 +165,7 @@ Its **payload is deliberately near-empty**:
 
 `listen.sync` / `listen.publish` — named for the roles, matching the group names — are projected from the two reserved services' `addr` fields: the same values the compiler writes into mgmt01's vertex payload as the outbound `tcp` `upstream` entries for `service/coordinator` and `service/coordinator-publisher`. This is the established projection pattern ([ADR-0010](/docs/implementation/adr/0010-compiled-artifact-object-model), like `agent.json`'s `inbounds`): duplication compiler-guaranteed consistent, so neither process reads the other's payload.
 
-**Two principals, one workload.** The artifact and supervision-inventory `name` is `coordinator`, naming the workload `workload/<node>/coordinator`. That it matches the service principal `service/coordinator` means nothing: names of different kinds may coincide, and the coordinator's workload owns both service principals ([Identity](../identity#decision-log), ID-C0-11, ID-C0-03). `coordinator-publisher` exists only as a principal in the vertex payload: no artifact, no supervision entry. The one process binds both loopback addresses.
+**Two principals, one workload.** The supervision-inventory `name` is `coordinator`, naming the workload `workload/<node>/coordinator` its artifact is addressed to. That it matches the service principal `service/coordinator` means nothing: names of different kinds may coincide, and the coordinator's workload owns both service principals ([Identity](../identity#decision-log), ID-C0-11, ID-C0-03). `coordinator-publisher` exists only as a principal in the vertex payload: no artifact, no supervision entry. The one process binds both loopback addresses.
 
 **Schema ownership sits outside the flor contract** — exactly as [Agent § Artifact handling](../agent#artifact-handling) frames it: the agent verifies and delivers this artifact opaque; its payload schema is owned by the `rete`↔`coordinator` pair, versions on its own `schema_version` ladder, and is gated fail-closed by the coordinator at startup (a rejected payload exits `78 EX_CONFIG`; the agent surfaces it without backoff-looping). Even though both ends are flor's own, this dogfoods the tenant config contract from C0.
 

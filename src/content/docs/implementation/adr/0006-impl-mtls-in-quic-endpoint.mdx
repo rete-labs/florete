@@ -133,7 +133,7 @@ There is no `WorkloadCredentials` struct. The earlier draft of ADR-0005 introduc
 The landed `Socks5Inbound` (in `src/northbound/inbound/socks5.rs`) is the C0 inbound. To wire identity:
 
 - `Socks5Inbound::new(listen_addr, connector, caller: X509Svid)` — adds the caller SVID. The SOCKS5 port serves exactly one principal (matches Florete's "per-service SOCKS5 proxy" design from identity.mdx).
-- `handle_socks5` parses the SOCKS5 target host (e.g. `api.alpha.rete-lovers.rete`) via `dns::parse(host) -> SpiffeId` instead of forwarding it as a raw string, then calls `connector.connect(&self.caller_svid, &target_spiffe).await`.
+- `handle_socks5` parses the SOCKS5 target host (e.g. `api.alpha.flor.demo.rete`) via `dns::parse(host) -> SpiffeId` instead of forwarding it as a raw string, then calls `connector.connect(&self.caller_svid, &target_spiffe).await`.
 - IP-form SOCKS5 targets stay rejected (today already returns `AddressTypeNotSupported`); only `.rete` domain targets are translated.
 
 The `QuicBackend` test trait in `socks5.rs` is updated in lockstep: `open_stream(target: &SpiffeId)` instead of `&str`, and test backends construct fixture SpiffeIds with `build_id_*` from `core::identity`.
@@ -162,13 +162,13 @@ Option 3 matches **Istio's observed practice** — Istio sidecars put DNS-form h
 
 We considered three approaches to disambiguating `service` and `vertex` in DNS:
 
-1. **K8s-style infix** (`api.alpha.svc.rete-lovers.rete` vs `api.alpha.vrt.rete-lovers.rete`). Unambiguous. Adds boilerplate to every user-typed `.rete` name; people grumble about this in K8s already.
+1. **K8s-style infix** (`api.alpha.svc.flor.demo.rete` vs `api.alpha.vrt.flor.demo.rete`). Unambiguous. Adds boilerplate to every user-typed `.rete` name; people grumble about this in K8s already.
 2. **Different TLDs** (`.rete` for service, `.vrt.rete` for vertex). Even uglier; introduces two namespaces.
 3. **Shared namespace + validator** — compiler/validator enforces non-collision between service and vertex names on the same node. **Accepted.**
 
 The argument for shared namespace: a vertex *is* a service from the dial-by-name perspective — same mTLS endpoint shape, same routing role. SPIFFE URIs already encode the kind; we don't need to repeat it in DNS. Users only ever dial services in practice (vertices are infrastructure-internal, not user-facing). identity.mdx already forbids node↔service name collisions; extending that to forbid service↔vertex collisions per-node is a one-line validator rule.
 
-The disambiguation when both forms exist is via the SPIFFE URI in cert SAN, not via DNS. If you dial `api.alpha.rete-lovers.rete` and the validator allowed both a service `api` and a vertex `api` on alpha, both would resolve to the same SPIFFE-URI ambiguity — that's the validator's job to prevent. We don't paper over a config error with a DNS infix.
+The disambiguation when both forms exist is via the SPIFFE URI in cert SAN, not via DNS. If you dial `api.alpha.flor.demo.rete` and the validator allowed both a service `api` and a vertex `api` on alpha, both would resolve to the same SPIFFE-URI ambiguity — that's the validator's job to prevent. We don't paper over a config error with a DNS infix.
 
 Forward-compat for namespaces (à la K8s `default`): `dns::format` and `dns::parse` are the localised change. If Florete grows namespaces, both helpers update together; SNI and user-facing DNS stay aligned.
 

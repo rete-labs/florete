@@ -36,7 +36,7 @@ This is also why publication should always go through mesh-flor in the standard 
 - **`flor-agent` as a distinct first-class workload**, not a vertex. The node has its own rete-member identity (`node/<node>`); the agent is the workload that acts on the node's behalf — fetching configs, supervising vertices, reaching coordinator. Like every other principal, the node delegates its mTLS to a vertex (mesh-flor).
 - **`links.yaml`** — declares allowed UDP peerings between mesh-vertices (a topology bound).
 - **`paths.yaml`** — declares allowed multi-hop routes at the mesh layer (a path bound). Hop sequences are operator-authored; labels and forwarding tables are produced as ctrl-plane decisions, not mgmt.
-- **Three mgmt artifacts per node** — one `agent.json` plus `<name>.json` per vertex, flat under `<node>/mgmt/`. Standard topology produces `hop-public.json` (link-vertex) and `rete.json` (mesh-vertex). Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `<node>/ctrl/rete.json` (see [Ctrl Plane](../ctrl-plane/)).
+- **Three mgmt artifacts per node** — one `agent.json` plus `<name>.json` per vertex, flat under `mgmt/<node>/`. Standard topology produces `hop-public.json` (link-vertex) and `rete.json` (mesh-vertex). Forwarding state (labels, forwarding table, label-bindings) is **not** here — it's in the ctrl artifact at `ctrl/<node>/rete.json` (see [Ctrl Plane](../ctrl-plane/)).
 - **`authorized_ctrl_signers`** in `agent.json`'s `trust` block — a list of **SPIFFE IDs** the agent will accept ctrl artifacts from. It narrows what the trust anchors already permit: a ctrl envelope carries its signer's certificate, that certificate must validate against the node's anchors, *and* the identity it certifies must appear in this list. In C1 there is a single CP identity, operator-held. Unlike mgmt, this list is **delegated by mgmt** rather than self-anchored, which is why it survives (see [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca)).
 - **Per-vertex FlorIO sockets** — each vertex that exposes FlorIO serves a socket at `<runtime-root>/vertices/<vertex-name>.sock`. The path is derived **at runtime** from the spawn-injected runtime root plus the vertex name — never compiled into artifacts, which carry no filesystem references (see [C0's Agent page](../../c0-tended-tunnels/mgmt-plane/agent#artifact-handling)); a FlorIO adapter references the serving link-vertex by *name*.
 - **Additional validator rules** — link validity, address feasibility, multi-hop path validity, principal-role coherence for services that appear as path initiators. (Label feasibility moves to ctrl-plane.)
@@ -73,7 +73,7 @@ C1 adds a `signers.ctrl` block listing the rete's authorized ctrl-envelope signe
 
 ```yaml
 rete:
-  name: rete-lovers                 # same as C0
+  name: flor.demo                   # same as C0
 
   root_ca:
     validity_days: 3650             # same as C0
@@ -124,7 +124,7 @@ The `kind: mesh` value is *structural* — it identifies the vertex code that op
 
 C1 conventions and constraints:
 
-- **Exactly one mesh-vertex per node**, named `rete` by convention. Its SPIFFE ID is `spiffe://<rete>/vertex/<node>/<vertex-name>` — e.g. alpha's rete mesh-vertex is `spiffe://rete-lovers/vertex/alpha/rete`. The name is operator-chosen; `rete` is the community convention, not a reserved or validated label. A future interrete-vertex on the same node would be `vertex/alpha/interrete` by convention.
+- **Exactly one mesh-vertex per node**, named `rete` by convention. Its SPIFFE ID is `spiffe://<rete>/vertex/<node>/<vertex-name>` — e.g. alpha's rete mesh-vertex is `spiffe://flor.demo/vertex/alpha/rete`. The name is operator-chosen; `rete` is the community convention, not a reserved or validated label. A future interrete-vertex on the same node would be `vertex/alpha/interrete` by convention.
 - **`agent_via:`** on the node entry names which vertex hosts the agent's `node/<node>` principal. Required when the node has multiple vertices (always in C1). The agent connects to coordinator through the named vertex's SOCKS5 listener.
 - **Mesh-vertex `type`** is the upward interface contract. `type: quic` is what mesh vertices in C1 use; this is what makes recursion work — an upper-layer mesh-vertex consuming a lower mesh-vertex sees the same QUIC interface a wire-terminating QUIC link-vertex would expose.
 - **Mesh-vertex `uses:`** lists the link-vertex names this mesh-vertex relies upon. Multiple link-vertices supports the canonical "border" case (one Internet-facing QUIC link + one private-net UDP link) and the parallel-underlay case (e.g., dual-ethernet UDP between two nodes — two `type: udp` link-vertices on each side, both in `uses:`).
@@ -266,8 +266,9 @@ Direct ACLs (`ingress`, `egress`) deliberately *don't* use this shell. They're p
 ```
 # operator (rete) — authoring
 rete compile
-                                            # whole-rete; emits <out>/<node>/{agent.json,
-                                            # <vertex-name>.json…} per node
+                                            # whole-rete; emits <out>/mgmt/<node>/{agent.json,
+                                            # <vertex-name>.json…} and <out>/ctrl/<node>/
+                                            # per node
 
 # node (flor) — runtime
 flor-vertex                                 # vertex daemon; spawned by the agent with full
@@ -301,7 +302,7 @@ On top of C0's:
 
 ## Compile step additions
 
-`rete compile` produces **two artifact subtrees per node** in C1: a signed mgmt subtree (`<node>/mgmt/`) and a CP-signed ctrl subtree (`<node>/ctrl/`). The mgmt subtree contains one `agent.json` plus one `<name>.json` per vertex (standard topology: `hop-public.json` for the link-vertex and `rete.json` for the mesh-vertex), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
+`rete compile` produces **two artifact subtrees** in C1, each holding a directory per node: a signed mgmt subtree (`mgmt/<node>/`) and a CP-signed ctrl subtree (`ctrl/<node>/`). A node's mgmt directory contains one `agent.json` plus one `<name>.json` per vertex (standard topology: `hop-public.json` for the link-vertex and `rete.json` for the mesh-vertex), all sharing the common envelope inherited from C0 (including `plane: "mgmt"` and the operator signature — see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). The ctrl subtree contains only what's CP-shaped (forwarding tables, label bindings) and is documented separately in [Ctrl Plane](../ctrl-plane/).
 
 This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelope:
 
@@ -310,15 +311,14 @@ This page covers the mgmt envelope and the per-vertex mgmt payloads. Mgmt envelo
   "schema_version": "1.0",
   "plane": "mgmt",
   "version": 42,
-  "node": "alpha",
-  "name": "agent",          // the consuming workload's name; "agent" reserved for the supervisor
+  "workload": "spiffe://flor.demo/workload/alpha/agent",   // the consuming workload; workload/<node>/agent is the supervisor
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": { ... },
   "signature": { "cert": "<base64-der-x509>", "value": "<base64>" }
 }
 ```
 
-Artifact identity is `(node, plane, name)`; there is no envelope `kind` — dispatch is by `name`, each consumer parsing only artifacts addressed to it (see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). `plane` is the decision-authority axis: `"mgmt"` is signed by the operator; `"ctrl"` is the separately-signed control-plane stream this milestone introduces. Everything on this page is `plane: "mgmt"`; the ctrl stream is covered in [Ctrl Plane](../ctrl-plane/).
+Artifact identity is `(workload, plane)`; there is no envelope `kind` — dispatch is by workload, each consumer parsing only artifacts addressed to it (see [C0's envelope spec](../../c0-tended-tunnels/mgmt-plane/validate-and-compile#compile-step)). `plane` is the decision-authority axis: `"mgmt"` is signed by the operator; `"ctrl"` is the separately-signed control-plane stream this milestone introduces. Everything on this page is `plane: "mgmt"`; the ctrl stream is covered in [Ctrl Plane](../ctrl-plane/).
 
 ### Attachments & IO
 
@@ -332,7 +332,7 @@ An attachment entry:
 
 ```json
 {
-  "spiffe_id": "spiffe://rete-lovers/service/api",
+  "spiffe_id": "spiffe://flor.demo/service/api",
   "io": [
     { "kind": "tcp",    "upstream": "127.0.0.1:8000" },
     { "kind": "socks5", "listen":   "127.0.0.1:18000" }
@@ -356,7 +356,7 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
   "connection_manager": { "adapters": [ { "name": "wire", "type": "udp", "listen": "0.0.0.0:4433" } ] },
   "attachments": [
     {
-      "spiffe_id": "spiffe://rete-lovers/vertex/alpha/rete",
+      "spiffe_id": "spiffe://flor.demo/vertex/alpha/rete",
       "io": [
         { "kind": "florio" }
       ]
@@ -368,7 +368,7 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
       "members": [
         {
           "name": "beta",
-          "peer": "spiffe://rete-lovers/vertex/beta/rete",
+          "peer": "spiffe://flor.demo/vertex/beta/rete",
           "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" }
         }
       ]
@@ -376,14 +376,14 @@ The link-vertex config file is named after the vertex's `name:` field in `nodes.
   ],
   "ingress": [
     {
-      "target": "spiffe://rete-lovers/vertex/alpha/rete",
-      "allow": [ "spiffe://rete-lovers/vertex/beta/rete" ]
+      "target": "spiffe://flor.demo/vertex/alpha/rete",
+      "allow": [ "spiffe://flor.demo/vertex/beta/rete" ]
     }
   ],
   "egress": [
     {
-      "target": "spiffe://rete-lovers/vertex/beta/rete",
-      "allow": ["spiffe://rete-lovers/vertex/alpha/rete"]
+      "target": "spiffe://flor.demo/vertex/beta/rete",
+      "allow": ["spiffe://flor.demo/vertex/alpha/rete"]
     }
   ]
 }
@@ -417,12 +417,12 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
       "members": [
         {
           "name": "beta",
-          "peer": "spiffe://rete-lovers/vertex/beta/rete",
+          "peer": "spiffe://flor.demo/vertex/beta/rete",
           "via": { "type": "florio", "adapter": "via-link" }
         },
         {
           "name": "gamma",
-          "peer": "spiffe://rete-lovers/vertex/gamma/rete",
+          "peer": "spiffe://flor.demo/vertex/gamma/rete",
           "via": { "type": "udp", "adapter": "hop-internal", "addr": "10.0.0.7:5544" }
         }
       ]
@@ -430,13 +430,13 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
   ],
   "attachments": [
     {
-      "spiffe_id": "spiffe://rete-lovers/node/alpha",
+      "spiffe_id": "spiffe://flor.demo/node/alpha",
       "io": [
         { "kind": "socks5", "listen": "127.0.0.1:1080" }
       ]
     },
     {
-      "spiffe_id": "spiffe://rete-lovers/service/api",
+      "spiffe_id": "spiffe://flor.demo/service/api",
       "io": [
         { "kind": "tcp",    "upstream": "127.0.0.1:8000" },
         { "kind": "socks5", "listen":   "127.0.0.1:18000" }
@@ -445,14 +445,14 @@ Mixed-topology case (publishing a regular service in link-flor for private-netwo
   ],
   "ingress": [
     {
-      "target": "spiffe://rete-lovers/service/api",
-      "allow": ["spiffe://rete-lovers/user/alice"]
+      "target": "spiffe://flor.demo/service/api",
+      "allow": ["spiffe://flor.demo/user/alice"]
     }
   ],
   "egress": [
     {
-      "target": "spiffe://rete-lovers/service/mongodb",
-      "allow": ["spiffe://rete-lovers/service/api"]
+      "target": "spiffe://flor.demo/service/mongodb",
+      "allow": ["spiffe://flor.demo/service/api"]
     }
   ]
 }
@@ -480,18 +480,18 @@ The approved CP signing identities (`authorized_ctrl_signers`) are **not** in th
 {
   "schema_version": "1.0",
   "trust": {
-    "authorized_ctrl_signers": [ "spiffe://rete-lovers/control-plane/ctrl-signer" ]
+    "authorized_ctrl_signers": [ "spiffe://flor.demo/control-plane/ctrl-signer" ]
   },
   "workloads": [
     { "name": "hop-public", "run": ["flor-vertex"] },
     { "name": "rete",       "run": ["flor-vertex"] }
   ],
   "inbounds": [
-    { "principal": "spiffe://rete-lovers/node/alpha", "via": { "kind": "socks5", "addr": "127.0.0.1:1080" } }
+    { "principal": "spiffe://flor.demo/node/alpha", "via": { "kind": "socks5", "addr": "127.0.0.1:1080" } }
   ],
   "sync": {
-    "principal":     "spiffe://rete-lovers/node/alpha",
-    "coordinator":   "spiffe://rete-lovers/service/coordinator",
+    "principal":     "spiffe://flor.demo/node/alpha",
+    "coordinator":   "spiffe://flor.demo/service/coordinator",
     "poll_interval": "5m"
   }
 }
@@ -557,8 +557,8 @@ Unchanged from [the C0 evolution table](../../c0-tended-tunnels/mgmt-plane#evolu
 ## Scope checklist (delta over C0)
 
 - [ ] YAML schemas for `links.yaml` (incl. `type: quic | udp`) and `paths.yaml`; per-vertex FlorIO socket convention (`<runtime-root>/vertices/<vertex-name>.sock`) derived at runtime from the spawn-injected runtime root — never compiled into artifacts
-- [ ] Compiled-artifact schemas: `agent.json` (envelope `kind: agent`) carrying a `trust` block; a single `vertex.json` envelope shape (`kind: vertex`) carrying a payload `kind: link | mesh`; `ingress.allow`/`egress.allow` are flat SPIFFE-ID lists; the per-node `links` table (and `allowed_links`/`allowed_paths` in the source YAMLs) uses the typed-rule list shape
-- [ ] Per-node compiled output layout: `<node>/mgmt/{agent.json, <name>.json…}`, flat (`rete.json` always; a link-vertex file — named after its `name:` field in `nodes.yaml` — for each `quic`-type link-vertex on the node)
+- [ ] Compiled-artifact schemas: `agent.json` carrying a `trust` block; one vertex payload shape, its `kind: link | mesh` selecting the engine; `ingress.allow`/`egress.allow` are flat SPIFFE-ID lists; the per-node `links` table (and `allowed_links`/`allowed_paths` in the source YAMLs) uses the typed-rule list shape
+- [ ] Per-node compiled output layout: `mgmt/<node>/{agent.json, <name>.json…}`, flat (`rete.json` always; a link-vertex file — named after its `name:` field in `nodes.yaml` — for each `quic`-type link-vertex on the node)
 - [ ] Two new principal kinds wired through issuance, compile, and runtime: `vertex/<node>/<name>` (rete mesh-vertex, named `rete` by convention) and `control-plane/<name>`
 - [ ] `via:` and `agent_via:` validation: required in C1 (multiple vertices per node), compiler resolves to target vertex for workload placement
 - [ ] every envelope carrying its signer's certificate in `signature`, validated against `identity/anchors.pem` (the agent is the sole signature verifier; no artifact carries a signer set — see [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca))
