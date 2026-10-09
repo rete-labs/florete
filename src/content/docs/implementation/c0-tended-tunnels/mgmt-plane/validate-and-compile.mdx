@@ -40,15 +40,14 @@ The node-side layout — deployment modes, install and runtime roots, the identi
 
 ### The envelope
 
-**All artifacts — both planes, platform and opaque payloads alike — share one envelope.** A frozen subset of its claims is the **routing core** (the `plane` discriminator, `version`, `node`, `name`, plus `schema_version` informationally) — the only part a relay ever reads; everything else, a relay stores and serves as opaque signed bytes ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
+**All artifacts — both planes, platform and opaque payloads alike — share one envelope.** A frozen subset of its claims is the **routing core** (the `plane` discriminator, `version`, `workload`, plus `schema_version` informationally) — the only part a relay ever reads; everything else, a relay stores and serves as opaque signed bytes ([ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)).
 
 ```json
 {
   "schema_version": "1.0",
   "plane": "mgmt",
   "version": 42,
-  "node": "alpha",
-  "name": "agent",
+  "workload": "spiffe://flor.demo/workload/alpha/agent",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": { ... },
   "signature": {
@@ -62,7 +61,7 @@ Field semantics:
 
 - `schema_version` — `major.minor` of the **envelope contract** only: the claims, the signature canonicalization, and the relays' frozen routing core within it. Deliberately near-frozen. Every consumer gates it fail-closed: it accepts its own major at any older-or-equal minor and rejects anything newer with an explicit upgrade error; the producer stamps the lowest minor the envelope actually uses. Payload schemas are **not** covered — each payload family versions itself inside `payload` with its own `schema_version`, an independent ladder gated by that payload's consumer. See [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract) for the versioning policy.
 - `plane` — the **authority axis**: it tells the payload-blind agent which signer set authenticates the artifact. `"mgmt"` for everything in C0. Reserved: `"ctrl"` for the separately-signed control-plane decision stream that lands in C1 — ctrl decisions arrive as separate artifacts in this same envelope shape (with `plane: { "ctrl": { … } }`), never embedded inside a mgmt artifact. Discriminating now keeps the envelope schema stable across the split.
-- `name` — the consuming workload's name, so identity is `(node, plane, name)`, path-independent; `agent` is the reserved name for the supervisor's own config. There is **no envelope `kind`**: dispatch is by name — each consumer parses only artifacts addressed to it and knows its own payload schema, so a new supervised workload is a new name, never an envelope change. A vertex payload internally carries `kind: "link" | "mesh"` to select the engine (C0 has a single `link` vertex per node; C1 adds `mesh`); other payloads' internal discriminators are their own business.
+- `workload` — the consuming workload's SPIFFE ID, always a node-scoped `workload/<node>/<name>` ([Identity](../identity#decision-log), ID-C0-09), so identity is `(workload, plane)`, path-independent; `workload/<node>/agent` addresses the supervisor's own config. It is validated by parsing it as a node-scoped workload ID, whose own rules fix its kind, its trust domain and its name's syntax ([Artifact Store § Decision Log](/docs/implementation/a0-alef-authoring/artifact-store#decision-log), ART-A0-06). There is **no envelope `kind`**: dispatch is by workload — each consumer parses only artifacts addressed to it and knows its own payload schema, so a new supervised workload is a new name, never an envelope change. A vertex payload internally carries `kind: "link" | "mesh"` to select the engine (C0 has a single `link` vertex per node; C1 adds `mesh`); other payloads' internal discriminators are their own business.
 - `version` — on mgmt, **the node's set version**: a per-node monotonic counter stamped uniformly into every member of the node's set, advancing by one per publish that actually changes something on this node (the compiler derives it as `previous + 1` from its ledger; no rete-global counter, and node sequences are fully independent — nothing ever compares versions across nodes). It gives the replay defense (a single mgmt high-water-mark covering the set) and the mixed-set defense (stamp equality across members); change detection is *not* its job — consumers compare payload bytes (see [Agent § Node layout](../agent#node-layout)). On ctrl the same claim is a **per-artifact stream version** — each ctrl artifact is an independent stream ([C1's ctrl-plane](../../../c1-manual-mesh/ctrl-plane/)). One rule covers both: a monotonic freshness ordinal within the artifact's stream; mgmt simply has one stream per node, because its unit of coherence and authority is the whole set.
 - **Trust roots** — no artifact carries a signer set. Each envelope carries **its own signer's certificate**, inside its `signature`, and the agent — the sole verifier — validates that certificate against the node's trust anchors, requires its SAN kind to match the envelope's `plane` (`management-plane` for mgmt, `control-plane` for ctrl — which also requires that signer to be in `authorized_ctrl_signers` list), and only then checks the signature. The kind step is what keeps an ordinary TLS leaf out of the signer role, since no extension distinguishes the two. The anchors are not referenced by any artifact: they sit at `identity/anchors.pem` in the identity store, delivered at enrollment. An envelope is therefore verifiable alone, which is what ctrl's independent streams need and what lets a node absent across a signer rotation accept the successor. See [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca).
 - `signature` — `{ cert, value }`: the **certificate of the signer that produced it**, and the signature over the canonical-form envelope minus the `signature` field itself, raw and base64-encoded. Two fields it deliberately lacks. There is no `key_id`: the certificate carries the SPIFFE ID in its SAN, and a verifier reads the identity from there. And there is no `alg`: the certificate's key type fixes the verification scheme, which a verifier resolves through a compiled-in table — one row in C0, Ed25519 → PureEdDSA — **after** it has validated that certificate to the anchors. A signed document never selects the routine that checks its own signature; adding a key type means fixing its scheme alongside it, in `rete.yaml`'s algorithm policy rather than per envelope. The signer is a **management-plane** principal — a sign-only identity issued independently from any user entry via `rete id issue --kind management-plane`, whose key never leaves operator hardware. See [ADR-0005](/docs/implementation/adr/0005-use-spiffe-identities) for the kind separation and [ADR-0015](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca) for why the certificate travels with the signature.
@@ -84,8 +83,7 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
   "schema_version": "1.0",
   "plane": "mgmt",
   "version": 42,
-  "node": "alice-laptop",
-  "name": "agent",
+  "workload": "spiffe://flor.demo/workload/alice-laptop/agent",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "schema_version": "1.0",
@@ -93,12 +91,12 @@ Concretely in C0: the SOCKS5 listener flor exposes for a service's outbound call
       { "name": "hop", "run": ["flor-vertex"] }
     ],
     "inbounds": [
-      { "principal": "spiffe://rete-lovers/node/alice-laptop", "via": { "kind": "socks5", "addr": "127.0.0.1:1081" } },
-      { "principal": "spiffe://rete-lovers/user/alice",        "via": { "kind": "socks5", "addr": "127.0.0.1:1080" } }
+      { "principal": "spiffe://flor.demo/node/alice-laptop", "via": { "kind": "socks5", "addr": "127.0.0.1:1081" } },
+      { "principal": "spiffe://flor.demo/user/alice",        "via": { "kind": "socks5", "addr": "127.0.0.1:1080" } }
     ],
     "sync": {
-      "principal":     "spiffe://rete-lovers/node/alice-laptop",
-      "coordinator":   "spiffe://rete-lovers/service/coordinator",
+      "principal":     "spiffe://flor.demo/node/alice-laptop",
+      "coordinator":   "spiffe://flor.demo/service/coordinator",
       "poll_interval": "5m"
     }
   },
@@ -121,8 +119,7 @@ A user device initiates connections only — no `listen_udp`-served services. Th
   "schema_version": "1.0",
   "plane": "mgmt",
   "version": 42,
-  "node": "alice-laptop",
-  "name": "hop",
+  "workload": "spiffe://flor.demo/workload/alice-laptop/hop",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "schema_version": "1.0",
@@ -131,13 +128,13 @@ A user device initiates connections only — no `listen_udp`-served services. Th
     "connection_manager": { "adapters": [ { "name": "wire", "type": "udp" } ] },
     "attachments": [
       {
-        "spiffe_id": "spiffe://rete-lovers/node/alice-laptop",
+        "spiffe_id": "spiffe://flor.demo/node/alice-laptop",
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1081" }
         ]
       },
       {
-        "spiffe_id": "spiffe://rete-lovers/user/alice",
+        "spiffe_id": "spiffe://flor.demo/user/alice",
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080" }
         ]
@@ -147,16 +144,16 @@ A user device initiates connections only — no `listen_udp`-served services. Th
       {
         "type": "list",
         "members": [
-          { "name": "coordinator", "peer": "spiffe://rete-lovers/service/coordinator", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
-          { "name": "api",           "peer": "spiffe://rete-lovers/service/api",           "via": { "type": "udp", "adapter": "wire", "addr": "1.2.3.4:4433" } },
-          { "name": "kafka",         "peer": "spiffe://rete-lovers/service/kafka",         "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }
+          { "name": "coordinator", "peer": "spiffe://flor.demo/service/coordinator", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
+          { "name": "api",           "peer": "spiffe://flor.demo/service/api",           "via": { "type": "udp", "adapter": "wire", "addr": "1.2.3.4:4433" } },
+          { "name": "kafka",         "peer": "spiffe://flor.demo/service/kafka",         "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }
         ]
       }
     ],
     "egress": [
-      { "target": "spiffe://rete-lovers/service/coordinator", "allow": ["spiffe://rete-lovers/node/alice-laptop"] },
-      { "target": "spiffe://rete-lovers/service/api",           "allow": ["spiffe://rete-lovers/user/alice"] },
-      { "target": "spiffe://rete-lovers/service/kafka",         "allow": ["spiffe://rete-lovers/user/alice"] }
+      { "target": "spiffe://flor.demo/service/coordinator", "allow": ["spiffe://flor.demo/node/alice-laptop"] },
+      { "target": "spiffe://flor.demo/service/api",           "allow": ["spiffe://flor.demo/user/alice"] },
+      { "target": "spiffe://flor.demo/service/kafka",         "allow": ["spiffe://flor.demo/user/alice"] }
     ]
   },
   "signature": { "cert": "<base64-der-x509>", "value": "<base64>" }
@@ -172,8 +169,7 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
   "schema_version": "1.0",
   "plane": "mgmt",
   "version": 42,
-  "node": "alpha",
-  "name": "hop",
+  "workload": "spiffe://flor.demo/workload/alpha/hop",
   "generated_at": "2026-04-20T12:00:00Z",
   "payload": {
     "schema_version": "1.0",
@@ -182,20 +178,20 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
     "connection_manager": { "adapters": [ { "name": "wire", "type": "udp", "listen": "0.0.0.0:4433" } ] },
     "attachments": [
       {
-        "spiffe_id": "spiffe://rete-lovers/node/alpha",
+        "spiffe_id": "spiffe://flor.demo/node/alpha",
         "io": [
           { "kind": "socks5", "listen": "127.0.0.1:1080" }
         ]
       },
       {
-        "spiffe_id": "spiffe://rete-lovers/service/api",
+        "spiffe_id": "spiffe://flor.demo/service/api",
         "io": [
           { "kind": "tcp",    "upstream": "127.0.0.1:8000" },
           { "kind": "socks5", "listen":   "127.0.0.1:18000" }
         ]
       },
       {
-        "spiffe_id": "spiffe://rete-lovers/service/alpha/ssh",
+        "spiffe_id": "spiffe://flor.demo/service/alpha/ssh",
         "io": [
           { "kind": "tcp", "upstream": "0.0.0.0:22" }
         ]
@@ -203,29 +199,29 @@ A server node hosts services and accepts inbound QUIC on a UDP listen address (s
     ],
     "ingress": [
       {
-        "target": "spiffe://rete-lovers/service/api",
+        "target": "spiffe://flor.demo/service/api",
         "allow": [
-          "spiffe://rete-lovers/user/alice",
-          "spiffe://rete-lovers/user/bob"
+          "spiffe://flor.demo/user/alice",
+          "spiffe://flor.demo/user/bob"
         ]
       },
       {
-        "target": "spiffe://rete-lovers/service/alpha/ssh",
-        "allow": ["spiffe://rete-lovers/user/bob"]
+        "target": "spiffe://flor.demo/service/alpha/ssh",
+        "allow": ["spiffe://flor.demo/user/bob"]
       }
     ],
     "links": [
       {
         "type": "list",
         "members": [
-          { "name": "coordinator", "peer": "spiffe://rete-lovers/service/coordinator", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
-          { "name": "mongodb",       "peer": "spiffe://rete-lovers/service/mongodb",       "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }
+          { "name": "coordinator", "peer": "spiffe://flor.demo/service/coordinator", "via": { "type": "udp", "adapter": "wire", "addr": "9.10.11.12:4433" } },
+          { "name": "mongodb",       "peer": "spiffe://flor.demo/service/mongodb",       "via": { "type": "udp", "adapter": "wire", "addr": "5.6.7.8:4433" } }
         ]
       }
     ],
     "egress": [
-      { "target": "spiffe://rete-lovers/service/coordinator", "allow": ["spiffe://rete-lovers/node/alpha"] },
-      { "target": "spiffe://rete-lovers/service/mongodb",       "allow": ["spiffe://rete-lovers/service/api"] }
+      { "target": "spiffe://flor.demo/service/coordinator", "allow": ["spiffe://flor.demo/node/alpha"] },
+      { "target": "spiffe://flor.demo/service/mongodb",       "allow": ["spiffe://flor.demo/service/api"] }
     ]
   },
   "signature": { "cert": "<base64-der-x509>", "value": "<base64>" }

@@ -8,7 +8,7 @@ Accepted
 
 Realises, concretely, the "object model on the consumed side" that [ADR-0009: Treat Source Config as a Compiled Facade](/docs/implementation/adr/0009-config-compiled-facade) placed but did not shape. Uses the rete/mesh vocabulary of [ADR-0008](/docs/implementation/adr/0008-name-rete-mesh-cluster) and the identity-as-key discipline of [ADR-0007](/docs/implementation/adr/0007-decouple-naming-identity-routing). Grounds and amends the artifact schemas in the C0 [Validate & Compile](/docs/implementation/c0-tended-tunnels/mgmt-plane/validate-and-compile) and C1 [Mgmt Plane](/docs/implementation/c1-manual-mesh/mgmt-plane) / [Ctrl Plane](/docs/implementation/c1-manual-mesh/ctrl-plane) docs. Signer-set placement is decided here but its semantics live in [ADR-0015: Anchor Signer Trust in the Root CA](/docs/implementation/adr/0015-anchor-signer-trust-in-root-ca), which replaced the obsoleted ADR-0011.
 
-> **Amendment note (2026-07).** The [C0 Agent design](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent) refined three decisions recorded here, and this record is amended in place accordingly. (1) The supervision inventory carries **no `kind` at all** (a later refinement of the same pass — an earlier state of this amendment had `vertex` / `workload`): the launch recipe was `kind`'s only consumer, and it is now explicit as a per-entry `run` argv, with all per-workload context injected through a uniform spawn environment; the payload's link/mesh engine kind was never in the inventory — the agent parses no payload but its own, so an engine tag there would be dead weight. (2) Artifacts carry **no filesystem references** — `ca_cert_path` / `cert_path` / `priv_path` are gone; identity is keyed by SPIFFE ID and materialized by the node's identity store. (3) The mgmt↔ctrl join is verified by the **vertex** — the only party parsing both planes — not the agent, which verifies envelopes and signatures only; correspondingly, the versioning gate splits into an envelope contract and per-payload-family contracts, each family's version riding inside the payload as its own `schema_version` (see the amended [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)). (4) The envelope `kind` axis is **removed**: identity is `(node, plane, name)`, `agent` is a reserved name, and dispatch is by name to the consuming workload — consumer kinds never enter the envelope, so a new supervised workload never changes it. The text below is edited to the amended state.
+> **Amendment note (2026-07).** The [C0 Agent design](/docs/implementation/c0-tended-tunnels/mgmt-plane/agent) refined three decisions recorded here, and this record is amended in place accordingly. (1) The supervision inventory carries **no `kind` at all** (a later refinement of the same pass — an earlier state of this amendment had `vertex` / `workload`): the launch recipe was `kind`'s only consumer, and it is now explicit as a per-entry `run` argv, with all per-workload context injected through a uniform spawn environment; the payload's link/mesh engine kind was never in the inventory — the agent parses no payload but its own, so an engine tag there would be dead weight. (2) Artifacts carry **no filesystem references** — `ca_cert_path` / `cert_path` / `priv_path` are gone; identity is keyed by SPIFFE ID and materialized by the node's identity store. (3) The mgmt↔ctrl join is verified by the **vertex** — the only party parsing both planes — not the agent, which verifies envelopes and signatures only; correspondingly, the versioning gate splits into an envelope contract and per-payload-family contracts, each family's version riding inside the payload as its own `schema_version` (see the amended [ADR-0012](/docs/implementation/adr/0012-version-artifact-contract)). (4) The envelope `kind` axis is **removed**: an artifact is addressed to its consuming workload, and dispatch is to that workload — consumer kinds never enter the envelope, so a new supervised workload never changes it. The text below is edited to the amended state.
 
 ## Context
 
@@ -29,7 +29,7 @@ A framing correction underlies the fix. ADR-0009's "self-describing, addressable
 
 ### Two axes; one vocabulary
 
-The envelope carries one axis: `plane` — whose authority signed this. *Which process consumes this* is answered by `name` alone: dispatch is by name, each consumer parsing only artifacts addressed to it (`agent` reserved for the supervisor), so consumer kinds never enter the envelope and a new supervised workload never changes it. The link/mesh distinction is a **payload** axis:
+The envelope carries one axis: `plane` — whose authority signed this. *Which process consumes this* is answered by `workload` alone: dispatch is by workload, each consumer parsing only artifacts addressed to it (`workload/<node>/agent` being the supervisor), so consumer kinds never enter the envelope and a new supervised workload never changes it. The link/mesh distinction is a **payload** axis:
 
 | Axis | Question | Values | Location |
 |---|---|---|---|
@@ -49,9 +49,9 @@ A vertex reaches each **peer** (adjacent vertex) over one or more **links**, and
 ```json
 "links": [
   { "type": "list", "members": [
-    { "name": "beta-pub",  "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "type": "florio", "adapter": "via-link" } },
-    { "name": "beta-eth1", "peer": "spiffe://rete-lovers/vertex/beta/rete",  "via": { "type": "udp", "adapter": "eth1", "addr": "10.0.1.6:5544" } },
-    { "name": "gamma",     "peer": "spiffe://rete-lovers/vertex/gamma/rete", "via": { "type": "udp", "adapter": "internal", "addr": "10.0.0.7:5544" } }
+    { "name": "beta-pub",  "peer": "spiffe://flor.demo/vertex/beta/rete",  "via": { "type": "florio", "adapter": "via-link" } },
+    { "name": "beta-eth1", "peer": "spiffe://flor.demo/vertex/beta/rete",  "via": { "type": "udp", "adapter": "eth1", "addr": "10.0.1.6:5544" } },
+    { "name": "gamma",     "peer": "spiffe://flor.demo/vertex/gamma/rete", "via": { "type": "udp", "adapter": "internal", "addr": "10.0.0.7:5544" } }
   ] }
 ]
 ```
@@ -69,15 +69,15 @@ mgmt contributes stable ACL-and-dial facts; ctrl contributes the routing realisa
 ```json
 {
   "schema_version": "1.0", "plane": { "ctrl": { "obeys_mgmt_version": 42 } },
-  "version": 17, "node": "alpha", "name": "rete",
+  "version": 17, "workload": "spiffe://flor.demo/workload/alpha/rete",
   "payload": {
     "active_links": [ "beta-pub", "gamma" ],
     "label_bindings": [
-      { "scope": "ingress", "target": "spiffe://rete-lovers/service/api",
-        "initiator": "spiffe://rete-lovers/user/alice",
+      { "scope": "ingress", "target": "spiffe://flor.demo/service/api",
+        "initiator": "spiffe://flor.demo/user/alice",
         "in":  { "link": "beta-pub", "label": 9 } },
-      { "scope": "egress",  "target": "spiffe://rete-lovers/service/mongodb",
-        "initiator": "spiffe://rete-lovers/service/api",
+      { "scope": "egress",  "target": "spiffe://flor.demo/service/mongodb",
+        "initiator": "spiffe://flor.demo/service/api",
         "out": { "link": "beta-pub", "label": 11 } }
     ],
     "forwarding_table": [
@@ -123,7 +123,7 @@ The rest of this record — the envelope's routing core, payload separation, and
 
 ### Envelope naming
 
-Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`) and **payload-agnostic**: it carries a generic `name` — the consuming workload's name (`agent` reserved for the supervisor) — so identity is `(node, plane, name)`, never path-derived and never consumer-kind-tagged. The envelope is a closed, `schema_version`-gated schema (unknown fields rejected): it evolves by adding an explicit field under a `schema_version` (`major.minor`) bump, never an open extension bag. A consumer gates each artifact **fail-closed and one-directionally**: it reads its own major at any older-or-equal minor (so a newer flor keeps consuming older artifacts — the rolling-upgrade direction), but **rejects a newer minor** (and any other major) rather than silently ignoring fields it doesn't understand — because `deny_unknown_fields` means a newer minor may have added a restriction, and dropping it would fail *open*. Compatibility across a minor bump is thus achieved by upgrading consumers before the producer emits the new minor, not by lenient parsing. Per-plane metadata rides on the `plane` discriminator itself — `plane` is a tagged value, `"mgmt"` or `{ "ctrl": { "obeys_mgmt_version": … } }` — so a ctrl-only field needs no optional envelope claim, and a payload's per-`kind` data stays in `payload`. [ADR-0012: Version the Compiled-Artifact Contract](/docs/implementation/adr/0012-version-artifact-contract) (as amended) owns the versioning policy: `schema_version` gates the **envelope contract**, while each payload family carries its own `schema_version` inside the payload, gated by that payload's consumer under the same fail-closed discipline — producer stamping, relay obligations, and the minor/major evolution rules apply within each contract.
+Keep `payload` (signed-container convention) — not `spec`, which carries the Kubernetes "user-authored desired state" meaning that belongs to the *facade*, not the compiled projection. The envelope stays flat (claims beside `payload`) and **payload-agnostic**: it carries `workload` — the consuming workload's SPIFFE ID (`workload/<node>/agent` for the supervisor) — so identity is `(workload, plane)`, never path-derived and never consumer-kind-tagged. The envelope is a closed, `schema_version`-gated schema (unknown fields rejected): it evolves by adding an explicit field under a `schema_version` (`major.minor`) bump, never an open extension bag. A consumer gates each artifact **fail-closed and one-directionally**: it reads its own major at any older-or-equal minor (so a newer flor keeps consuming older artifacts — the rolling-upgrade direction), but **rejects a newer minor** (and any other major) rather than silently ignoring fields it doesn't understand — because `deny_unknown_fields` means a newer minor may have added a restriction, and dropping it would fail *open*. Compatibility across a minor bump is thus achieved by upgrading consumers before the producer emits the new minor, not by lenient parsing. Per-plane metadata rides on the `plane` discriminator itself — `plane` is a tagged value, `"mgmt"` or `{ "ctrl": { "obeys_mgmt_version": … } }` — so a ctrl-only field needs no optional envelope claim, and a payload's per-`kind` data stays in `payload`. [ADR-0012: Version the Compiled-Artifact Contract](/docs/implementation/adr/0012-version-artifact-contract) (as amended) owns the versioning policy: `schema_version` gates the **envelope contract**, while each payload family carries its own `schema_version` inside the payload, gated by that payload's consumer under the same fail-closed discipline — producer stamping, relay obligations, and the minor/major evolution rules apply within each contract.
 
 ## Rationale
 
